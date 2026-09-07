@@ -47,4 +47,6 @@ jobs:
         run: cargo build --release --workspace
 
       - name: verify
-        run: harness/verify.sh --db "$RUSTORM_DB"
+        env:
+          RUSTORM_DB: ${{ vars.RUSTORM_DB }}
+        run: harness/verify.sh
