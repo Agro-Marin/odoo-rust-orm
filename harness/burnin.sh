@@ -3,9 +3,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ODOO="${RUSTPOC_ODOO:-$(cd "$ROOT/../odoo" && pwd)}"
-PY="${RUSTPOC_PYTHON:-$(cd "$ROOT/.." && pwd)/p314o19m/bin/python}"
-CONF="${RUSTPOC_ODOO_CONF:-$(cd "$ROOT/.." && pwd)/p314o19m.conf}"
+ODOO="${RUSTORM_ODOO:-$(cd "$ROOT/../odoo" && pwd)}"
+PY="${RUSTORM_PYTHON:-$(cd "$ROOT/.." && pwd)/p314o19m/bin/python}"
+CONF="${RUSTORM_ODOO_CONF:-$(cd "$ROOT/.." && pwd)/p314o19m.conf}"
 
 DB=""; PASSWORD=""; THREADS=16; SECONDS_=300; WORKERS=4; SAMPLE=0.05; PORT=8073
 while [ $# -gt 0 ]; do
@@ -24,7 +24,7 @@ done
 [ -f "$ROOT/target/release/libengine_py.so" ] || {
   echo "no libengine_py.so; cargo build --release" >&2; exit 2; }
 
-OUT="$(mktemp -d /tmp/rustpoc-burnin-XXXXXX)"
+OUT="$(mktemp -d /tmp/rustorm-burnin-XXXXXX)"
 echo "burn-in on '$DB'   (artifacts in $OUT)"
 mkdir -p "$OUT/pymod"
 cp "$ROOT/target/release/libengine_py.so" "$OUT/pymod/engine_py.so"

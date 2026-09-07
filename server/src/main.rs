@@ -15,8 +15,8 @@ struct Cli {
     #[arg(
         long,
         global = true,
-        env = "RUSTPOC_DB",
-        default_value = "rustpoc_probe"
+        env = "RUSTORM_DB",
+        default_value = "rustorm_probe"
     )]
     db: String,
 
@@ -172,7 +172,7 @@ fn init_logging() {
     } else {
         "warn"
     };
-    let filter = tracing_subscriber::EnvFilter::try_from_env("RUSTPOC_LOG")
+    let filter = tracing_subscriber::EnvFilter::try_from_env("RUSTORM_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)

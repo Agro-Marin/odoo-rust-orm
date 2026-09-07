@@ -4,7 +4,7 @@ import os
 import sys
 
 FLOAT_TOL = 1e-9
-VERBOSE = os.environ.get("RUSTPOC_DIFF_VERBOSE") == "1"
+VERBOSE = os.environ.get("RUSTORM_DIFF_VERBOSE") == "1"
 
 
 def eq(a, b, path=""):

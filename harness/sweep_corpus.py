@@ -1,10 +1,10 @@
 import json
 import os
 
-OUT = os.environ.get("RUSTPOC_SWEEP_OUT", "/tmp/rustpoc_sweep_corpus.json")
-SEED = os.environ.get("RUSTPOC_SWEEP_SEED", "1") not in ("0", "", "no")
-PER_MODEL = int(os.environ.get("RUSTPOC_SWEEP_PER_MODEL", "11"))
-TAG = "RUSTPOC SWEEP"
+OUT = os.environ.get("RUSTORM_SWEEP_OUT", "/tmp/rustorm_sweep_corpus.json")
+SEED = os.environ.get("RUSTORM_SWEEP_SEED", "1") not in ("0", "", "no")
+PER_MODEL = int(os.environ.get("RUSTORM_SWEEP_PER_MODEL", "11"))
+TAG = "RUSTORM SWEEP"
 
 
 def seed(env):
@@ -33,12 +33,12 @@ def seed(env):
     if group is None:
         return None
     user = su["res.users"].with_context(active_test=False).search(
-        [("login", "=", "rustpoc_sweep_probe")]
+        [("login", "=", "rustorm_sweep_probe")]
     )
     if not user:
         user = su["res.users"].create(
             {
-                "login": "rustpoc_sweep_probe",
+                "login": "rustorm_sweep_probe",
                 "name": TAG + " probe",
                 "group_ids": [(6, 0, [group.id])],
             }

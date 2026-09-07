@@ -5,27 +5,27 @@ fn var(name: &str) -> Option<String> {
 }
 
 pub fn workspace() -> PathBuf {
-    var("RUSTPOC_WORKSPACE")
+    var("RUSTORM_WORKSPACE")
         .unwrap_or_else(|| "/home/marin/Odoo".to_string())
         .into()
 }
 
 pub fn db() -> String {
-    var("RUSTPOC_DB").unwrap_or_else(|| "rustpoc_probe".to_string())
+    var("RUSTORM_DB").unwrap_or_else(|| "rustorm_probe".to_string())
 }
 
 pub fn pg_host() -> String {
-    var("RUSTPOC_PGHOST").unwrap_or_else(|| "/var/run/postgresql".to_string())
+    var("RUSTORM_PGHOST").unwrap_or_else(|| "/var/run/postgresql".to_string())
 }
 
 pub fn pg_user() -> String {
-    var("RUSTPOC_PGUSER")
+    var("RUSTORM_PGUSER")
         .or_else(|| var("USER"))
         .unwrap_or_else(|| "marin".to_string())
 }
 
 pub fn dsn_for(db_name: Option<&str>) -> String {
-    match (var("RUSTPOC_DSN"), db_name) {
+    match (var("RUSTORM_DSN"), db_name) {
         (Some(dsn), None) => dsn,
         (Some(dsn), Some(name)) => with_dbname(&dsn, name),
         (None, name) => format!(
@@ -55,18 +55,18 @@ pub fn dsn() -> String {
 }
 
 pub fn venv_name() -> String {
-    var("RUSTPOC_VENV").unwrap_or_else(|| "p314o19m".to_string())
+    var("RUSTORM_VENV").unwrap_or_else(|| "p314o19m".to_string())
 }
 
 pub fn odoo_root() -> PathBuf {
-    match var("RUSTPOC_ODOO_ROOT") {
+    match var("RUSTORM_ODOO_ROOT") {
         Some(p) => p.into(),
         None => workspace().join("odoo"),
     }
 }
 
 pub fn odoo_conf() -> PathBuf {
-    if let Some(p) = var("RUSTPOC_ODOO_CONF") {
+    if let Some(p) = var("RUSTORM_ODOO_CONF") {
         return p.into();
     }
     let root = workspace();
@@ -89,14 +89,14 @@ pub fn odoo_conf() -> PathBuf {
 }
 
 pub fn harness_dir() -> PathBuf {
-    match var("RUSTPOC_HARNESS") {
+    match var("RUSTORM_HARNESS") {
         Some(p) => p.into(),
         None => workspace().join("odoo-rust-orm/harness"),
     }
 }
 
 pub fn venv_site() -> PathBuf {
-    if let Some(p) = var("RUSTPOC_VENV_SITE") {
+    if let Some(p) = var("RUSTORM_VENV_SITE") {
         return p.into();
     }
 
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn python_versions_sort_numerically() {
-        let dir = std::env::temp_dir().join(format!("rustpoc-venvsort-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rustorm-venvsort-{}", std::process::id()));
         let lib = dir.join("venv").join("lib");
         for v in ["python3.9", "python3.14", "python3.10"] {
             std::fs::create_dir_all(lib.join(v).join("site-packages")).unwrap();

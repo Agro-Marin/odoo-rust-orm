@@ -93,7 +93,7 @@ fn main() -> Result<()> {
 
     let out: serde_json::Value = serde_json::from_str(&result)?;
 
-    let expected_path = std::env::var("RUSTPOC_EXPECTED").unwrap_or_else(|_| {
+    let expected_path = std::env::var("RUSTORM_EXPECTED").unwrap_or_else(|_| {
         odoo_kernel::config::harness_dir()
             .join("expected.json")
             .display()

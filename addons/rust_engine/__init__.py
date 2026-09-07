@@ -357,7 +357,7 @@ def start():
         orm_shim.set_sample(config.get("rust_engine_verify_sample") or 0)
         orm_shim.install()
 
-        capture_path = config.get("rust_engine_capture") or os.environ.get("RUSTPOC_CAPTURE")
+        capture_path = config.get("rust_engine_capture") or os.environ.get("RUSTORM_CAPTURE")
         if capture_path:
             from . import capture
 

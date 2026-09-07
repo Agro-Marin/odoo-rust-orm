@@ -4,9 +4,9 @@ import sys
 import odoo
 from odoo.modules.registry import Registry
 
-EXPORT = os.environ.get("RUSTPOC_EXPORT")
+EXPORT = os.environ.get("RUSTORM_EXPORT")
 if not EXPORT or not os.path.exists(EXPORT):
-    print("LOAD SKIP: set RUSTPOC_EXPORT to a registry export")
+    print("LOAD SKIP: set RUSTORM_EXPORT to a registry export")
     sys.exit(0)
 
 import engine_py  # noqa: E402  (the point of the exercise)
@@ -14,11 +14,11 @@ import engine_py  # noqa: E402  (the point of the exercise)
 db_shim, orm_shim = engine_py.install_shims()
 
 dbname = env.cr.dbname  # noqa: F821  (env comes from the odoo shell namespace)
-conninfo = os.environ.get("RUSTPOC_DSN") or (
+conninfo = os.environ.get("RUSTORM_DSN") or (
     "host=%s user=%s dbname=%s"
     % (
-        os.environ.get("RUSTPOC_PGHOST", "/var/run/postgresql"),
-        os.environ.get("RUSTPOC_PGUSER", os.environ.get("USER", "marin")),
+        os.environ.get("RUSTORM_PGHOST", "/var/run/postgresql"),
+        os.environ.get("RUSTORM_PGUSER", os.environ.get("USER", "marin")),
         dbname,
     )
 )
@@ -132,7 +132,7 @@ with registry.cursor() as cr:
         print("LOAD shadow: ok=%d diff=%d" % (after["shadow_ok"], after["shadow_diff"]))
         ok = ok and after["shadow_diff"] == 0
 
-other = os.environ.get("RUSTPOC_OTHER_DB")
+other = os.environ.get("RUSTORM_OTHER_DB")
 if other and other != dbname:
     try:
         with Registry(other).cursor() as cr:
@@ -162,7 +162,7 @@ if other and other != dbname:
         print("LOAD other db %s: BROKEN %s: %s" % (other, type(exc).__name__, str(exc)[:120]))
         ok = False
 else:
-    print("LOAD other db: skipped (set RUSTPOC_OTHER_DB)")
+    print("LOAD other db: skipped (set RUSTORM_OTHER_DB)")
 
 import signal  # noqa: E402
 

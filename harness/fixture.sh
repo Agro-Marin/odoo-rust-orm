@@ -3,9 +3,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ODOO="${RUSTPOC_ODOO:-$(cd "$ROOT/../odoo" && pwd)}"
-PY="${RUSTPOC_PYTHON:-$(cd "$ROOT/.." && pwd)/p314o19m/bin/python}"
-CONF="${RUSTPOC_ODOO_CONF:-$(cd "$ROOT/.." && pwd)/p314o19m.conf}"
+ODOO="${RUSTORM_ODOO:-$(cd "$ROOT/../odoo" && pwd)}"
+PY="${RUSTORM_PYTHON:-$(cd "$ROOT/.." && pwd)/p314o19m/bin/python}"
+CONF="${RUSTORM_ODOO_CONF:-$(cd "$ROOT/.." && pwd)/p314o19m.conf}"
 
 DB=""; MODE=""; ROWS=120000; PASSWORD="kernelprobe"; ONLY=""
 while [ $# -gt 0 ]; do
@@ -56,7 +56,7 @@ if [ "$MODE" = scale ]; then
     [ "$count" != "$prev" ] || { echo "== converged =="; break; }
     prev=$count
 
-    log="${RUSTPOC_FIXTURE_LOG_DIR:-${TMPDIR:-/tmp}}/fixture-$DB-round$round.log"
+    log="${RUSTORM_FIXTURE_LOG_DIR:-${TMPDIR:-/tmp}}/fixture-$DB-round$round.log"
     odoo -i "$todo" > "$log" 2>&1 || true
     if grep -qE 'ERROR|CRITICAL' "$log"; then
       echo "== round $round logged errors; first one, full log at $log =="
@@ -105,7 +105,7 @@ env["res.users"].browse(2).write({"password": "$PASSWORD"})
 env["res.lang"]._activate_lang("fr_FR")
 Users = env["res.users"]
 if not Users.search([("id", "not in", [1, 2]), ("active", "=", True)], limit=1):
-    Users.create({"login": "rustpoc_other", "name": "RUSTPOC other",
+    Users.create({"login": "rustorm_other", "name": "RUSTORM other",
                   "group_ids": [(6, 0, [env.ref("base.group_user").id])]})
 env.cr.commit()
 PYEOF

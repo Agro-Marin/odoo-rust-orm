@@ -3,9 +3,9 @@ import sys
 
 import os
 
-HARNESS = os.environ.get("RUSTPOC_HARNESS", "/home/marin/Odoo/odoo-rust-orm/harness")
-CORPUS = os.environ.get("RUSTPOC_CORPUS", os.path.join(HARNESS, "corpus.json"))
-EXPECTED = os.environ.get("RUSTPOC_EXPECTED", os.path.join(HARNESS, "expected.json"))
+HARNESS = os.environ.get("RUSTORM_HARNESS", "/home/marin/Odoo/odoo-rust-orm/harness")
+CORPUS = os.environ.get("RUSTORM_CORPUS", os.path.join(HARNESS, "corpus.json"))
+EXPECTED = os.environ.get("RUSTORM_EXPECTED", os.path.join(HARNESS, "expected.json"))
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(HARNESS), "engine-py", "python"))

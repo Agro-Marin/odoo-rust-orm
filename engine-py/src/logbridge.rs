@@ -76,7 +76,7 @@ where
 
 pub fn install() {
     use tracing_subscriber::prelude::*;
-    let filter = tracing_subscriber::EnvFilter::try_from_env("RUSTPOC_LOG")
+    let filter = tracing_subscriber::EnvFilter::try_from_env("RUSTORM_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
     let _ = tracing_subscriber::registry()
         .with(filter)

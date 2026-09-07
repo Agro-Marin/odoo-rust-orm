@@ -153,17 +153,17 @@ async fn build_registry(client: &tokio_postgres::Client, export: Option<&str>) -
 }
 
 pub async fn serve(db: &str, port: u16, export: Option<&str>) -> Result<()> {
-    let auth = match std::env::var("RUSTPOC_SERVE_TOKEN")
+    let auth = match std::env::var("RUSTORM_SERVE_TOKEN")
         .ok()
         .filter(|t| !t.is_empty())
     {
         Some(token) => {
-            tracing::info!("requests must carry X-Rustpoc-Token");
+            tracing::info!("requests must carry X-Rustorm-Token");
             Auth::Token(token)
         }
         None => {
             tracing::warn!(
-                "RUSTPOC_SERVE_TOKEN is not set: `uid` and `su` in the request \
+                "RUSTORM_SERVE_TOKEN is not set: `uid` and `su` in the request \
                  body are IGNORED and every request runs as uid 2, non-superuser. \
                  Set the variable to let an authenticated caller choose."
             );
@@ -279,7 +279,7 @@ async fn handle_call(
     match &state.auth {
         Auth::Token(expected) => {
             let given = headers
-                .get("x-rustpoc-token")
+                .get("x-rustorm-token")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or_default();
 
@@ -292,7 +292,7 @@ async fn handle_call(
             if !ok {
                 return (
                     StatusCode::UNAUTHORIZED,
-                    AxJson(json!({"error": "missing or wrong X-Rustpoc-Token"})),
+                    AxJson(json!({"error": "missing or wrong X-Rustorm-Token"})),
                 )
                     .into_response();
             }

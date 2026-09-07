@@ -21,7 +21,7 @@ def call(port, payload, token=None):
         headers={"content-type": "application/json"},
     )
     if token:
-        req.add_header("X-Rustpoc-Token", token)
+        req.add_header("X-Rustorm-Token", token)
     with urllib.request.urlopen(req, timeout=30) as r:
         return r.read().decode()
 
@@ -90,7 +90,7 @@ def main():
     ap.add_argument("--models", default="res.partner,res.country,res.users,res.company")
     ap.add_argument("--uids", default="")
     args = ap.parse_args()
-    token = os.environ.get("RUSTPOC_SERVE_TOKEN") or None
+    token = os.environ.get("RUSTORM_SERVE_TOKEN") or None
 
     h = health(args.port)
     print("health: %s" % h)

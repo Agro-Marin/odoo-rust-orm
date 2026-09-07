@@ -184,7 +184,7 @@ def main():
     check("bare reference maps", plan(M(), {"ref_id": {}}), (["ref_id"], set(), set()))
     check("properties with spec refuses", plan(M(), {"props": {"fields": {}}}), None)
 
-    odoo_root = os.environ.get("RUSTPOC_ODOO_ROOT") or os.path.join(
+    odoo_root = os.environ.get("RUSTORM_ODOO_ROOT") or os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "odoo"
     )
     sys.path.insert(0, odoo_root)

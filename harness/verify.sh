@@ -3,11 +3,11 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORKSPACE="${RUSTPOC_WORKSPACE:-$(cd "$ROOT/.." && pwd)}"
-DB="${RUSTPOC_DB:-rustpoc_probe}"
+WORKSPACE="${RUSTORM_WORKSPACE:-$(cd "$ROOT/.." && pwd)}"
+DB="${RUSTORM_DB:-rustorm_probe}"
 BUILD=""
 QUICK=0
-OUT="${RUSTPOC_VERIFY_OUT:-$(mktemp -d -t rustpoc-verify-XXXXXX)}"
+OUT="${RUSTORM_VERIFY_OUT:-$(mktemp -d -t rustorm-verify-XXXXXX)}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -20,20 +20,20 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-export RUSTPOC_DB="$DB"
-export RUSTPOC_ODOO_CONF="${RUSTPOC_ODOO_CONF:-$WORKSPACE/p314o19m.conf}"
-ODOO="${RUSTPOC_ODOO_ROOT:-$WORKSPACE/odoo}"
-PY="${RUSTPOC_PYTHON:-$WORKSPACE/p314o19m/bin/python}"
+export RUSTORM_DB="$DB"
+export RUSTORM_ODOO_CONF="${RUSTORM_ODOO_CONF:-$WORKSPACE/p314o19m.conf}"
+ODOO="${RUSTORM_ODOO_ROOT:-$WORKSPACE/odoo}"
+PY="${RUSTORM_PYTHON:-$WORKSPACE/p314o19m/bin/python}"
 mkdir -p "$OUT"
 
 declare -a NAMES RESULTS NOTES
 stage() { NAMES+=("$1"); RESULTS+=("$2"); NOTES+=("${3:-}"); printf '  %-22s %s %s\n' "$1" "$2" "${3:-}"; }
 
 echo "verifying '$DB'   (artifacts in $OUT)"
-[ -x "$PY" ] || { echo "no interpreter at $PY (set RUSTPOC_PYTHON)"; exit 2; }
+[ -x "$PY" ] || { echo "no interpreter at $PY (set RUSTORM_PYTHON)"; exit 2; }
 
 if [ -n "$BUILD" ]; then
-  if "$PY" "$ODOO/odoo-bin" -c "$RUSTPOC_ODOO_CONF" -d "$DB" -i "$BUILD" \
+  if "$PY" "$ODOO/odoo-bin" -c "$RUSTORM_ODOO_CONF" -d "$DB" -i "$BUILD" \
        --db_maxconn=8 --stop-after-init --no-http > "$OUT/install.log" 2>&1; then
     stage "install($BUILD)" OK
   else
@@ -64,20 +64,20 @@ if "$ROOT/target/release/export_registry" "$OUT/export.json" > "$OUT/export.log"
 else
   stage "registry export" FAIL "see $OUT/export.log"; fi
 
-"$PY" "$ODOO/odoo-bin" shell -c "$RUSTPOC_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
+"$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
   <<< "exec(open('$ROOT/harness/gen_expected.py').read())" > "$OUT/warm.log" 2>&1 \
   && stage "warm computes" OK || stage "warm computes" FAIL "see $OUT/warm.log"
 
 if [ "$QUICK" = 1 ]; then
   stage "kernel sweep" SKIP "--quick"
-elif RUSTPOC_SWEEP_OUT="$OUT/sweep_corpus.json" \
-   "$PY" "$ODOO/odoo-bin" shell -c "$RUSTPOC_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
+elif RUSTORM_SWEEP_OUT="$OUT/sweep_corpus.json" \
+   "$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
    <<< "exec(open('$ROOT/harness/sweep_corpus.py').read())" > "$OUT/sweep_gen.log" 2>&1
 then
 
   for pass_n in 1 2; do
-    RUSTPOC_CORPUS="$OUT/sweep_corpus.json" RUSTPOC_EXPECTED="$OUT/sweep_expected.json" \
-      "$PY" "$ODOO/odoo-bin" shell -c "$RUSTPOC_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
+    RUSTORM_CORPUS="$OUT/sweep_corpus.json" RUSTORM_EXPECTED="$OUT/sweep_expected.json" \
+      "$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
       <<< "exec(open('$ROOT/harness/gen_expected.py').read())" > "$OUT/sweep_exp_$pass_n.log" 2>&1
   done
   "$ROOT/target/release/odoo-poc" --db "$DB" --export "$OUT/export.json" \
@@ -89,8 +89,8 @@ then
 else
   stage "kernel sweep" FAIL "corpus generation failed; see $OUT/sweep_gen.log"; fi
 
-if RUSTPOC_EXPECTED="$OUT/expected.json" \
-   "$PY" "$ODOO/odoo-bin" shell -c "$RUSTPOC_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
+if RUSTORM_EXPECTED="$OUT/expected.json" \
+   "$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
    <<< "exec(open('$ROOT/harness/gen_expected.py').read())" > "$OUT/gen.log" 2>&1
 then
   "$ROOT/target/release/odoo-poc" --db "$DB" --export "$OUT/export.json" \
@@ -107,12 +107,12 @@ if [ "$QUICK" = 1 ]; then
   stage "fuzz" SKIP "--quick"
 else
   fuzz_fail=0; fuzz_note=""
-  for seed in ${RUSTPOC_FUZZ_SEEDS:-1 2 3}; do
-    RUSTPOC_FUZZ_OUT="$OUT/fuzz_$seed.json" RUSTPOC_FUZZ_SEED="$seed" \
-      "$PY" "$ODOO/odoo-bin" shell -c "$RUSTPOC_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
+  for seed in ${RUSTORM_FUZZ_SEEDS:-1 2 3}; do
+    RUSTORM_FUZZ_OUT="$OUT/fuzz_$seed.json" RUSTORM_FUZZ_SEED="$seed" \
+      "$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
       <<< "exec(open('$ROOT/harness/fuzz_corpus.py').read())" > "$OUT/fuzz_gen_$seed.log" 2>&1 || continue
-    RUSTPOC_CORPUS="$OUT/fuzz_$seed.json" RUSTPOC_EXPECTED="$OUT/fuzz_exp_$seed.json" \
-      "$PY" "$ODOO/odoo-bin" shell -c "$RUSTPOC_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
+    RUSTORM_CORPUS="$OUT/fuzz_$seed.json" RUSTORM_EXPECTED="$OUT/fuzz_exp_$seed.json" \
+      "$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
       <<< "exec(open('$ROOT/harness/gen_expected.py').read())" > "$OUT/fuzz_expgen_$seed.log" 2>&1
     "$ROOT/target/release/odoo-poc" --db "$DB" --export "$OUT/export.json" \
         run-corpus --file "$OUT/fuzz_$seed.json" > "$OUT/fuzz_act_$seed.json" 2>/dev/null
@@ -156,9 +156,9 @@ probe race  "wrong=0"      "concurrency"       "$OUT/export.json"
 
 if [ -f "$ROOT/target/release/libengine_py.so" ]; then
 
-  if PYTHONPATH="$PYMOD" RUSTPOC_EXPORT="$OUT/export.json" RUSTPOC_ROUTE=shadow \
-     RUSTPOC_OTHER_DB="${RUSTPOC_OTHER_DB:-}" \
-     "$PY" "$ODOO/odoo-bin" shell -c "$RUSTPOC_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
+  if PYTHONPATH="$PYMOD" RUSTORM_EXPORT="$OUT/export.json" RUSTORM_ROUTE=shadow \
+     RUSTORM_OTHER_DB="${RUSTORM_OTHER_DB:-}" \
+     "$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
      < "$ROOT/harness/load_into_odoo.py" > "$OUT/load.log" 2>&1
   then
     stage "load into odoo" OK "$(grep -acE '^LOAD (read|other db|fork exit)' "$OUT/load.log") checks"
@@ -169,10 +169,10 @@ else
   stage "load into odoo" SKIP "no libengine_py.so; cargo build --release"
 fi
 
-if [ -n "${RUSTPOC_REPLAY:-}" ] && [ -f "$RUSTPOC_REPLAY" ] && [ -f "$ROOT/target/release/libengine_py.so" ]; then
-  if PYTHONPATH="$PYMOD" RUSTPOC_EXPORT="$OUT/export.json" RUSTPOC_ROUTE=shadow \
-     RUSTPOC_REPLAY="$RUSTPOC_REPLAY" \
-     "$PY" "$ODOO/odoo-bin" shell -c "$RUSTPOC_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
+if [ -n "${RUSTORM_REPLAY:-}" ] && [ -f "$RUSTORM_REPLAY" ] && [ -f "$ROOT/target/release/libengine_py.so" ]; then
+  if PYTHONPATH="$PYMOD" RUSTORM_EXPORT="$OUT/export.json" RUSTORM_ROUTE=shadow \
+     RUSTORM_REPLAY="$RUSTORM_REPLAY" \
+     "$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
      < "$ROOT/harness/replay.py" > "$OUT/replay.log" 2>&1
   then
     stage "replay" OK "$(grep -aE '^REPLAY (OK|DIVERGED)' "$OUT/replay.log" | tail -1 | cut -c8-)"
@@ -180,12 +180,12 @@ if [ -n "${RUSTPOC_REPLAY:-}" ] && [ -f "$RUSTPOC_REPLAY" ] && [ -f "$ROOT/targe
     stage "replay" FAIL "$(grep -aE '^REPLAY|Error' "$OUT/replay.log" | tail -1 | cut -c1-70)"
   fi
 else
-  stage "replay" SKIP "no capture file (set RUSTPOC_REPLAY)"
+  stage "replay" SKIP "no capture file (set RUSTORM_REPLAY)"
 fi
 
 if [ -f "$ROOT/target/release/libengine_py.so" ]; then
   if PYTHONPATH="$PYMOD" \
-     "$PY" "$ODOO/odoo-bin" shell -c "$RUSTPOC_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
+     "$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
      < "$ROOT/harness/copy_path.py" > "$OUT/copy.log" 2>&1
   then
     stage "copy encoder" OK "$(grep -a '^COPY streams' "$OUT/copy.log" | head -1 | cut -c1-58)"
@@ -199,7 +199,7 @@ fi
 if [ "$QUICK" = 1 ]; then
   stage "soak" SKIP "--quick"
 else
-  SOAK_PORT="${RUSTPOC_SOAK_PORT:-8099}"
+  SOAK_PORT="${RUSTORM_SOAK_PORT:-8099}"
   "$ROOT/target/release/odoo-poc" --db "$DB" --export "$OUT/export.json" \
       serve --port "$SOAK_PORT" > "$OUT/soak_serve.log" 2>&1 &
   soak_pid=$!
@@ -208,7 +208,7 @@ else
     sleep 1
   done
   if "$PY" "$ROOT/harness/soak.py" --port "$SOAK_PORT" \
-       --threads "${RUSTPOC_SOAK_THREADS:-8}" --seconds "${RUSTPOC_SOAK_SECONDS:-20}" \
+       --threads "${RUSTORM_SOAK_THREADS:-8}" --seconds "${RUSTORM_SOAK_SECONDS:-20}" \
        > "$OUT/soak.log" 2>&1; then
     stage "soak" OK "$(grep -o '[0-9]* requests in .*' "$OUT/soak.log" | head -1)"
   else

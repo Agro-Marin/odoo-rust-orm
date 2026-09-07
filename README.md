@@ -234,7 +234,7 @@ The individual pieces still work on their own:
 
 ```sh
 echo "exec(open('harness/gen_expected.py').read())" | \
-  .../odoo-bin shell -c "$RUSTPOC_ODOO_CONF" -d "$RUSTPOC_DB" --no-http
+  .../odoo-bin shell -c "$RUSTORM_ODOO_CONF" -d "$RUSTORM_DB" --no-http
 ./target/release/odoo-poc run-corpus --file harness/corpus.json > actual.json
 python3 harness/diff.py expected.json actual.json
 ```
@@ -250,10 +250,10 @@ everything.
 ## Configuration
 
 Nothing is pinned to one machine or one database. Every path derives from
-`RUSTPOC_WORKSPACE` (default `/home/marin/Odoo`) and each value has its own
-override: `RUSTPOC_DB`, `RUSTPOC_DSN`, `RUSTPOC_PGHOST`, `RUSTPOC_PGUSER`,
-`RUSTPOC_ODOO_ROOT`, `RUSTPOC_ODOO_CONF`, `RUSTPOC_VENV`, `RUSTPOC_VENV_SITE`,
-`RUSTPOC_HARNESS`. See `kernel/src/config.rs`. The `pythonX.Y` path component
+`RUSTORM_WORKSPACE` (default `/home/marin/Odoo`) and each value has its own
+override: `RUSTORM_DB`, `RUSTORM_DSN`, `RUSTORM_PGHOST`, `RUSTORM_PGUSER`,
+`RUSTORM_ODOO_ROOT`, `RUSTORM_ODOO_CONF`, `RUSTORM_VENV`, `RUSTORM_VENV_SITE`,
+`RUSTORM_HARNESS`. See `kernel/src/config.rs`. The `pythonX.Y` path component
 is discovered, not hardcoded, so an interpreter upgrade doesn't break the
 embedding bins, and `odoo_conf()` falls back to the only `*.conf` at the
 workspace root when the venv is renamed.
@@ -292,7 +292,7 @@ python3 harness/speedup.py --python py1.json py2.json py3.json \
                            --rust r1.txt r2.txt r3.txt
 ```
 
-The previous figure in this file (2.13×) was measured on `rustpoc_probe`, a
+The previous figure in this file (2.13×) was measured on `rustorm_probe`, a
 7-partner database that no longer exists, and carried the caveat that fixed
 per-query cost dominated it. It did: on real volume the same corpus is 3.01×,
 and the shape is different — the wins are where a scan actually happens.
@@ -410,7 +410,7 @@ and prints the observed drift, so the number comes with its uncertainty.
 Two reasons this is lower than the 3.9× recorded for M1 on the original
 database, both legitimate:
 
-1. **Scale.** `rustpoc_probe` is small (7 partners), so fixed per-query cost
+1. **Scale.** `rustorm_probe` is small (7 partners), so fixed per-query cost
    dominates and the interpreter overhead Rust avoids is a smaller share. The
    big wins survive exactly where they should — rule-heavy, many-row reads.
 2. **The old comparison timed Python doing less work.** `bench_python.py`
@@ -530,8 +530,8 @@ Every figure in this file is measured on one of two fixtures, and until
 on the machine that built them. `harness/fixture.sh` builds them.
 
 ```sh
-harness/fixture.sh --db rustpoc_scale_lmmg  --scale            # what verify.sh needs
-harness/fixture.sh --db rustpoc_audit_lmmg  --volume           # what the benchmarks need
+harness/fixture.sh --db rustorm_scale_lmmg  --scale            # what verify.sh needs
+harness/fixture.sh --db rustorm_audit_lmmg  --volume           # what the benchmarks need
 harness/fixture.sh --db probe --scale --modules barcodes,bus   # bounded, for testing the loop
 ```
 
@@ -634,7 +634,7 @@ one kind of test no corpus can be: the web client's own reads, with the
 specifications, contexts, orders and page sizes a browser actually sends.
 
 ```ini
-rust_engine_capture = /path/to/capture.jsonl   ; or RUSTPOC_CAPTURE in the env
+rust_engine_capture = /path/to/capture.jsonl   ; or RUSTORM_CAPTURE in the env
 ```
 
 With that set, the addon wraps `odoo.service.model.call_kw` and appends one
@@ -648,7 +648,7 @@ recorded: a replayed write would change the database the next call reads. A
 capture that cannot be written is logged and never fails the request.
 
 ```sh
-RUSTPOC_REPLAY=/path/to/capture.jsonl harness/verify.sh --db <db>
+RUSTORM_REPLAY=/path/to/capture.jsonl harness/verify.sh --db <db>
 ```
 
 `harness/replay.py` feeds the file back through the shim with routing in
@@ -737,7 +737,7 @@ asserts them.
 
 ## Rolling it out
 
-`RUSTPOC_ROUTE` decides what the shim does with a call it could route:
+`RUSTORM_ROUTE` decides what the shim does with a call it could route:
 
 | value | behaviour |
 |---|---|
@@ -754,7 +754,7 @@ first run, in a shape every serialized corpus had normalised away.
 `shadow` is not a resting state and `on` verifies nothing, so turning shadow
 off replaces continuous verification with none: from that moment the kernel's
 answer is the answer, and a divergence in a shape no corpus covered has
-nothing left to catch it. `RUSTPOC_ROUTE_SAMPLE=0.01` (`rust_engine_verify_sample`)
+nothing left to catch it. `RUSTORM_ROUTE_SAMPLE=0.01` (`rust_engine_verify_sample`)
 is the middle -- in mode `on` it answers one call in a hundred from BOTH
 engines and compares them, for 1% of a duplicated read. A sampled call returns
 PYTHON'S answer, which makes the sample a safety net rather than telemetry:
@@ -781,8 +781,8 @@ its own psycopg connection, not through `Registry.cursor()` — with the db shim
 installed that cursor is rust-backed, and an off switch must not depend on the
 thing it turns off.
 
-`RUSTPOC_ROUTE_ONLY` and `RUSTPOC_ROUTE_EXCEPT` scope it to named models;
-`RUSTPOC_ROUTE_BREAKER=N` stops routing a model after N kernel errors, per
+`RUSTORM_ROUTE_ONLY` and `RUSTORM_ROUTE_EXCEPT` scope it to named models;
+`RUSTORM_ROUTE_BREAKER=N` stops routing a model after N kernel errors, per
 MODEL rather than globally, so one bad shape does not take the rest with it.
 `rust_orm_shim.stats()` reports what routing actually did, including the routed
 share and a per-model error map, and `set_mode()` changes the mode without a
@@ -795,9 +795,9 @@ name any identity it liked — `{"uid":1,"su":true}` returned superuser rows, an
 nothing in the code said whether that was intended. Two modes now, and the
 server says which one it is in:
 
-| `RUSTPOC_SERVE_TOKEN` | behaviour |
+| `RUSTORM_SERVE_TOKEN` | behaviour |
 |---|---|
-| set | requests must carry `X-Rustpoc-Token`; a caller that presents it may name an identity, because it had to be told the secret |
+| set | requests must carry `X-Rustorm-Token`; a caller that presents it may name an identity, because it had to be told the secret |
 | unset | `uid`/`su` in the body are **ignored** and every request runs as uid 2, non-superuser — the server cannot be used to impersonate |
 
 This is a PoC transport, not a session layer: it authenticates the *caller*, not
@@ -818,7 +818,7 @@ grew without bound, and a database whose watermark never moves grew forever.
 
 ## Observability
 
-Nothing is on by default. `RUSTPOC_LOG` takes a standard `tracing` `EnvFilter`
+Nothing is on by default. `RUSTORM_LOG` takes a standard `tracing` `EnvFilter`
 string; `POC_TRACE=1` remains an alias for `odoo_kernel::sql=debug`.
 
 | target | what it reports |

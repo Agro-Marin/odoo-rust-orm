@@ -12,7 +12,7 @@ from wire import ser as _ser
 def run(reg, orm_shim, originals):
     import odoo.api
     out = {"corpus": {}, "sweep": {}, "timing": {}}
-    corpus = json.load(open(os.environ["RUSTPOC_CORPUS_PATH"]))
+    corpus = json.load(open(os.environ["RUSTORM_CORPUS_PATH"]))
 
     with reg.cursor() as cr:
         env0 = odoo.api.Environment(cr, 2, {})
@@ -360,9 +360,9 @@ fn main() -> Result<()> {
 
     std::env::set_var("ODOO_DISABLE_COPY", "1");
 
-    if std::env::var_os("RUSTPOC_CORPUS_PATH").is_none() {
+    if std::env::var_os("RUSTORM_CORPUS_PATH").is_none() {
         std::env::set_var(
-            "RUSTPOC_CORPUS_PATH",
+            "RUSTORM_CORPUS_PATH",
             odoo_kernel::config::harness_dir().join("corpus.json"),
         );
     }

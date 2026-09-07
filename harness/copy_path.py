@@ -12,11 +12,11 @@ if not os.environ.get("PYTHONPATH"):
 import engine_py  # noqa: E402
 
 dbname = env.cr.dbname  # noqa: F821  (from the odoo shell namespace)
-conninfo = os.environ.get("RUSTPOC_DSN") or (
+conninfo = os.environ.get("RUSTORM_DSN") or (
     "host=%s user=%s dbname=%s"
     % (
-        os.environ.get("RUSTPOC_PGHOST", "/var/run/postgresql"),
-        os.environ.get("RUSTPOC_PGUSER", os.environ.get("USER", "marin")),
+        os.environ.get("RUSTORM_PGHOST", "/var/run/postgresql"),
+        os.environ.get("RUSTORM_PGUSER", os.environ.get("USER", "marin")),
         dbname,
     )
 )

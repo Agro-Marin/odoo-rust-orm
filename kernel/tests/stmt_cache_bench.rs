@@ -4,7 +4,7 @@ use std::time::Instant;
 use odoo_kernel::orm::{Caches, Orm, Request, StmtCache};
 use odoo_kernel::registry::Registry;
 
-const DSN: &str = "host=/var/run/postgresql user=marin dbname=rustpoc_probe";
+const DSN: &str = "host=/var/run/postgresql user=marin dbname=rustorm_probe";
 
 fn req(model: &str, fields: &[&str], limit: Option<u64>) -> Request {
     Request {

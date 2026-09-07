@@ -34,12 +34,12 @@ def _env_set(name):
     return frozenset(x.strip() for x in os.environ.get(name, "").split(",") if x.strip())
 
 
-MODE = os.environ.get("RUSTPOC_ROUTE", "on").strip().lower()
-ONLY = _env_set("RUSTPOC_ROUTE_ONLY")
-EXCEPT = _env_set("RUSTPOC_ROUTE_EXCEPT")
-BREAKER = int(os.environ.get("RUSTPOC_ROUTE_BREAKER", "0") or 0)
+MODE = os.environ.get("RUSTORM_ROUTE", "on").strip().lower()
+ONLY = _env_set("RUSTORM_ROUTE_ONLY")
+EXCEPT = _env_set("RUSTORM_ROUTE_EXCEPT")
+BREAKER = int(os.environ.get("RUSTORM_ROUTE_BREAKER", "0") or 0)
 
-SAMPLE = float(os.environ.get("RUSTPOC_ROUTE_SAMPLE", "0") or 0)
+SAMPLE = float(os.environ.get("RUSTORM_ROUTE_SAMPLE", "0") or 0)
 _RNG = random.Random()
 
 

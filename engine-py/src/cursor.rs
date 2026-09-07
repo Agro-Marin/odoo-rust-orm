@@ -1252,7 +1252,7 @@ impl RustDb {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(worker_threads.max(1))
             .enable_all()
-            .thread_name("rustpoc-db")
+            .thread_name("rustorm-db")
             .build()
     }
 

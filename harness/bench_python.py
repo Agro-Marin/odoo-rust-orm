@@ -3,10 +3,10 @@ import os
 import sys
 import time
 
-HARNESS = os.environ.get("RUSTPOC_HARNESS", "/home/marin/Odoo/odoo-rust-orm/harness")
-CORPUS = os.environ.get("RUSTPOC_CORPUS", os.path.join(HARNESS, "corpus.json"))
-OUT = os.environ.get("RUSTPOC_BENCH_OUT", os.path.join(HARNESS, "bench_python.json"))
-ITERS = int(os.environ.get("RUSTPOC_BENCH_ITERS", 50))
+HARNESS = os.environ.get("RUSTORM_HARNESS", "/home/marin/Odoo/odoo-rust-orm/harness")
+CORPUS = os.environ.get("RUSTORM_CORPUS", os.path.join(HARNESS, "corpus.json"))
+OUT = os.environ.get("RUSTORM_BENCH_OUT", os.path.join(HARNESS, "bench_python.json"))
+ITERS = int(os.environ.get("RUSTORM_BENCH_ITERS", 50))
 
 sys.path.insert(0, HARNESS)
 from cases import run_case  # noqa: E402

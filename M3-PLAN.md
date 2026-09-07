@@ -291,7 +291,7 @@ path), not shim-caused. Targeted flush landed
 ## Correctness and cache audit (2026-07-26)
 
 Six defects found by testing the claims above against a rebuilt database
-(`rustpoc_probe`, 77 modules from `tpl_p314o19marin`). All fixed, all covered
+(`rustorm_probe`, 77 modules from `tpl_p314o19marin`). All fixed, all covered
 by tests; the corpus is 78/78 on the rebuilt fixture.
 
 1. **unaccent — silent wrong results.** The kernel hardcoded "the target DB
@@ -352,8 +352,8 @@ Both paths now error, which in the hybrid means transparent Python fallback.
 **Everything is re-derivable again.** The five embedding bins hardcoded
 `sm_statemachine_test` and absolute paths, so none of the Phase 1/2 evidence
 could be reproduced. `odoo_kernel::config` now derives every path from
-`RUSTPOC_WORKSPACE` with per-value environment overrides, and discovers the
-`pythonX.Y` component rather than pinning it. Re-derived on `rustpoc_probe`:
+`RUSTORM_WORKSPACE` with per-value environment overrides, and discovers the
+`pythonX.Y` component rather than pinning it. Re-derived on `rustorm_probe`:
 
 | gate | result |
 |---|---|

@@ -27,7 +27,7 @@ def _select(suite):
 
 def run_suite(orm_shim, kernel, label):
     import odoo.tools as tools
-    tools.config["db_name"] = os.environ.get("RUSTPOC_DB", "rustpoc_probe")
+    tools.config["db_name"] = os.environ.get("RUSTORM_DB", "rustorm_probe")
     orm_shim.KERNEL = kernel  # None disables routing
     k0 = orm_shim.STATS["kernel"]
     out = {}

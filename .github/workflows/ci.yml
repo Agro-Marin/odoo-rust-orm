@@ -31,7 +31,7 @@ jobs:
     name: full verification battery
     runs-on: ubuntu-latest
 
-    if: ${{ vars.RUSTPOC_HAS_ODOO == 'true' }}
+    if: ${{ vars.RUSTORM_HAS_ODOO == 'true' }}
     services:
       postgres:
         image: postgres:18
@@ -47,4 +47,4 @@ jobs:
         run: cargo build --release --workspace
 
       - name: verify
-        run: harness/verify.sh --db "$RUSTPOC_DB"
+        run: harness/verify.sh --db "$RUSTORM_DB"

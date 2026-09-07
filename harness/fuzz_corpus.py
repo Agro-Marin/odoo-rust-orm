@@ -2,10 +2,10 @@ import json
 import os
 import random
 
-OUT = os.environ.get("RUSTPOC_FUZZ_OUT", "/tmp/rustpoc_fuzz_corpus.json")
-SEED = int(os.environ.get("RUSTPOC_FUZZ_SEED", "1"))
-CASES = int(os.environ.get("RUSTPOC_FUZZ_CASES", "1500"))
-MAX_MODELS = int(os.environ.get("RUSTPOC_FUZZ_MODELS", "120"))
+OUT = os.environ.get("RUSTORM_FUZZ_OUT", "/tmp/rustorm_fuzz_corpus.json")
+SEED = int(os.environ.get("RUSTORM_FUZZ_SEED", "1"))
+CASES = int(os.environ.get("RUSTORM_FUZZ_CASES", "1500"))
+MAX_MODELS = int(os.environ.get("RUSTORM_FUZZ_MODELS", "120"))
 
 TEXT_OPS = ["=", "!=", "in", "not in", "like", "not like", "ilike", "not ilike",
             "=like", "=ilike", "not =like", "not =ilike"]
@@ -174,7 +174,7 @@ def main(env):
     rng.shuffle(models)
     models = models[:MAX_MODELS]
 
-    probe = base["res.users"].sudo().search([("login", "=", "rustpoc_sweep_probe")], limit=1)
+    probe = base["res.users"].sudo().search([("login", "=", "rustorm_sweep_probe")], limit=1)
     identities = [None] + ([probe.id] if probe else [])
 
     cases = []

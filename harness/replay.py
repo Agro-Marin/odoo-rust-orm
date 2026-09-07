@@ -7,24 +7,24 @@ import odoo
 from odoo.modules.registry import Registry
 from odoo.service.model import call_kw
 
-EXPORT = os.environ.get("RUSTPOC_EXPORT")
-CAPTURE = os.environ.get("RUSTPOC_REPLAY")
+EXPORT = os.environ.get("RUSTORM_EXPORT")
+CAPTURE = os.environ.get("RUSTORM_REPLAY")
 if not EXPORT or not os.path.exists(EXPORT):
-    print("REPLAY SKIP: set RUSTPOC_EXPORT to a registry export")
+    print("REPLAY SKIP: set RUSTORM_EXPORT to a registry export")
     sys.exit(0)
 if not CAPTURE or not os.path.exists(CAPTURE):
-    print("REPLAY SKIP: set RUSTPOC_REPLAY to a capture file")
+    print("REPLAY SKIP: set RUSTORM_REPLAY to a capture file")
     sys.exit(0)
 
 import engine_py  # noqa: E402
 
 db_shim, orm_shim = engine_py.install_shims()
 dbname = env.cr.dbname  # noqa: F821
-conninfo = os.environ.get("RUSTPOC_DSN") or (
+conninfo = os.environ.get("RUSTORM_DSN") or (
     "host=%s user=%s dbname=%s"
     % (
-        os.environ.get("RUSTPOC_PGHOST", "/var/run/postgresql"),
-        os.environ.get("RUSTPOC_PGUSER", os.environ.get("USER", "marin")),
+        os.environ.get("RUSTORM_PGHOST", "/var/run/postgresql"),
+        os.environ.get("RUSTORM_PGUSER", os.environ.get("USER", "marin")),
         dbname,
     )
 )

@@ -5,7 +5,7 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ODOO = os.environ.get("RUSTPOC_ODOO_ROOT") or os.path.join(os.path.dirname(ROOT), "odoo")
+ODOO = os.environ.get("RUSTORM_ODOO_ROOT") or os.path.join(os.path.dirname(ROOT), "odoo")
 
 SOURCES = [
     os.path.join(ROOT, "addons", "rust_engine", "__init__.py"),
