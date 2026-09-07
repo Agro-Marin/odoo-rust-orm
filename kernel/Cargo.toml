@@ -1,0 +1,18 @@
+[package]
+name = "odoo-kernel"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "odoo_kernel"
+
+[dependencies]
+tokio = { workspace = true }
+tokio-postgres = { workspace = true }
+sea-query = { workspace = true }
+sea-query-postgres = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
