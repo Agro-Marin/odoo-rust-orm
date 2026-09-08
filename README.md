@@ -166,6 +166,19 @@ written down — but with the kernel's error unread, the assertion passed for
 any value at all. The case that discriminates is the one now beside it:
 Python denies, the kernel declines, and the answer must be `refused`.
 
+**A run that compared nothing is not a pass.** Refusals are the designed
+fallback, so they never counted as failures — which meant a kernel that
+refused every case scored zero failures and `diff.py` exited 0, and
+`verify.sh`, which reads the summary line's prefix, reported `shadow corpus
+OK` over `PASS 3/279 REFUSED 276`. `diff.py` now takes `--min-compared N`
+(default `RUSTORM_DIFF_MIN_COMPARED`, else 1): below it the summary line
+starts with `SHORT compared X < floor N` instead of `PASS`, and the exit is 1.
+`verify.sh` sets the floor per stage — 200 on the hand-written corpus
+(`RUSTORM_MIN_COMPARED_CORPUS`), 1 on the sweep and the fuzz seeds
+(`RUSTORM_MIN_COMPARED_SWEEP`, `RUSTORM_MIN_COMPARED_FUZZ`), because their size
+depends on the database. `harness/test_diff.py` drives the script as
+`verify.sh` does and checks that the prefix and the exit code agree.
+
 And an identity can be named portably. `"uid": "other"` resolves on both sides
 to the lowest active user that is neither OdooBot nor admin, so a case at a
 non-admin identity runs on any database — a hardcoded uid that does not exist
@@ -231,6 +244,7 @@ harness/verify.sh --db newdb --build base,mail,account   # create it first
 |---|---|
 | fork contract | every Odoo symbol the shims, the addon and the harness import or patch still exists in the checkout -- no database, no extension, seconds |
 | shim units | the two Python shims, with no database: dsn parsing, the kill switch, datetime round trips |
+| diff units | `diff.py`'s verdict, with no database: the summary prefix and the exit code agree, and a run that compared fewer cases than the floor is not a pass |
 | registry export | the export describes this database (it refuses to write one that does not) |
 | shadow corpus | 275 cases byte-equal to the Python ORM, across identities and contexts |
 | kernel sweep | every model, kernel-DIRECT, on a fixture it seeds itself |

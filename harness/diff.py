@@ -93,9 +93,43 @@ def score(expected, actual):
     return passed, failed, refused, vacuous, denied
 
 
+def parse_args(argv):
+    """`expected actual [--min-compared N]`.
+
+    The floor is the number of cases the kernel must have ANSWERED and
+    matched for the run to count as a pass. Without it, a run where the kernel
+    refused every case scored 0 failures and exited 0, and `verify.sh` reported
+    `shadow corpus OK` for a comparison that compared nothing.
+    """
+    floor = os.environ.get("RUSTORM_DIFF_MIN_COMPARED", "1")
+    paths = []
+    it = iter(argv)
+    for arg in it:
+        if arg == "--min-compared":
+            floor = next(it, None)
+            if floor is None:
+                print("REFUSING: --min-compared needs a value")
+                sys.exit(2)
+        else:
+            paths.append(arg)
+    if len(paths) != 2:
+        print("usage: diff.py expected.json actual.json [--min-compared N]")
+        sys.exit(2)
+    try:
+        floor = int(floor)
+    except ValueError:
+        print(f"REFUSING: --min-compared must be an integer, got {floor!r}")
+        sys.exit(2)
+    if floor < 0:
+        print(f"REFUSING: --min-compared must be >= 0, got {floor}")
+        sys.exit(2)
+    return paths[0], paths[1], floor
+
+
 def main():
-    exp_db, exp_cases, exp_fp = load(sys.argv[1])
-    act_db, act_cases, act_fp = load(sys.argv[2])
+    exp_path, act_path, floor = parse_args(sys.argv[1:])
+    exp_db, exp_cases, exp_fp = load(exp_path)
+    act_db, act_cases, act_fp = load(act_path)
     if exp_db != act_db:
         print(f"REFUSING: baseline is from {exp_db!r}, results from {act_db!r}")
         sys.exit(2)
@@ -119,14 +153,20 @@ def main():
             sys.exit(2)
         print(note + " Everything agreed anyway.")
     compared = len(passed) - len(denied)
-    print(f"PASS {len(passed)}/{len(expected)}"
-          + f"  (COMPARED {compared}"
+    # The summary line is what `verify.sh` greps for its verdict, so a run
+    # that compared fewer cases than the floor must NOT start with PASS: a
+    # kernel that refuses everything is a kernel that verified nothing.
+    short = compared < floor
+    print((f"SHORT compared {compared} < floor {floor}  (" if short else "")
+          + f"PASS {len(passed)}/{len(expected)}"
+          + f"  (COMPARED {compared}, FLOOR {floor}"
           + (f", DENIED {len(denied)} — both raised AccessError, which is "
              f"agreement on the access decision" if denied else "")
           + ")"
           + (f"  REFUSED {len(refused)} (kernel declines, shim falls back)" if refused else "")
           + (f"  VACUOUS {len(vacuous)} (neither side could run the case; "
-             f"this proves nothing)" if vacuous else ""))
+             f"this proves nothing)" if vacuous else "")
+          + (")" if short else ""))
     if vacuous and VERBOSE:
         for cid, why in vacuous:
             print(f"  vacuous {cid}: {why}")
@@ -136,7 +176,7 @@ def main():
         print(f"\nFAIL {cid}: {why}")
         print(f"  expected: {json.dumps(e, default=str)[:300]}")
         print(f"  actual:   {json.dumps(a, default=str)[:300]}")
-    sys.exit(1 if failed else 0)
+    sys.exit(1 if failed or short else 0)
 
 
 def _dig(value, path):

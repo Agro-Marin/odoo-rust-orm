@@ -64,6 +64,12 @@ else
   stage "fork contract" FAIL "$(printf '%s' "$out" | grep -E '^ *FAIL|^FORK' | head -1)"
 fi
 
+if out=$("$PY" "$ROOT/harness/test_diff.py" 2>&1); then
+  stage "diff units" OK "$(printf '%s' "$out" | grep -E '^DIFF' | head -1)"
+else
+  stage "diff units" FAIL "$(printf '%s' "$out" | grep -E '^ *[a-z]|^DIFF' | head -1)"
+fi
+
 PYMOD="$OUT/pymod"
 if [ -f "$ROOT/target/release/libengine_py.so" ]; then
   mkdir -p "$PYMOD"
@@ -100,8 +106,9 @@ then
   done
   "$ROOT/target/release/odoo-poc" --db "$DB" --export "$OUT/export.json" \
       run-corpus --file "$OUT/sweep_corpus.json" > "$OUT/sweep_actual.json" 2> "$OUT/sweep_run.log"
-  out=$("$PY" "$ROOT/harness/diff.py" "$OUT/sweep_expected.json" "$OUT/sweep_actual.json" 2>&1)
-  line=$(printf '%s\n' "$out" | grep -E '^(PASS|REFUSING)' | head -1)
+  out=$("$PY" "$ROOT/harness/diff.py" "$OUT/sweep_expected.json" "$OUT/sweep_actual.json" \
+        --min-compared "${RUSTORM_MIN_COMPARED_SWEEP:-1}" 2>&1)
+  line=$(printf '%s\n' "$out" | grep -E '^(PASS|REFUSING|SHORT)' | head -1)
   case "$line" in PASS*) stage "kernel sweep" OK "$line" ;;
                   *)     stage "kernel sweep" FAIL "${line:-$(printf '%s' "$out" | tail -1)}" ;; esac
 else
@@ -114,8 +121,9 @@ then
   "$ROOT/target/release/odoo-poc" --db "$DB" --export "$OUT/export.json" \
       run-corpus --file "$ROOT/harness/corpus.json" > "$OUT/actual.json" 2> "$OUT/corpus.log"
 
-  out=$("$PY" "$ROOT/harness/diff.py" "$OUT/expected.json" "$OUT/actual.json" 2>&1)
-  line=$(printf '%s\n' "$out" | grep -E '^(PASS|REFUSING)' | head -1)
+  out=$("$PY" "$ROOT/harness/diff.py" "$OUT/expected.json" "$OUT/actual.json" \
+        --min-compared "${RUSTORM_MIN_COMPARED_CORPUS:-200}" 2>&1)
+  line=$(printf '%s\n' "$out" | grep -E '^(PASS|REFUSING|SHORT)' | head -1)
   case "$line" in PASS*) stage "shadow corpus" OK "$line" ;;
                   *)     stage "shadow corpus" FAIL "${line:-$(printf '%s' "$out" | tail -1)}" ;; esac
 else
@@ -134,8 +142,9 @@ else
       <<< "exec(open('$ROOT/harness/gen_expected.py').read())" > "$OUT/fuzz_expgen_$seed.log" 2>&1
     "$ROOT/target/release/odoo-poc" --db "$DB" --export "$OUT/export.json" \
         run-corpus --file "$OUT/fuzz_$seed.json" > "$OUT/fuzz_act_$seed.json" 2>/dev/null
-    line=$("$PY" "$ROOT/harness/diff.py" "$OUT/fuzz_exp_$seed.json" "$OUT/fuzz_act_$seed.json" 2>&1 \
-           | grep -E '^(PASS|REFUSING)' | head -1)
+    line=$("$PY" "$ROOT/harness/diff.py" "$OUT/fuzz_exp_$seed.json" "$OUT/fuzz_act_$seed.json" \
+           --min-compared "${RUSTORM_MIN_COMPARED_FUZZ:-1}" 2>&1 \
+           | grep -E '^(PASS|REFUSING|SHORT)' | head -1)
     case "$line" in PASS*) ;; *) fuzz_fail=1 ;; esac
     fuzz_note="$fuzz_note seed$seed:${line%% *}"
   done
