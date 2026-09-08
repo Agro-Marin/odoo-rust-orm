@@ -13,6 +13,16 @@ CONNINFO = None
 PSYCOPG_CONNINFO = None
 _ADAPT = None
 
+# The kill switch for THIS layer. `install()` rebinds the pool class once
+# and for the life of the process; whether the pool built for the armed
+# database is a rust one or the psycopg one Odoo would have built is decided
+# here, and `set_active` closes the database's pools so the next borrow
+# rebuilds them through the factory. The ORM shim's mode used to be the only
+# switch, and it only governed routing: with it off, every cursor in the
+# process was still a tokio-postgres one, and the driver swap the module
+# promises not to make without being asked was already made.
+ACTIVE = False
+
 
 def _adapt_cnx():
     global _ADAPT
@@ -355,7 +365,8 @@ class FakeConnection:
         return contextlib.nullcontext()
 
 
-INSTALLED = {"count": 0, "connects": 0, "reused": 0, "delegated": 0, "copies": 0}
+INSTALLED = {"count": 0, "connects": 0, "reused": 0, "delegated": 0, "copies": 0,
+             "inactive": 0, "switches": 0}
 
 def _dbname(dsn):
     if isinstance(dsn, dict):
@@ -403,7 +414,7 @@ def _parse_conninfo(text):
 
 
 def pool_stats():
-    return dict(INSTALLED)
+    return {"active": ACTIVE, **INSTALLED}
 
 
 class _ConnInfo:
@@ -658,6 +669,38 @@ class _RustPool:
                 self._max_size = max(1, int(max_size))
 
 
+def _close_armed_pools():
+    # A pool is built ONCE per dsn and cached, so a change in what the factory
+    # returns only reaches pools created after it. Closing the armed
+    # database's pools is what makes the next borrow go through the factory
+    # again; connections already checked out keep working and are closed on
+    # return instead of pooled.
+    dbname = _dbname(CONNINFO)
+    if not dbname:
+        return
+    from odoo.db import registry as db_registry
+
+    with contextlib.suppress(Exception):
+        db_registry.close_db(dbname)
+
+
+def set_active(flag):
+    """Turn the rust connection layer on or off for the armed database.
+
+    Off means the factory builds psycopg pools, so from the next borrow on
+    the process runs on the driver it would have had without this module;
+    on means rust pools. Either way the existing pools are closed so the
+    change takes effect now rather than on the next process.
+    """
+    global ACTIVE
+    flag = bool(flag)
+    if flag == ACTIVE:
+        return
+    ACTIVE = flag
+    INSTALLED["switches"] += 1
+    _close_armed_pools()
+
+
 def install():
     from odoo.db import lifecycle as lifecycle_module
     from odoo.db import pool as pool_module
@@ -668,6 +711,9 @@ def install():
         # The engine is armed for ONE database. A process holding pools for
         # several -- the database manager, a cron sweeping the cluster --
         # keeps psycopg for the others.
+        if not ACTIVE:
+            INSTALLED["inactive"] += 1
+            return psycopg_pool_class(conninfo, **kwargs)
         dbname = (kwargs.get("kwargs") or {}).get("dbname") or _dbname(conninfo)
         if CONNINFO and dbname and dbname != _dbname(CONNINFO):
             INSTALLED["delegated"] += 1
@@ -691,9 +737,4 @@ def install():
     # itself installed. Closing the armed database's existing pools is what
     # makes the rebind take effect, and without it a gate comparing the two
     # cursors compares psycopg with psycopg and reports perfect agreement.
-    dbname = _dbname(CONNINFO)
-    if dbname:
-        from odoo.db import registry as db_registry
-
-        with contextlib.suppress(Exception):
-            db_registry.close_db(dbname)
+    _close_armed_pools()

@@ -61,6 +61,9 @@ SEAMS = [
     ("odoo.fields", "Many2oneReference", ["model_field"]),
     ("odoo.orm.runtime.backend", None, ["COPY_THRESHOLD"]),
     ("odoo.db", None, ["get_connection_info_for_database"]),
+    # `rust_db_shim._close_armed_pools` reaches it as an attribute of the
+    # package, not a submodule; the kill switch is inert if it goes away.
+    ("odoo.db", "registry", ["close_db"]),
 ]
 
 FROM_RE = re.compile(r"^\s*from\s+(odoo[\w.]*)\s+import\s+([\w, ]+)", re.M)
