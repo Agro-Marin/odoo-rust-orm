@@ -1352,6 +1352,16 @@ psycopg rather than broken), turning routing off without a restart
 (`ir.config_parameter`), the absence of a concurrent end-to-end
 measurement, and the inequality against an unset value (below).
 
+- **Non-stored related fields are read as SQL only where Odoo reads them as
+  SQL.** `_traverse_related_sql` allows the correlated subquery for `env.su`,
+  `compute_sudo` and `inherited` fields, and computes every other related
+  field in Python under the caller's own access. The subquery carries no ACL
+  and no rules, so the kernel used to read the comodel unfiltered for exactly
+  the fields Odoo would not; it now refuses them for a non-superuser caller
+  (in `search_read` fields, `_read_group` groupbys and aggregates, and
+  `ORDER BY`), and the export carries the two flags it needs to tell. The
+  `ir_model` bootstrap cannot see either flag, which is one more thing it
+  refuses.
 - **Python model overrides** (`_search`, `_compute_display_name`, computed
   fields): invisible to a registry built from the DB alone. This is the
   fundamental M2 problem — the business-logic layer. Fields declaring

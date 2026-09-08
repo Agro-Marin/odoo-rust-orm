@@ -131,6 +131,16 @@ pub struct Field {
     /// and the compiler refuses a traversal it cannot decide instead of
     /// answering with rules Odoo would have skipped.
     pub bypass_search_access: Option<bool>,
+    /// A non-stored related field is only readable as SQL when Odoo would
+    /// read it as SQL: `_traverse_related_sql` requires `env.su`, this flag,
+    /// or `inherited`. Otherwise Odoo computes it in Python under the
+    /// caller's own access, and a correlated subquery here would read the
+    /// comodel with no ACL and no rules.
+    pub compute_sudo: bool,
+
+    /// Reached through `_inherits`: the parent's rules are already ANDed
+    /// onto the child's search, so the traversal needs no filter of its own.
+    pub inherited: bool,
 }
 
 impl Field {
@@ -706,6 +716,8 @@ impl Registry {
 
                     falsy,
                     bypass_search_access: None,
+                    compute_sudo: false,
+                    inherited: false,
                 },
             );
         }
@@ -786,6 +798,14 @@ impl Registry {
                         bypass_search_access: ef
                             .get("bypass_search_access")
                             .and_then(serde_json::Value::as_bool),
+                        compute_sudo: ef
+                            .get("compute_sudo")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false),
+                        inherited: ef
+                            .get("inherited")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false),
                     },
                 );
             }

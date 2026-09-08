@@ -85,6 +85,13 @@ def export_registry(reg):
                 # a field readable only by some groups: Odoo raises AccessError
                 # rather than omitting it, and the column says nothing about it
                 "groups": _s(getattr(f, "groups", None)),
+                # a non-stored related field reaches SQL in Odoo only through
+                # `_traverse_related_sql`, which insists on `env.su`, this
+                # flag, or `inherited`; any other one is computed in Python
+                # under the caller's access. The kernel refuses what Odoo
+                # would refuse, and without these two facts it could not.
+                "compute_sudo": bool(getattr(f, "compute_sudo", False)),
+                "inherited": bool(getattr(f, "inherited", False)),
                 # Odoo merges this into the comodel's environment when it
                 # reads or traverses the field, and 10 of this database's 221
                 # x2many fields use it to turn the archived filter OFF

@@ -42,7 +42,108 @@ fn field(name: &str, ttype: FieldType) -> Field {
         // What a live export records for a field that does not bypass; a
         // bootstrap registry would carry `None` and refuse the traversal.
         bypass_search_access: Some(false),
+        compute_sudo: false,
+        inherited: false,
     }
+}
+
+fn related(name: &str, path: &str, ttype: FieldType) -> Field {
+    let mut f = field(name, ttype);
+    f.has_column = false;
+    f.stored = false;
+    f.related = Some(path.into());
+    f
+}
+
+fn user_ctx(reg: &Registry) -> ExprCtx<'_> {
+    ExprCtx::new(reg, "en_US", 1)
+        .with_access(2, std::sync::Arc::new(std::collections::HashSet::new()))
+}
+
+#[test]
+fn a_related_field_is_refused_for_a_user_unless_sudoed_or_inherited() {
+    let reg = registry(vec![
+        model(
+            "res.partner",
+            "id",
+            vec![
+                field("id", FieldType::Integer),
+                m2o("country_id", "res.country"),
+                related("country_name", "country_id.name", FieldType::Char),
+            ],
+        ),
+        model(
+            "res.country",
+            "name",
+            vec![
+                field("id", FieldType::Integer),
+                field("name", FieldType::Char),
+            ],
+        ),
+    ]);
+    let partner = reg.get("res.partner").unwrap();
+    let mut f = partner.fields["country_name"].clone();
+
+    let su = ExprCtx::new(&reg, "en_US", 1);
+    assert!(
+        su.read_expr(partner, &f, "res_partner").is_ok(),
+        "superuser reads it"
+    );
+
+    let err = user_ctx(&reg)
+        .read_expr(partner, &f, "res_partner")
+        .expect_err("a plain related field is computed in Python for a user");
+    assert!(
+        err.to_string().contains("neither sudoed nor inherited"),
+        "got {err}"
+    );
+
+    f.compute_sudo = true;
+    assert!(
+        user_ctx(&reg).read_expr(partner, &f, "res_partner").is_ok(),
+        "compute_sudo"
+    );
+
+    f.compute_sudo = false;
+    f.inherited = true;
+    assert!(
+        user_ctx(&reg).read_expr(partner, &f, "res_partner").is_ok(),
+        "inherited"
+    );
+}
+
+#[test]
+fn ordering_by_a_related_field_is_refused_for_a_user_the_same_way() {
+    let reg = registry(vec![
+        model(
+            "res.partner",
+            "id",
+            vec![
+                field("id", FieldType::Integer),
+                m2o("country_id", "res.country"),
+                related("country_name", "country_id.name", FieldType::Char),
+            ],
+        ),
+        model(
+            "res.country",
+            "name",
+            vec![
+                field("id", FieldType::Integer),
+                field("name", FieldType::Char),
+            ],
+        ),
+    ]);
+    let partner = reg.get("res.partner").unwrap();
+    let ctx = user_ctx(&reg);
+    let err = match parse_order(&ctx, partner, "res_partner", "country_name") {
+        Err(e) => e,
+        Ok(_) => panic!("ordering reads the same subquery and must be refused too"),
+    };
+    assert!(
+        err.to_string()
+            .contains("cannot order res.partner by related"),
+        "got {err:#}"
+    );
 }
 
 #[test]
