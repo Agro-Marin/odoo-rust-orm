@@ -147,6 +147,86 @@ fn ordering_by_a_related_field_is_refused_for_a_user_the_same_way() {
 }
 
 #[test]
+fn nesting_deeper_than_odoo_allows_is_refused_at_parse_time() {
+    // `[op, leaf, <rest>]` with the operator alternating never flattens, so
+    // every level is one more level of structural depth, as Odoo counts it.
+    fn alternating(levels: usize) -> serde_json::Value {
+        let leaf = json!(["name", "=", "x"]);
+        let mut dom = vec![leaf.clone()];
+        for i in 0..levels {
+            let op = if i % 2 == 0 { "&" } else { "|" };
+            let mut next = vec![json!(op), leaf.clone()];
+            next.extend(dom);
+            dom = next;
+        }
+        serde_json::Value::Array(dom)
+    }
+    assert!(domain::parse(&alternating(domain::MAX_DOMAIN_NESTING - 1)).is_ok());
+    let err =
+        domain::parse(&alternating(domain::MAX_DOMAIN_NESTING + 1)).expect_err("one past the cap");
+    assert!(err.to_string().contains("nesting too deep"), "got {err}");
+}
+
+#[test]
+fn a_flat_run_of_the_same_operator_is_one_level_and_compiles() {
+    // 20,000 leaves under 19,999 `&`: Odoo's DomainNary flattens this to one
+    // AND, and so must the parser, or the tree is 20,000 deep and the
+    // compiler recurses over every level of it.
+    let reg = base_registry();
+    let mut dom: Vec<serde_json::Value> = vec![json!("&"); 19_999];
+    dom.extend((0..20_000).map(|i| json!(["credit_limit", ">", i])));
+    let node = domain::parse(&serde_json::Value::Array(dom)).expect("flattened");
+    match &node {
+        domain::Node::And(v) => assert_eq!(v.len(), 20_000),
+        other => panic!("expected one AND, got {other:?}"),
+    }
+    let sql = compile(
+        &reg,
+        json!([
+            "&",
+            ["name", "=", "a"],
+            "&",
+            ["name", "=", "b"],
+            ["name", "=", "c"]
+        ]),
+    );
+    assert_eq!(
+        sql.matches("AND").count(),
+        2,
+        "one flat AND of three: {sql}"
+    );
+}
+
+#[test]
+fn a_run_of_negations_collapses_in_pairs() {
+    // Odoo's `~~x` is `x`. Ten thousand `!` used to build a tree ten thousand
+    // deep that `compile` then recursed over until the stack ran out.
+    let reg = base_registry();
+    let mut dom: Vec<serde_json::Value> = vec![json!("!"); 10_000];
+    dom.push(json!(["name", "=", "x"]));
+    let node = domain::parse(&serde_json::Value::Array(dom)).expect("even count: the leaf");
+    assert!(matches!(node, domain::Node::Leaf(_)), "got {node:?}");
+
+    let mut dom: Vec<serde_json::Value> = vec![json!("!"); 10_001];
+    dom.push(json!(["name", "=", "x"]));
+    let node = domain::parse(&serde_json::Value::Array(dom)).expect("odd count: one Not");
+    assert!(matches!(node, domain::Node::Not(_)), "got {node:?}");
+
+    let sql = compile(
+        &reg,
+        serde_json::Value::Array(
+            std::iter::repeat_n(json!("!"), 10_001)
+                .chain([json!(["name", "=", "x"])])
+                .collect(),
+        ),
+    );
+    assert!(
+        sql.contains("<>") || sql.contains("IS NULL"),
+        "negated once: {sql}"
+    );
+}
+
+#[test]
 fn a_field_group_spec_is_evaluated_the_way_has_groups_does() {
     let reg = base_registry();
     let mut f = field("secret", FieldType::Char);

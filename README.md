@@ -1362,6 +1362,13 @@ measurement, and the inequality against an unset value (below).
   `ORDER BY`), and the export carries the two flags it needs to tell. The
   `ir_model` bootstrap cannot see either flag, which is one more thing it
   refuses.
+- **Domain nesting is capped at 100 structural levels**, as Odoo's
+  `MAX_DOMAIN_NESTING` caps it, and counted the same way: a run of the same
+  n-ary operator is one level (the parser flattens it, as `DomainNary` does)
+  and `!!x` is `x`. Before that, `Compiler::MAX_DEPTH` counted only `any`
+  subqueries, and a flat prefix domain of ten thousand `"!"` tokens — well
+  inside the 256 KiB request body — built a tree that deep and aborted the
+  process on the recursion; the parser refuses it now, before any walk exists.
 - **Python model overrides** (`_search`, `_compute_display_name`, computed
   fields): invisible to a registry built from the DB alone. This is the
   fundamental M2 problem — the business-logic layer. Fields declaring
