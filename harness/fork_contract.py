@@ -94,7 +94,7 @@ def main():
         odoo.addons.__path__.append(os.path.join(ODOO, "addons"))
     except ImportError as exc:
         print("FORK SKIP: odoo is not importable from %s (%s)" % (ODOO, exc))
-        return 0
+        return 3  # skipped, not passed: verify.sh reads the SKIP line, a shell reads the code
 
     failures = []
     wanted = collect()

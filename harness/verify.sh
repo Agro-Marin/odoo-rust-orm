@@ -58,7 +58,14 @@ if [ -n "$BUILD" ]; then
     stage "install($BUILD)" FAIL "see $OUT/install.log"; fi
 fi
 
-if out=$("$PY" "$ROOT/harness/fork_contract.py" 2>&1); then
+# A stage that could not run says so with a SKIP line and exit 3, and the
+# line is read BEFORE the exit code: `fork_contract`, `load_into_odoo` and
+# `copy_path` used to exit 0 on their skip path, so a checkout with no Odoo
+# was reported as three green stages that had checked nothing.
+if out=$("$PY" "$ROOT/harness/fork_contract.py" 2>&1); then rc=0; else rc=$?; fi
+if printf '%s' "$out" | grep -qE '^FORK SKIP'; then
+  stage "fork contract" SKIP "$(printf '%s' "$out" | grep -E '^FORK SKIP' | head -1 | cut -c1-70)"
+elif [ "$rc" = 0 ]; then
   stage "fork contract" OK "$(printf '%s' "$out" | grep -E '^FORK' | head -1)"
 else
   stage "fork contract" FAIL "$(printf '%s' "$out" | grep -E '^ *FAIL|^FORK' | head -1)"
@@ -172,11 +179,16 @@ else
 probe() {
   local mode="$1" want="$2" name="$3"
   if PYTHONUNBUFFERED=1 "$ROOT/target/release/probe_audit" "$mode" "${@:4}" \
-       > "$OUT/probe_$mode.log" 2>&1; then
+       > "$OUT/probe_$mode.log" 2>&1; then rc=0; else rc=$?; fi
+  if [ "$rc" = 0 ]; then
     if grep -q "$want" "$OUT/probe_$mode.log"; then stage "$name" OK "$(grep -o "$want.*" "$OUT/probe_$mode.log" | head -1)"
     else stage "$name" FAIL "$(grep -a MISMATCH "$OUT/probe_$mode.log" | head -1 | cut -c1-70)"; fi
   else
-    stage "$name" SKIP "see $OUT/probe_$mode.log"; fi
+    # The probe runs against the same database as every other stage, so a
+    # non-zero exit is the probe crashing or refusing -- a battery failure,
+    # not a missing prerequisite. It was reported SKIP, which reads as
+    # "nothing to see" for the one stage that covers the cursor's type layer.
+    stage "$name" FAIL "exit $rc: $(tail -1 "$OUT/probe_$mode.log" | cut -c1-60)"; fi
 }
 probe types "mismatches=0" "cursor type layer"
 probe race  "wrong=0"      "concurrency"       "$OUT/export.json"
@@ -187,7 +199,10 @@ if [ -f "$ROOT/target/release/libengine_py.so" ]; then
      RUSTORM_OTHER_DB="${RUSTORM_OTHER_DB:-}" \
      "$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
      < "$ROOT/harness/load_into_odoo.py" > "$OUT/load.log" 2>&1
-  then
+  then rc=0; else rc=$?; fi
+  if grep -aqE '^LOAD SKIP' "$OUT/load.log"; then
+    stage "load into odoo" SKIP "$(grep -aE '^LOAD SKIP' "$OUT/load.log" | head -1 | cut -c1-70)"
+  elif [ "$rc" = 0 ]; then
     stage "load into odoo" OK "$(grep -acE '^LOAD (read|other db|fork exit)' "$OUT/load.log") checks"
   else
     stage "load into odoo" FAIL "$(grep -aE '^LOAD|Error' "$OUT/load.log" | tail -1 | cut -c1-70)"
@@ -201,7 +216,10 @@ if [ -f "$ROOT/target/release/libengine_py.so" ]; then
   if PYTHONPATH="$PYMOD" \
      "$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
      < "$ROOT/harness/copy_path.py" > "$OUT/copy.log" 2>&1
-  then
+  then rc=0; else rc=$?; fi
+  if grep -aqE '^COPY SKIP' "$OUT/copy.log"; then
+    stage "copy encoder" SKIP "$(grep -aE '^COPY SKIP' "$OUT/copy.log" | head -1 | cut -c1-70)"
+  elif [ "$rc" = 0 ]; then
     stage "copy encoder" OK "$(grep -a '^COPY streams' "$OUT/copy.log" | head -1 | cut -c1-58)"
   else
     stage "copy encoder" FAIL "$(grep -aE '^ *COPY MISMATCH|^COPY ' "$OUT/copy.log" | tail -1 | cut -c1-70)"

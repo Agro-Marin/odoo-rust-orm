@@ -7,7 +7,7 @@ from odoo.modules.registry import Registry
 
 if not os.environ.get("PYTHONPATH"):
     print("COPY SKIP: no PYTHONPATH; engine_py must be importable")
-    sys.exit(0)
+    sys.exit(3)  # skipped, not passed
 
 import engine_py  # noqa: E402
 
