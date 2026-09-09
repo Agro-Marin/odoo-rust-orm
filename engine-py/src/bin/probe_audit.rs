@@ -186,8 +186,10 @@ READ_ONLY_CASES = [
 def norm(v):
     if isinstance(v, memoryview):
         return bytes(v)
-    if isinstance(v, decimal.Decimal):
-        return float(v)
+    # No Decimal -> float here. That normalisation ran on BOTH sides, so the
+    # rust cursor returning a float where psycopg returns a Decimal compared
+    # equal for as long as it existed -- the gate could not see the one type
+    # it was most worth checking. The types are part of what is compared now.
     if isinstance(v, tuple):
         return list(v)
     return v

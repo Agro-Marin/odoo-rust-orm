@@ -478,6 +478,20 @@ struct DateTimeTypes {
     timedelta: Py<PyAny>,
     uuid: Py<PyAny>,
     utc: Py<PyAny>,
+    /// `decimal.Decimal`, because that is what psycopg returns for NUMERIC.
+    /// A float is a different value -- `0.1` is not `Decimal('0.1')` -- and
+    /// a NUMERIC wider than f64 came back as NaN, silently.
+    decimal: Py<PyAny>,
+}
+
+fn decimal_to_py(
+    py: Python<'_>,
+    dt: &DateTimeTypes,
+    d: rust_decimal::Decimal,
+) -> PyResult<Py<PyAny>> {
+    // Through the string form: rust_decimal keeps the wire scale, so
+    // `1.250` stays `Decimal('1.250')` as psycopg would have it.
+    Ok(dt.decimal.bind(py).call1((d.to_string(),))?.unbind())
 }
 
 static DT_TYPES: pyo3::sync::PyOnceLock<DateTimeTypes> = pyo3::sync::PyOnceLock::new();
@@ -492,6 +506,7 @@ fn dt_types(py: Python<'_>) -> PyResult<&'static DateTimeTypes> {
             timedelta: m.getattr("timedelta")?.unbind(),
             uuid: py.import("uuid")?.getattr("UUID")?.unbind(),
             utc: m.getattr("timezone")?.getattr("utc")?.unbind(),
+            decimal: py.import("decimal")?.getattr("Decimal")?.unbind(),
         })
     })
 }
@@ -778,10 +793,7 @@ fn cell_to_py(py: Python<'_>, row: &tokio_postgres::Row, i: usize) -> PyResult<P
                 .try_get::<_, Option<rust_decimal::Decimal>>(i)
                 .map_err(rerr)?
             {
-                Some(v) => {
-                    use rust_decimal::prelude::ToPrimitive;
-                    v.to_f64().unwrap_or(f64::NAN).into_py_any(py)?
-                }
+                Some(v) => decimal_to_py(py, dt_types(py)?, v)?,
                 None => py.None(),
             }
         }
@@ -909,10 +921,7 @@ fn cell_to_py(py: Python<'_>, row: &tokio_postgres::Row, i: usize) -> PyResult<P
                     Type::OID => arr!(u32),
 
                     Type::NUMERIC => {
-                        arr_conv!(rust_decimal::Decimal, |x: rust_decimal::Decimal| {
-                            use rust_decimal::prelude::ToPrimitive;
-                            x.to_f64().unwrap_or(f64::NAN).into_py_any(py)
-                        })
+                        arr_conv!(rust_decimal::Decimal, |x| decimal_to_py(py, dt, x))
                     }
                     Type::DATE => arr_conv!(NaiveDate, |x| date_to_py(py, dt, x)),
                     Type::TIME => arr_conv!(chrono::NaiveTime, |x| time_to_py(py, dt, x)),

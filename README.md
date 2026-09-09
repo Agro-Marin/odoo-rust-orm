@@ -1270,6 +1270,12 @@ array fall through to a String attempt that failed into `py.None()`, so
 `int8[]`, `bool[]` and `float8[]` columns read as SQL NULL **with no error**.
 The fallback now raises rather than inventing a NULL.
 
+`NUMERIC` read back as a `float` where psycopg returns a `Decimal`, and the
+gate could not see it: `probe_audit.norm` turned Decimals into floats on BOTH
+sides, so the one type most worth checking compared equal for as long as the
+defect existed. The cursor builds `decimal.Decimal` now and the gate compares
+the types.
+
 ## The write path the shim owns
 
 The kernel is a read engine and every write goes to Python -- with one
