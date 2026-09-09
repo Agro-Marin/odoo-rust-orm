@@ -129,6 +129,76 @@ def main():
     else:
         print("  (rust_engine addon not found beside the harness; switch untested)")
 
+    # The connection layer's own kill switch. `install()` rebinds the pool
+    # class once; whether the factory builds a rust pool or the psycopg one
+    # Odoo would have built is `ACTIVE`, and every switch closes the armed
+    # database's pools so the next borrow goes through the factory again.
+    # Odoo is not importable here, so `odoo.db.*` is three fake modules: a
+    # pool class that records nothing, and a `close_db` that records calls.
+    import types
+
+    closed = []
+
+    class FakePsycopgPool:
+        def __init__(self, conninfo="", **kwargs):
+            self.conninfo, self.kwargs = conninfo, kwargs
+
+        @staticmethod
+        def check_connection(conn):
+            return None
+
+    names = ("odoo", "odoo.db", "odoo.db.pool", "odoo.db.lifecycle", "odoo.db.registry")
+    saved_modules = {n: sys.modules.get(n) for n in names}
+    odoo_mod, db_mod = types.ModuleType("odoo"), types.ModuleType("odoo.db")
+    pool_mod, life_mod = types.ModuleType("odoo.db.pool"), types.ModuleType("odoo.db.lifecycle")
+    reg_mod = types.ModuleType("odoo.db.registry")
+    pool_mod._PsycopgPool = life_mod._PsycopgPool = FakePsycopgPool
+    reg_mod.close_db = closed.append
+    odoo_mod.db, db_mod.pool, db_mod.lifecycle, db_mod.registry = db_mod, pool_mod, life_mod, reg_mod
+    sys.modules.update({"odoo": odoo_mod, "odoo.db": db_mod, "odoo.db.pool": pool_mod,
+                        "odoo.db.lifecycle": life_mod, "odoo.db.registry": reg_mod})
+    saved_db = (db_shim.ACTIVE, db_shim.CONNINFO, dict(db_shim.INSTALLED))
+    try:
+        db_shim.ACTIVE = False
+        db_shim.CONNINFO = "host=/tmp user=probe dbname=armed"
+        db_shim.install()
+        check("install closes the armed db's pools once", closed, ["armed"])
+        factory = pool_mod._PsycopgPool
+        check("both names are rebound to one object", life_mod._PsycopgPool is factory, True)
+        check("the factory carries check_connection for the tests that patch it",
+              factory.check_connection is FakePsycopgPool.check_connection, True)
+
+        inactive_before = db_shim.INSTALLED["inactive"]
+        pool = factory("dbname=armed", kwargs={"dbname": "armed"})
+        check("off: the psycopg pool, even for the armed db", type(pool).__name__, "FakePsycopgPool")
+        check("off: counted as inactive", db_shim.INSTALLED["inactive"], inactive_before + 1)
+
+        db_shim.set_active(True)
+        check("on: the switch closes the pools again", closed, ["armed", "armed"])
+        pool = factory("dbname=armed", kwargs={"dbname": "armed"})
+        check("on: a rust pool for the armed db", type(pool).__name__, "_RustPool")
+        other = factory("dbname=other", kwargs={"dbname": "other"})
+        check("on: still psycopg for any other db", type(other).__name__, "FakePsycopgPool")
+
+        db_shim.set_active(True)
+        check("a switch to the same state closes nothing", len(closed), 2)
+
+        db_shim.set_active(False)
+        check("off again: closed once more", len(closed), 3)
+        check("off again: psycopg once more",
+              type(factory("dbname=armed", kwargs={"dbname": "armed"})).__name__, "FakePsycopgPool")
+        check("two real switches counted", db_shim.INSTALLED["switches"], 2)
+        check("the flag is reported", db_shim.pool_stats()["active"], False)
+    finally:
+        db_shim.ACTIVE, db_shim.CONNINFO = saved_db[0], saved_db[1]
+        db_shim.INSTALLED.clear()
+        db_shim.INSTALLED.update(saved_db[2])
+        for name, mod in saved_modules.items():
+            if mod is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = mod
+
     recs = [
         {"id": 1, "partner_id": [7, "Seven"], "user_id": [2, "Admin"], "name": "a"},
         {"id": 2, "partner_id": False, "user_id": [3, "Bob"], "name": "b"},
