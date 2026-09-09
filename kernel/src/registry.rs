@@ -1033,11 +1033,16 @@ impl Registry {
         // has no such column and every group rule grants. Asked of the
         // schema rather than assumed, so one binary serves both, and read
         // as a boolean so the classification cannot drift from the fork's
-        // own spelling of the value.
+        // own spelling of the value. Asked of THE `ir_rule` the next query
+        // will read -- `regclass` resolves it through the search_path --
+        // and not of `information_schema.columns` by name, which answers
+        // for any schema on the server: a database that carries a second
+        // `ir_rule` somewhere else got the fork's SQL against a stock table.
         let has_composition = client
             .query_opt(
-                "SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'ir_rule' AND column_name = 'composition'",
+                "SELECT 1 FROM pg_attribute
+                 WHERE attrelid = 'ir_rule'::regclass
+                   AND attname = 'composition' AND NOT attisdropped",
                 &[],
             )
             .await?

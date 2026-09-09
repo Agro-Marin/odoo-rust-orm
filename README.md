@@ -1374,9 +1374,11 @@ measurement, and the inequality against an unset value (below).
   "has groups" alone, so a restriction became one more way in. It now reads
   the column when the schema has it — stock Odoo does not, and there every
   group rule grants — and `security::combine_rules` is the one place the
-  combination is decided, unit-tested against the four shapes. Latent on the
-  reference database, where every active rule is `grant`; wrong the day one
-  is not.
+  combination is decided, unit-tested against the four shapes, and the
+  loader is tested against a live PostgreSQL with and without the column
+  (`kernel/tests/db.rs`, ignored unless `RUSTORM_TEST_DSN` is set). Latent on
+  the reference database, where every active rule is `grant`; wrong the day
+  one is not.
 - **25 of 222 ruled models on a real database** cannot have their rules
   compiled and fall back to Python — `account.move`, `account.move.line`,
   `sale.order`, `sale.order.line`, `hr.employee` among them. Every one is now
