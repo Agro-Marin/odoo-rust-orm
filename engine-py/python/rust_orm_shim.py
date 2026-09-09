@@ -676,6 +676,14 @@ def install():
         orig_web_search_read = WebBase.web_search_read
         from odoo.tools.cache_version import _canonical_digest
 
+        def _stamp_envelope_version(records):
+            try:
+                from odoo.http import request
+            except ModuleNotFoundError:
+                return
+            if request:
+                request._response_version = _canonical_digest(records)
+
         def web_search_read(self, domain, specification, offset=0, limit=None,
                             order=None, count_limit=None):
             plan = None
@@ -706,6 +714,17 @@ def install():
                         "records": _revive_records(self, _web_records(recs, named, plain)),
                     }
                     result["__version"] = _canonical_digest(result)
+                    # Python does not stamp the response ENVELOPE from
+                    # `web_search_read`; it gets there as a side effect of
+                    # the inner `records.web_read(specification)`, which
+                    # carries `@versioned_envelope` and digests the record
+                    # list alone. A routed answer never makes that call, so
+                    # the top-level "version" key simply vanished from every
+                    # `web_search_read` the kernel served -- the records were
+                    # byte-identical and one envelope key was missing, which
+                    # is why the shadow comparison (it diffs the METHOD's
+                    # result) reported no divergence.
+                    _stamp_envelope_version(result["records"])
                     if MODE != "shadow" and not _verify_this_one():
                         return result
                     original = _baseline(

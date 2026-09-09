@@ -285,6 +285,17 @@ def main():
     check("kernel declined is refused", one(ok, missing), "refused")
     check("kernel answered where python raised", one(missing, ok), "fail")
     check("both denied is a pass, and denied", one(denied_py, denied_rs), "pass+denied")
+    # The discriminating case, and the one this file could not fail before:
+    # Python denied access while the kernel DECLINED the case for its own
+    # reason. Those are two unrelated facts and nothing was compared, so it is
+    # a refusal, not a pass. `denied_rs` above already said "access denied" --
+    # the fixture encoded the intent all along, and the code never read it, so
+    # the test passed either way. 125 cases of the 867-model sweep were
+    # counted as agreed denials on that basis.
+    declined_rs = {"id": "c", "ok": False,
+                   "error": "account.move overrides the read path in Python"}
+    check("python denied, kernel declined, is refused",
+          one(denied_py, declined_rs), "refused")
     check("both failed otherwise is vacuous", one(missing, missing), "vacuous")
     p, _f, _r, v, _d = diff.score({"c": missing}, {"c": missing})
     check("vacuous is not a pass", (len(p), len(v)), (0, 1))

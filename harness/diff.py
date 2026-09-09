@@ -63,11 +63,26 @@ def score(expected, actual):
                      exp.get("error", ""), act.get("result"))
                 )
             else:
-                if str(exp.get("error_type", "")) == "AccessError":
+                # BOTH raised -- and which bucket that belongs in depends on
+                # what the KERNEL raised, not only on what Python raised.
+                # Checking one side counted 125 cases as "both denied access"
+                # where the kernel had in fact DECLINED the case ("account.move
+                # overrides the read path in Python"). Nothing was compared in
+                # those: Python's AccessError and the kernel's refusal are two
+                # unrelated facts, and calling them agreement inflates the pass
+                # count with cases the kernel never attempted.
+                kernel_error = str(act.get("error", ""))
+                if str(exp.get("error_type", "")) != "AccessError":
+                    vacuous.append((cid, str(exp.get("error", ""))[:90]))
+                elif kernel_error.startswith("access denied"):
                     denied.append(cid)
                     passed.append(cid + " (both denied access)")
                 else:
-                    vacuous.append((cid, str(exp.get("error", ""))[:90]))
+                    # Conservative direction on purpose: a denial the kernel
+                    # phrases some new way lands here and UNDERSTATES the pass
+                    # count, rather than a refusal landing in `denied` and
+                    # overstating it.
+                    refused.append((cid, kernel_error))
             continue
         ok, path = eq(exp["result"], act["result"], "$")
         if ok:

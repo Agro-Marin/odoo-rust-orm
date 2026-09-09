@@ -29,6 +29,24 @@ mkdir -p "$OUT"
 declare -a NAMES RESULTS NOTES
 stage() { NAMES+=("$1"); RESULTS+=("$2"); NOTES+=("${3:-}"); printf '  %-22s %s %s\n' "$1" "$2" "${3:-}"; }
 
+# A free port, scanned rather than assumed. This machine is shared: a peer's
+# HOOT warm runners sit on 8085-8089 for hours and a peer's install loop
+# rebinds its port every round, so a FIXED default collides intermittently --
+# which is the worst frequency, because the run that hits it looks like a
+# code failure. An explicit RUSTORM_*_PORT still wins, for the case where
+# somebody needs to know where to look.
+#
+# This narrows the window rather than closing it: something can still take
+# the port between the check and the bind. That is why the stages that use
+# these also PROVE their server came up instead of trusting it.
+pick_port() {
+  local start="$1" p
+  for p in $(seq "$start" $((start + 40))); do
+    ss -ltn 2>/dev/null | grep -q ":$p " || { echo "$p"; return 0; }
+  done
+  echo "$start"   # nothing free in the range; let the caller's guard report it
+}
+
 echo "verifying '$DB'   (artifacts in $OUT)"
 [ -x "$PY" ] || { echo "no interpreter at $PY (set RUSTORM_PYTHON)"; exit 2; }
 
@@ -132,7 +150,16 @@ elif "$ROOT/target/release/phase2_verify" > "$OUT/sweep.log" 2>&1; then
 else
   stage "registry sweep" FAIL "$(grep -ao 'mismatch.*' "$OUT/sweep.log" | head -1 | cut -c1-80)"; fi
 
-if "$ROOT/target/release/phase1_shell" > "$OUT/phase1.log" 2>&1; then
+# The baseline has to be the one regenerated AFTER the last stage that wrote
+# to the database. `sweep_corpus.py` creates two partners, so the copy
+# `gen_expected.py` leaves at its default path -- written by "warm computes",
+# before the sweep -- describes a database that no longer exists by the time
+# phase1_shell reads it, and c21 mismatches by exactly those two rows. It
+# self-heals on a second run against the same database, so the stage is red
+# only on a first full run against a fresh one, which is CI's case and no
+# developer's.
+if RUSTORM_EXPECTED="$OUT/expected.json" \
+   "$ROOT/target/release/phase1_shell" > "$OUT/phase1.log" 2>&1; then
   stage "hybrid (phase 1)" OK
 else
   stage "hybrid (phase 1)" FAIL "see $OUT/phase1.log"; fi
@@ -169,19 +196,6 @@ else
   stage "load into odoo" SKIP "no libengine_py.so; cargo build --release"
 fi
 
-if [ -n "${RUSTORM_REPLAY:-}" ] && [ -f "$RUSTORM_REPLAY" ] && [ -f "$ROOT/target/release/libengine_py.so" ]; then
-  if PYTHONPATH="$PYMOD" RUSTORM_EXPORT="$OUT/export.json" RUSTORM_ROUTE=shadow \
-     RUSTORM_REPLAY="$RUSTORM_REPLAY" \
-     "$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
-     < "$ROOT/harness/replay.py" > "$OUT/replay.log" 2>&1
-  then
-    stage "replay" OK "$(grep -aE '^REPLAY (OK|DIVERGED)' "$OUT/replay.log" | tail -1 | cut -c8-)"
-  else
-    stage "replay" FAIL "$(grep -aE '^REPLAY|Error' "$OUT/replay.log" | tail -1 | cut -c1-70)"
-  fi
-else
-  stage "replay" SKIP "no capture file (set RUSTORM_REPLAY)"
-fi
 
 if [ -f "$ROOT/target/release/libengine_py.so" ]; then
   if PYTHONPATH="$PYMOD" \
@@ -196,23 +210,97 @@ else
   stage "copy encoder" SKIP "no libengine_py.so; cargo build --release"
 fi
 
+# The only stage that compares what the SERVER SENDS rather than what a
+# method returned. It boots two servers, so it is minutes rather than
+# seconds -- but it is the only lane that can see an envelope key, a
+# serialisation choice or a header differ between routed and unrouted, and
+# one of those was live and unseen until 2026-09-08.
+if [ "$QUICK" = 1 ]; then
+  stage "byte parity" SKIP "--quick"
+elif [ ! -f "$ROOT/target/release/libengine_py.so" ]; then
+  stage "byte parity" SKIP "no libengine_py.so; cargo build --release"
+else
+  out=$(RUSTORM_PARITY_DIR="$OUT/parity" "$ROOT/harness/parity.sh" \
+          --db "$DB" --password "${RUSTORM_ADMIN_PASSWORD:-kernelprobe}" \
+          --port "${RUSTORM_PARITY_PORT:-$(pick_port 8140)}" 2>&1)
+  verdict=$(printf '%s\n' "$out" | grep -aE '^PARITY (OK|FAILED|VACUOUS)' | head -1)
+  counts=$(printf '%s\n' "$out" | grep -aE '^ *cases ' | head -1 | sed 's/^ *//')
+  case "$verdict" in
+    "PARITY OK") stage "byte parity" OK "$counts" ;;
+    PARITY*)     stage "byte parity" FAIL "$verdict" ;;
+    # No verdict at all is not a pass and not a failure: the run could not
+    # get far enough to compare anything (a wrong admin password is the
+    # usual reason, and this script has no other use for one).
+    *)           stage "byte parity" SKIP "$(printf '%s\n' "$out" | grep -aE 'FAILED|failed' | tail -1 | cut -c1-70)" ;;
+  esac
+fi
+
+# Odoo's own cursor suites on both cursors, ratcheted. Not a difference the
+# other lanes can see: they all run with the db shim installed, so the cursor
+# is the same on both sides of every comparison they make.
+if [ "$QUICK" = 1 ]; then
+  stage "cursor parity" SKIP "--quick"
+elif [ ! -f "$ROOT/target/release/libengine_py.so" ]; then
+  stage "cursor parity" SKIP "no libengine_py.so; cargo build --release"
+else
+  out=$(RUSTORM_CURSOR_DIR="$OUT/cursor" "$ROOT/harness/cursor_parity.sh" --db "$DB" 2>&1)
+  verdict=$(printf '%s\n' "$out" | grep -aE '^CURSOR PARITY (OK|FAILED|VACUOUS)' | head -1)
+  counts=$(printf '%s\n' "$out" | grep -aE '^ *ran psycopg=' | head -1 | sed 's/^ *//')
+  case "$verdict" in
+    "CURSOR PARITY OK"*) stage "cursor parity" OK "$counts" ;;
+    CURSOR*)             stage "cursor parity" FAIL "$verdict" ;;
+    *)                   stage "cursor parity" SKIP "$(printf '%s\n' "$out" | tail -1 | cut -c1-70)" ;;
+  esac
+fi
+
+# AFTER the parity stage, which is what produces the capture: its OFF leg is
+# Python answering 1,387 realistic RPC calls, and until now this stage had
+# never run for want of exactly that. An externally supplied
+# `RUSTORM_REPLAY` still wins, and `--quick` skips parity, so this SKIPs
+# there as it always did.
+REPLAY_FILE="${RUSTORM_REPLAY:-$OUT/parity/capture.jsonl}"
+if [ -f "$REPLAY_FILE" ] && [ -f "$ROOT/target/release/libengine_py.so" ]; then
+  if PYTHONPATH="$PYMOD" RUSTORM_EXPORT="$OUT/export.json" RUSTORM_ROUTE=shadow \
+     RUSTORM_REPLAY="$REPLAY_FILE" \
+     "$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 \
+     < "$ROOT/harness/replay.py" > "$OUT/replay.log" 2>&1
+  then
+    stage "replay" OK "$(grep -aE '^REPLAY (OK|DIVERGED)' "$OUT/replay.log" | tail -1 | cut -c8-)"
+  else
+    stage "replay" FAIL "$(grep -aE '^REPLAY|Error' "$OUT/replay.log" | tail -1 | cut -c1-70)"
+  fi
+else
+  stage "replay" SKIP "no capture file (run without --quick, or set RUSTORM_REPLAY)"
+fi
+
 if [ "$QUICK" = 1 ]; then
   stage "soak" SKIP "--quick"
 else
-  SOAK_PORT="${RUSTORM_SOAK_PORT:-8099}"
+  SOAK_PORT="${RUSTORM_SOAK_PORT:-$(pick_port 8180)}"
   "$ROOT/target/release/odoo-poc" --db "$DB" --export "$OUT/export.json" \
       serve --port "$SOAK_PORT" > "$OUT/soak_serve.log" 2>&1 &
   soak_pid=$!
+  soak_up=0
+  echo "  (soak server on port $SOAK_PORT)" >&2
   for _ in $(seq 1 30); do
-    curl -sf -m 2 "http://127.0.0.1:$SOAK_PORT/health" >/dev/null 2>&1 && break
+    curl -sf -m 2 "http://127.0.0.1:$SOAK_PORT/health" >/dev/null 2>&1 && { soak_up=1; break; }
+    kill -0 "$soak_pid" 2>/dev/null || break     # it exited; stop waiting for it
     sleep 1
   done
-  if "$PY" "$ROOT/harness/soak.py" --port "$SOAK_PORT" \
+  # Never soak against a listener this stage did not start. The health loop
+  # used to fall through on timeout and run the benchmark anyway, so a port
+  # already in use -- two batteries close together is enough -- produced
+  # `soak FAIL` with an EMPTY note while the real reason sat in
+  # soak_serve.log: `Address already in use (os error 98)`. A gate whose
+  # failure text does not say what failed costs more than the failure.
+  if [ "$soak_up" != 1 ]; then
+    stage "soak" FAIL "server never answered /health on $SOAK_PORT: $(grep -aiE 'error|address' "$OUT/soak_serve.log" | tail -1 | cut -c1-60)"
+  elif "$PY" "$ROOT/harness/soak.py" --port "$SOAK_PORT" \
        --threads "${RUSTORM_SOAK_THREADS:-8}" --seconds "${RUSTORM_SOAK_SECONDS:-20}" \
        > "$OUT/soak.log" 2>&1; then
     stage "soak" OK "$(grep -o '[0-9]* requests in .*' "$OUT/soak.log" | head -1)"
   else
-    stage "soak" FAIL "$(grep -aE 'MISMATCH|error:|SOAK' "$OUT/soak.log" | head -1 | cut -c1-70)"
+    stage "soak" FAIL "$(grep -aE 'MISMATCH|error:|SOAK|Error' "$OUT/soak.log" | head -1 | cut -c1-70)"
   fi
   kill -TERM "$soak_pid" 2>/dev/null
   wait "$soak_pid" 2>/dev/null

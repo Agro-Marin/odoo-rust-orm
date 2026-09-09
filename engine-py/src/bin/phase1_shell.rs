@@ -45,9 +45,14 @@ def run(reg, shim):
 "#;
 
 fn main() -> Result<()> {
+    // SAFETY: main has spawned no thread yet, so no other thread can be reading
+    // the environment concurrently.
+    unsafe {
+        std::env::set_var("ODOO_DISABLE_COPY", "1");
+    }
+
     let rt = std::sync::Arc::new(tokio::runtime::Runtime::new()?);
 
-    std::env::set_var("ODOO_DISABLE_COPY", "1");
     Python::initialize();
 
     let result: String = Python::attach(|py| -> PyResult<String> {

@@ -55,13 +55,26 @@ impl FieldType {
         matches!(self, Self::Char | Self::Text | Self::Html)
     }
 
-    pub fn falsy_json(self) -> Option<serde_json::Value> {
+    /// The `falsy_value` a field of this type USUALLY has.
+    ///
+    /// Odoo declares `falsy_value` on the field CLASS, so this is a
+    /// derivation and not a reading: it is what the `ir_model` bootstrap has
+    /// to fall back on, having no access to the classes. Two classes
+    /// disagree with the type they report -- `id` is a `fields.Id` and not
+    /// an `Integer`, so it has no `0`, and `Many2oneReference` has `0` where
+    /// its relational siblings have none -- and `Field::falsy_json` prefers
+    /// the exported value precisely so a third one does not go unnoticed.
+    pub fn falsy_json_for_type(self, name: &str) -> Option<serde_json::Value> {
         use serde_json::json;
+        if name == "id" {
+            return None;
+        }
         match self {
             Self::Char | Self::Text | Self::Html => Some(json!("")),
             Self::Integer => Some(json!(0)),
             Self::Float | Self::Monetary => Some(json!(0.0)),
             Self::Boolean => Some(json!(false)),
+            Self::Many2oneReference => Some(json!(0)),
             _ => None,
         }
     }
@@ -106,9 +119,27 @@ pub struct Field {
     pub context: Option<serde_json::Value>,
 
     pub groups: Option<String>,
+
+    pub falsy: Option<serde_json::Value>,
+
+    /// Whether a subquery THROUGH this field runs with the comodel's ACL and
+    /// record rules turned off, as Odoo's `_optimize_any_with_rights` and
+    /// `_search(bypass_access=True)` do.
+    ///
+    /// `None` means the registry could not see it: `ir_model_fields` does not
+    /// record it, so a bootstrap registry has to say so rather than guess,
+    /// and the compiler refuses a traversal it cannot decide instead of
+    /// answering with rules Odoo would have skipped.
+    pub bypass_search_access: Option<bool>,
 }
 
 impl Field {
+    /// What Odoo stores in this column for an unset value, if anything, and
+    /// therefore the whole of its answer to a comparison against `False`.
+    pub fn falsy_json(&self) -> Option<serde_json::Value> {
+        self.falsy.clone()
+    }
+
     pub fn comodel(&self) -> Result<&str> {
         self.relation
             .as_deref()
@@ -167,6 +198,39 @@ impl Field {
             }
         }
         Ok(out)
+    }
+
+    /// The comodel COLUMN a one2many joins on.
+    ///
+    /// `store` on a one2many says its inverse is a column, and Odoo does not
+    /// require the inverse itself to be stored:
+    /// `account.analytic.account.line_ids` inverts
+    /// `account.analytic.line.auto_account_id`, a non-stored many2one with a
+    /// `search=` method, and no such column exists. Asking the one2many's own
+    /// flag emits SQL PostgreSQL rejects, so the COMODEL's field is what has
+    /// to be asked -- and both the filter path and the read path have to ask,
+    /// which is why this is one function and not two checks.
+    pub fn o2m_inverse_column(&self, owner: &str, co: &Model) -> Result<&str> {
+        let inverse = self.o2m_inverse()?;
+        match co.fields.get(inverse) {
+            Some(f) if f.has_column => Ok(inverse),
+            Some(_) => anyhow::bail!(
+                "one2many {}.{} inverts {}.{}, which is computed in Python and \
+                 has no column to join on",
+                owner,
+                self.name,
+                co.name,
+                inverse
+            ),
+            None => anyhow::bail!(
+                "one2many {}.{} names an inverse {}.{} that the registry does \
+                 not have",
+                owner,
+                self.name,
+                co.name,
+                inverse
+            ),
+        }
     }
 
     pub fn o2m_inverse(&self) -> Result<&str> {
@@ -234,10 +298,10 @@ impl Security {
         let mut seen = std::collections::HashSet::new();
         let mut stack: Vec<i32> = self.user_groups.get(&uid).cloned().unwrap_or_default();
         while let Some(g) = stack.pop() {
-            if seen.insert(g) {
-                if let Some(implied) = self.implied.get(&g) {
-                    stack.extend(implied.iter().copied());
-                }
+            if seen.insert(g)
+                && let Some(implied) = self.implied.get(&g)
+            {
+                stack.extend(implied.iter().copied());
             }
         }
         seen
@@ -289,6 +353,10 @@ pub struct Registry {
 
     pub has_unaccent: bool,
 
+    /// Whether `pg_trgm` is installed, which is what makes the GIN index on
+    /// a translated `index="trigram"` field usable at all.
+    pub has_trigram: bool,
+
     pub source: Source,
 
     signal_tables: Vec<String>,
@@ -338,6 +406,7 @@ impl Registry {
             models,
             langs,
             has_unaccent,
+            has_trigram: false,
             source,
             signal_tables: Vec::new(),
             inherits: HashMap::new(),
@@ -605,6 +674,7 @@ impl Registry {
             };
             let (pg_type, not_null) = col_info.map(|(t, n)| (t.clone(), *n)).unwrap_or_default();
             let translated = ttype.is_text() && pg_type == "jsonb" && !company_dependent;
+            let falsy = ttype.falsy_json_for_type(&name);
             model.fields.insert(
                 name.clone(),
                 Field {
@@ -633,6 +703,9 @@ impl Registry {
                     context: None,
 
                     groups: None,
+
+                    falsy,
+                    bypass_search_access: None,
                 },
             );
         }
@@ -695,6 +768,24 @@ impl Registry {
                             v => Some(v.clone()),
                         },
                         groups: ef["groups"].as_str().map(str::to_string),
+
+                        // The exported value is the READING; the type rule
+                        // is only what an export written before this key
+                        // existed can fall back on. `null` is a real answer
+                        // here ("no falsy value") and must not be confused
+                        // with the key being absent, which is why this is a
+                        // `get` and not an index.
+                        falsy: match ef.get("falsy_value") {
+                            None => ttype.falsy_json_for_type(fname),
+                            Some(serde_json::Value::Null) => None,
+                            Some(v) => Some(v.clone()),
+                        },
+                        // An export written before this key existed knows
+                        // nothing about it either, so it decodes the same way
+                        // a bootstrap registry does rather than as `false`.
+                        bypass_search_access: ef
+                            .get("bypass_search_access")
+                            .and_then(serde_json::Value::as_bool),
                     },
                 );
             }
@@ -829,7 +920,21 @@ impl Registry {
         registry.inherits = inherits;
         registry.signal_tables = signal_tables;
         registry.group_ids = Self::load_group_ids(client).await?;
+        registry.has_trigram = Self::load_has_trigram(client).await?;
         Ok(registry)
+    }
+
+    /// Asked of the OPERATOR CLASS rather than the extension name, because
+    /// `gin_trgm_ops` is the thing the index is declared with -- an
+    /// extension installed in another schema would answer the wrong question.
+    pub async fn load_has_trigram(client: &Client) -> Result<bool> {
+        let row = client
+            .query_opt(
+                "SELECT 1 FROM pg_opclass WHERE opcname = 'gin_trgm_ops'",
+                &[],
+            )
+            .await?;
+        Ok(row.is_some())
     }
 
     pub async fn load_defaults(

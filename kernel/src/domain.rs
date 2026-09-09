@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde_json::Value as Json;
 
 #[derive(Debug, Clone)]
@@ -64,6 +64,14 @@ fn parse_leaf(leaf: &[Json]) -> Result<Node> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("leaf operator must be a string"))?
         .to_string();
+
+    if op == "any!" || op == "not any!" {
+        bail!(
+            "operator {op:?} is Odoo's internal spelling for a subquery that \
+             skips the comodel's access rules; `Domain()` rejects it in an \
+             incoming domain and so does this kernel"
+        );
+    }
 
     if let Some(n) = leaf[0].as_i64() {
         let v = leaf[2].as_i64().unwrap_or(-1);

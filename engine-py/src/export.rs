@@ -110,6 +110,25 @@ def export_registry(reg):
                 # produced.
                 "index": _s(getattr(f, "index", None)),
                 "company_dependent_fallback": _cd_fallback(m, f),
+                # The value the COLUMN holds for an unset field, and the
+                # whole of Odoo's answer to a comparison against False. It is
+                # declared on the field CLASS, not on its type, so it cannot
+                # be derived from `type` without knowing the class hierarchy:
+                # `id` is a `fields.Id` and not an `Integer`, so it has no 0,
+                # and `Many2oneReference` has 0 where its relational siblings
+                # have none. `null` here means "no falsy value" and is a
+                # different answer from `false`, which is the boolean's.
+                "falsy_value": _s(getattr(f, "falsy_value", None)),
+                # Odoo evaluates a subquery through this field with the
+                # comodel's ACL and record rules TURNED OFF
+                # (`_optimize_any_with_rights` rewrites `any` to `any!`, and
+                # `_search(bypass_access=True)` skips both). 90 fields of a
+                # 73-module database declare it -- every mail-thread
+                # `message_ids` and `activity_ids`, every `attachment_ids`,
+                # `res.users.partner_id`, `account.move.line.move_id` -- and
+                # a kernel that applies the rules anyway answers with fewer
+                # rows than Python.
+                "bypass_search_access": bool(getattr(f, "bypass_search_access", False)),
             }
         cls = type(m.sudo())
         base = odoo.orm.models.base.BaseModel

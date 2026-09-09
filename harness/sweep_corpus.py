@@ -142,6 +142,66 @@ def probes(model, uid):
             domain=[],
         )
 
+    # Comparing against an unset value is decided by the field's
+    # `falsy_value`, which Odoo declares on the field CLASS and not on its
+    # type: `id` is a `fields.Id` and has none where every other integer has
+    # 0, and `many2one_reference` has 0 where its relational siblings have
+    # none. Nothing else in this corpus compares against False with an
+    # ordering operator, so the whole family went unmeasured -- and a
+    # divergence in it returns wrong rows rather than refusing. Admin only,
+    # and one field per branch, because this doubles otherwise.
+    if uid is None:
+        with_falsy = sorted(
+            f.name
+            for f in fields.values()
+            if stored(f) and f.type in ("char", "text", "integer", "float", "monetary")
+        )[:1]
+        without_falsy = sorted(
+            f.name
+            for f in fields.values()
+            if stored(f) and f.type in ("date", "datetime", "selection", "many2one")
+        )[:1]
+        for name in with_falsy:
+            for op in (">", ">="):
+                add_extra(method="search_count", domain=[[name, op, False]])
+        for name in without_falsy:
+            add_extra(method="search_count", domain=[[name, ">", False]])
+        for f in sorted(fields.values(), key=lambda f: f.name):
+            if stored(f) and f.type == "many2one_reference":
+                for op in ("=", "!=", ">="):
+                    add_extra(method="search_count", domain=[[f.name, op, False]])
+        add_extra(method="search_count", domain=[["id", ">", False]])
+
+    # A traversal THROUGH a field that declares `bypass_search_access`, which
+    # Odoo evaluates with the comodel's ACL and record rules turned off. The
+    # kernel applied them anyway until 2026-09-08 and answered with fewer
+    # rows; nothing in this corpus traversed such a field, so nothing saw it.
+    # Both identities, because the difference only exists for a non-superuser.
+    bypassing = sorted(
+        f.name
+        for f in fields.values()
+        if getattr(f, "bypass_search_access", False)
+        and f.type in ("many2one", "one2many", "many2many")
+        and f.comodel_name in model.env.registry
+    )[:1]
+    for name in bypassing:
+        add_extra(method="search_count", domain=[["%s.id" % name, ">", 0]])
+
+    # `binary` was the one field type in the registry that NO lane touched --
+    # 127 fields, exercised by nothing. Auditing it found no defect (a filter
+    # agrees with Python, and READING one is refused so the shim falls back),
+    # which is the outcome to hope for and not the reason to have looked.
+    # Only the filter is probed: the read refuses by design and would add a
+    # classified non-comparison rather than coverage.
+    binary = sorted(
+        f.name
+        for f in fields.values()
+        if stored(f) and f.type == "binary" and not getattr(f, "attachment", False)
+    )[:1]
+    for name in binary:
+        add_extra(method="search_count", domain=[[name, "=", False]])
+        add_extra(method="search_count", domain=[[name, "!=", False]])
+
     if x2m:
         add(method="search_read", fields=["id"], domain=[[x2m[0], "!=", False]], limit=5)
         add(

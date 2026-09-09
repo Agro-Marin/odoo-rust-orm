@@ -143,6 +143,29 @@ The three partition the corpus, and `score()` is unit-tested in
 `harness/test_shims.py` because this classification decides what every other
 number in this file means.
 
+**And the partition leaked for as long as it existed, because it read one
+side.** A case where BOTH sides raised was filed by what PYTHON raised: if
+that was an `AccessError` it was booked as an agreed denial, whatever the
+kernel had done. Measured on the 73-module sweep, **125 of 2,310 "agreed
+denials" were nothing of the sort** — the kernel had DECLINED the case
+(*account.move overrides the read path in Python*), so Python's AccessError
+and the kernel's refusal were two unrelated facts and nothing was compared.
+`score()` now reads both sides, and the sweep it was measured on went
+
+    PASS 4775/5946  (COMPARED 2465, DENIED 2310)  REFUSED 1164
+    PASS 4650/5946  (COMPARED 2465, DENIED 2185)  REFUSED 1289
+
+with nothing failing either way: a reclassification, not a regression. An
+unrecognised denial phrasing now lands in REFUSED and UNDERSTATES the pass
+count, which is the safe direction. The figures in the block above predate
+this and would shift the same way if re-measured.
+
+**The unit test could not have caught it, and it named the right value.** Its
+rust-side fixture was already `{"error": "access denied"}` — the intent was
+written down — but with the kernel's error unread, the assertion passed for
+any value at all. The case that discriminates is the one now beside it:
+Python denies, the kernel declines, and the answer must be `refused`.
+
 And an identity can be named portably. `"uid": "other"` resolves on both sides
 to the lowest active user that is neither OdooBot nor admin, so a case at a
 non-admin identity runs on any database — a hardcoded uid that does not exist
@@ -246,6 +269,334 @@ read `if exp_db and act_db and exp_db != act_db`, which short-circuits to
 "compare anyway" when either side carries no stamp; the pre-stamp list format
 therefore sailed through it. Unstamped is comparable to nothing, not to
 everything.
+
+### Cursor parity: Odoo's own cursor suites, on both cursors
+
+`phase2_tests` cannot gate the cursor, and the reason is structural rather
+than an omission: it differences a baseline leg against a routed leg, and
+what it toggles is ORM ROUTING. The db shim is installed in BOTH legs, so the
+cursor is rust-backed on both sides of the comparison and a cursor regression
+lands in the "pre-existing in both modes" bucket the gate ignores. Measured
+by adding the module: `test_db_cursor` gives `baseline 44/379 -> routed
+44/379`, which reads as clean.
+
+```sh
+harness/cursor_parity.sh --db <db>
+```
+
+So this puts the CURSOR on the compared axis: Odoo's own `test_db_cursor`,
+run twice through the same bare-`unittest` harness -- once with the db shim
+installed, once on plain psycopg -- and diffed BY TEST NAME, because a count
+reads "one fixed, one new" as no change. Failures that are artifacts of the
+runner rather than of a cursor appear on both sides and cancel.
+
+    ran psycopg=378  rust=378
+    not-ok both=18   ONLY-RUST=3   only-psycopg=0
+
+**3 of Odoo's own cursor tests fail against the rust cursor and pass against
+psycopg**, none the other way -- down from 61 on the first run, and every
+drop came from the gate rather than from guessing:
+
+    61  first run
+    59  `FakeConnection.execute()` rejected psycopg's `prepare` keyword, which
+        `odoo/db/lifecycle.py` uses on the CONNECTION (not the cursor) to
+        reset a connection before it returns to the pool
+    38  `RustCopy` implements COPY TEXT. It required `set_types`, which Odoo
+        does not call for a text COPY, so every text COPY raised
+        `0 column types were declared` -- 21 tests, the single biggest cluster
+    36  a psycopg `Json` / `Jsonb` wrapper's own `dumps` is honoured. Odoo
+        wraps a string bound for a json column in
+        `Jsonb(s, dumps=_dump_json_verbatim)` -- "this is ALREADY json text"
+        -- and reaching past the wrapper for `.obj` re-encoded the document
+        as a json STRING: `jsonb_typeof` read `string` where psycopg gives
+        `object`. Asking the wrapper for its own text and parsing that is
+        right for every spelling, including `Json("abc")` genuinely meaning
+        the json string `"abc"`, which is why the general fix is shorter than
+        the special case would have been.
+    29  the db shim runs the POOL's accounting instead of bypassing it (below)
+    18  the db shim SUPPLIES the pool instead of replacing `borrow` (below)
+    11  the prepared-statement cache is invalidated where psycopg invalidates
+        it, plus `RustCopy.write`, `Cursor.scroll` and the pool's `_pool`
+        stamp
+     8  `info.transaction_status`, without which a raising rollback hook also
+        cost a warm pooled connection; and a non-UTF-8 bytes query raising
+        the server's own error instead of `UnicodeDecodeError`
+     3  COPY errors reach the caller as psycopg error classes rather than
+        bare `RuntimeError`s; an unencodable parameter raises the server's
+        own `22P02`; and a database error carries its DIAGNOSTICS (below)
+
+## `db_maxconn` was not enforced on the rust path
+
+The db shim replaced `ConnectionPool.borrow` and `give_back` at the CLASS
+level and returned a rust connection without touching the instance. So none
+of what the pool does around the connection ran: not `_budget.acquire()`,
+which is what bounds `db_maxconn`; not `_checkouts.track()`, which is what
+can name who is holding them when it saturates; not the stats, the leak
+warning, or the health probe. Every `ConnectionPool` in the process also
+shared one module-global idle list, so a connection borrowed under one
+pool's settings could be handed back out under another's.
+
+Measured, `maxconn=2`, six borrows, each driven to a real backend with
+`pg_backend_pid()`:
+
+    psycopg   borrowed 2   PoolError at borrow #2   2 distinct backends
+    rust      borrowed 6   no error                 6 distinct backends
+
+    after     borrowed 2   PoolError at borrow #2   2 distinct backends
+
+`max_connections` is a hard cluster-wide limit shared with every other
+process, so a bound that is not enforced is not a local matter.
+
+**The first instrument answered the adjacent question.** Counting rows in
+`pg_stat_activity` from the shell's own cursor reported `opened: 0` for both
+legs and would have retired the whole finding -- that count is served from
+the transaction's cached stats snapshot, which never moves inside one
+transaction. Asking each borrowed connection for its own `pg_backend_pid()`
+is the direct instrument, and it is the one that separated 6 from 2.
+
+**The fix closed 8 and opened 1, which is why the count moved by 7.**
+Releasing the budget in a `finally` also released it for a SECOND
+`give_back` of the same connection, crediting a permit nobody acquired --
+`test_double_give_back_does_not_over_release`, a test that was green before.
+Odoo's own `give_back` spends a pop-once marker (`_odoo_pool`) for exactly
+this reason and the shim now spends one too. A net figure hides a
+regression; the gate reports names, which is how this one was seen at all.
+
+## The pool was the seam, not `borrow`
+
+Patching `borrow` meant reimplementing everything the pool does around a
+connection. Rebinding `odoo.db.pool._PsycopgPool` to a factory that returns
+a rust-backed pool means implementing none of it: `ConnectionPool.borrow`,
+`give_back`, the budget, the checkout tracker, the idle reaper,
+`close_database` / `drain_database`, the stats and the session GUCs are
+Odoo's own code, unmodified. The shim got smaller and closed 11 more tests,
+and two of those were production paths nothing else would have found:
+
+- `db_session_gucs` reached no rust-backed connection at all, so a
+  deployment's `work_mem` / `statement_timeout` policy was silently absent.
+- `drain_all()` iterates `_pools`, which was **empty**, so it was a no-op.
+  `registry.py` calls it on every reload -- meaning after any module upgrade
+  a pooled rust connection kept prepared plans built against the old schema,
+  and the next query through one can fail `cached plan must not change
+  result type`.
+
+**THE FIRST RESULT WAS A PERFECT SCORE AND IT WAS MEANINGLESS.** A pool is
+built once per dsn and cached, so rebinding the CLASS reaches only pools
+created afterwards -- and the process already had one. Every borrow returned
+a psycopg connection while the leg still called itself rust, and the gate
+reported `ONLY-RUST=0`: psycopg compared with psycopg, in perfect agreement.
+The honest number was 18. Both legs of the gate now refuse a rust leg whose
+connection is not a `FakeConnection`, and the negative control confirms it
+(`VACUOUS: the rust leg drew a Connection`).
+
+**The counter would not have caught it.** The vacuous run reported
+`connects=28` -- nonzero, because the tests that construct their own
+`ConnectionPool` did get rust pools. A guard on "did the shim do anything"
+passes; only "what is this connection" fails. The old design was immune to
+this by accident, because patching `borrow` takes effect on pools that
+already exist; the better design has an ordering dependency, and paying for
+it with a guard is the trade.
+
+## PostGIS, and one class this transport cannot reach at all
+
+The same question asked of the other extension in this workspace's template.
+`geometry` and `geography` were reading back as raw bytes; psycopg has no
+loader for either and returns the type's TEXT output, which for these two IS
+the hex-encoded WKB -- byte for byte what arrives here in binary, so
+rendering it as uppercase hex reproduces psycopg's string exactly. Both now
+match.
+
+Two limits found with them, and both are the transport rather than an
+oversight:
+
+**`geography` cannot be WRITTEN.** PostgreSQL has an implicit `text ->
+geometry` cast and none for geography, and this cursor binds every parameter
+in BINARY against the statement's resolved type -- so a text literal cannot
+reach the server's input function the way psycopg's untyped parameter does.
+`geometry` writes work only because that implicit cast exists. Writing
+geography needs an EWKB encoder; it is covered read-only until then.
+
+**`box2d` cannot be READ at all**: *no binary output function available for
+type box2d*. tokio-postgres requests binary results for every column and
+psycopg negotiates per type, so any type with `typsend = 0` is unreachable
+here -- 8 of them in this database, of which `box2d` (returned by
+`ST_Extent`) and `aclitem` are the only ones a query is likely to select.
+That is a hard limit of the transport, not a missing decoder, and it is
+recorded here rather than left to be rediscovered.
+
+## pgvector: every write refused, every read raw bytes
+
+`vector` is not a catalog type -- its oid is per-database, so it is matched
+by NAME -- but it is in this workspace's database template and agromarin's AI
+modules store embeddings in it. It had already cost this repo once, encoded
+as TEXT into a binary COPY (`set_types` carries the scar in a comment). It
+was also, until now:
+
+    write   psycopg stores it     rust  42804, "column is of type vector
+                                       but expression is of type text"
+    read    psycopg '[4,5,6]'     rust  b"\x00\x03\x00\x00@\x80..."
+
+psycopg has no loader for it either, and returns the TEXT form. This cursor
+cannot ask for text format, so it decodes pgvector's binary -- `int16` dims,
+`int16` unused, then that many big-endian `float4` -- and renders the same
+string, and encodes the same format on the way in. Both directions now agree.
+
+**A column type used by shipped modules had NO coverage at all**, and the way
+it was found is worth more than the fix: a sweep of every column type present
+in the database read `vector(1536)` from a real table and reported agreement.
+That agreement was vacuous -- the column has no rows, so both cursors
+returned `[]`. An empty result set is not a comparison. The sweep that found
+the defect was the one that inserted a value first.
+
+## A `date[]` column read back as raw binary bytes
+
+The cursor's type layer decoded a scalar `date` and a `text[]` and handed
+back RAW BINARY for ten other categories -- `numeric[]`, `date[]`, `time[]`,
+`timestamp[]`, `timestamptz[]`, `bytea[]`, `oid[]`, `inet[]`, and scalar
+`interval` and `uuid`. Not an error: a column of any of those read as
+`b"\x00\x00\x00\x01..."`, and the fallback logged that it was handing
+back raw bytes "as psycopg does for an unregistered type" -- which is not
+what psycopg does for ANY of these. psycopg has loaders for all ten.
+
+    numeric[]  psycopg [1.25, -3.5]              rust b"\x00\x00\x00\x01..."
+    date[]     psycopg [date(2026, 9, 9)]        rust b"\x00\x00\x00\x01..."
+    interval   psycopg timedelta(days=32, ...)   rust b"\x00\x00\x00\x00..."
+
+Nine of the ten now decode identically to psycopg, including psycopg's own
+month-to-30-days convention for `interval` and `uuid` built from its 16 raw
+bytes -- neither needs a new dependency, both formats being fixed-width.
+`inet` is the one left.
+
+**The write side was guessing where the server knew.** A list of strings was
+declared `text[]` from its first element, so inserting `["2026-01-31"]` into
+a `date[]` column got 42804, *column is of type date[] but expression is of
+type text[]*. Odoo passes dates, timestamps and numerics as strings, so that
+is the normal case, not an exotic one. Leaving the parameter UNTYPED lets the
+server infer the column's own type, and the element conversions then parse
+into it -- the same conversions the scalar arms use.
+
+**And the reason no gate saw any of it**: the type-layer probe's corpus named
+`int4[]`, `text[]`, `bool[]` and `float8[]`, and every type it did not name
+was uncovered. A type layer is only covered for the types its corpus
+mentions. The corpus now carries the array of everything the scalar list
+covers, plus a read-only section for the types this cursor can decode but not
+yet encode -- 84 checks, and splitting the direction is what lets the gate
+hold at zero while still covering the half that works.
+
+## The prepared-statement cache outlived what it was prepared against
+
+psycopg clears its cache when a command's STATUS TAG is `ROLLBACK` or starts
+with `DROP ` (`psycopg/_preparing.py`), because a plan prepared against an
+object a rollback or a drop removed is looked up internally by PostgreSQL and
+fails. `ROLLBACK TO SAVEPOINT` reports the tag `ROLLBACK` and so clears;
+`RELEASE SAVEPOINT` reports `RELEASE` and does not. This cursor cleared on
+neither, so a savepoint rollback left plans behind.
+
+tokio-postgres surfaces no status tag -- `execute` yields a row count and
+nothing else -- so the rule is applied to the STATEMENT instead. The two
+agree on everything Odoo issues and differ where a tag would still be
+produced but the text does not start with the keyword: a `DROP` inside a DO
+block or a function body, or one that is not the first statement of a batch.
+Those under-clear, the same direction psycopg errs when a cache is cold, and
+the divergence is written down rather than left to be discovered.
+
+## A constraint violation stopped naming the field
+
+`db_err` carried the SQLSTATE and the message and dropped everything else.
+Odoo turns a constraint violation into a message naming the offending field,
+and it does that from `exc.diag` -- `constraint_name`, `table_name`,
+`column_name`, `message_detail` -- in `service/transaction.py`,
+`orm/models/mixins/load.py` and `orm/models/mixins/schema.py`. None of those
+raised when the diagnostics were absent; each degraded quietly to the raw SQL
+text. One cursor test found it; nothing else in the workspace would have.
+
+The diagnostics now travel with the error, and `Error.diag` is a read-only
+property built from a live `PGresult`, so the shim raises a per-class
+subclass carrying its own. `column_name` still comes back None for a
+composite constraint -- which is correct, and is the whole reason Odoo's
+`check_registry` lookup exists.
+
+**Two of the three that remain are one unimplemented feature, not two
+defects.**
+psycopg's PIPELINE MODE defers results, so from the second statement in a
+pipeline block `cursor.description` is None until the batch is flushed.
+`pipeline()` is a `nullcontext` here, so every statement runs immediately and
+`description` is always set. tokio-postgres has no equivalent of libpq's
+pipeline mode: this is a feature to build, not a bug to fix.
+
+The third is `set_types`, which now asks the ENCODER whether it could encode
+a type rather than asking whether the oid RESOLVES -- the same predicate
+`write_row` applies, so the two cannot drift. That took the disagreement with
+Odoo's guard from 47 array types to 7: four this cursor cannot encode
+(`cidr[]`, `interval[]`, `timetz[]`, `uuid[]`, none of which tokio-postgres
+maps) and three it can encode though psycopg will not (`bpchar[]`,
+`int2vector`, `oidvector`) -- and those three are the harmless direction,
+since Odoo's guard sends them to text COPY and never asks. So **the defect
+list is empty**, and what holds the floor is one missing feature and one
+narrow type-set disagreement.
+
+The pool classes are the interesting remainder:
+`test_raising_prerollback_hook_keeps_the_connection` fails with *a hook bug
+must not also cost a warm pooled connection*, which is a behavioural
+difference with a cost attached.
+
+**Ratcheted, not zero.** Closing 61 differences is a programme of work;
+`harness/cursor_parity_baseline.json` holds the number and the gate matches
+it EXACTLY, as the repo's other ratchets do, so fixing one lowers the
+baseline in the same commit rather than banking slack. A leg that ran no
+tests reports `CURSOR PARITY VACUOUS` and fails rather than passing. And
+`test_a_baseexception_during_construction_returns_the_connection` is excluded
+from BOTH legs, symmetrically and visibly: it raises a real
+`KeyboardInterrupt` on purpose, Odoo's runner installs a handler for that and
+a bare one does not, so it killed the whole leg and the suite reported
+nothing at all.
+
+### Byte parity: the lane the other lanes cannot be
+
+Every comparison above -- the shadow corpus, the sweep, the fuzzer, the
+replay lane, and the shim's own in-flight `shadow` verification -- diffs a
+METHOD'S RESULT. None of them can see a difference in what the SERVER SENDS
+around it, and on 2026-09-08 that gap had a real defect sitting in it for as
+long as the shim has routed `web_search_read` (see §Burn-in). So:
+
+```sh
+harness/parity.sh --db <db> --password <admin pw> [--port N] [--models N]
+```
+
+It generates one set of RPC-shaped calls per model (`parity_corpus.py`:
+`search_read`, `search_count`, two `web_search_read` shapes, `web_read_group`,
+`name_search`, `web_read` over frozen ids), boots the server with routing
+**off**, records every response BODY, boots it again with routing **on**, and
+diffs the recordings byte for byte. `workers = 0`, so a leg's behaviour is one
+kernel's rather than an average over however many workers served.
+
+Three things make the OK readable rather than decorative:
+
+- **The off leg is recorded TWICE** and a case whose two baseline passes
+  disagree is reported as nondeterministic, not as a divergence. A `LIMIT`
+  window over equal sort keys is not a routing defect, and an instrument that
+  cannot tell the two apart is not an instrument. (Every ordering the corpus
+  emits ends in `id` for the same reason; the double pass catches the rest.)
+- **The routed count is checked.** If the `on` leg routed nothing it compared
+  Python with Python, and the run reports `PARITY VACUOUS` and fails instead
+  of `OK` -- the denominator-of-zero trap, in the one gate where it would be
+  easiest to fall into.
+- **The answered/raised split is printed.** A case that raises `AccessError`
+  on both legs agrees about the access decision and nothing else; a corpus of
+  nothing but those would pass while comparing no answer at all.
+
+The JSON-RPC `id` is scrubbed before comparison -- the client chooses it and
+the server echoes it -- and an error body is recorded like any other, because
+one leg raising where the other answers is exactly what this is looking for.
+
+**It drives ONE identity, the admin, and that is a deliberate scope rather
+than an oversight.** What this lane adds over the sweep is the layer around
+the answer -- envelope, serialisation, status -- and that layer does not vary
+with who is asking; what DOES vary with identity is which rows come back, and
+the sweep already runs its whole corpus at a second, portal identity. A
+second identity here would double the run for the part that is already
+covered. What it would genuinely add is a case where the two legs disagree
+about an ACCESS decision, and nothing has been measured about that.
 
 ## Configuration
 
@@ -589,6 +940,38 @@ Measured on a real prefork server (`workers = 2`), driving `search_read` and
 shadow_diff=0`. The same four HTTP responses are byte-identical with routing
 off and on.
 
+That measurement drives `search_read` and `search_count`, and a burn-in run on
+2026-09-08 found what it does not cover. `harness/burnin.sh` had to be
+repaired first: it APPENDED `server_wide_modules` to a conf that already
+declared one, which configparser rejects outright, so it no longer booted in
+this workspace. Once it did, `web_search_read` diverged, and not in its data:
+
+    res.country.web_search_read   off: {id, jsonrpc, result, version}
+                                  on : {id, jsonrpc, result}
+
+`records` and `length` were equal element for element and `__version` inside
+the result matched; the response ENVELOPE was missing a key. `web_search_read`
+carries `@versioned` and stamps `__version` into its own result, which the
+shim mirrored -- but Python ALSO stamps `version` on the envelope, and it
+gets there as a side effect of the inner `records.web_read(specification)`
+call, which carries `@versioned_envelope` and digests the record list alone.
+A routed answer never makes that call. **The shadow comparison cannot see
+this class of divergence at all**: it diffs the METHOD's result, and the
+envelope is not in it -- 2,396 sampled verifications reported `diff=0`
+through the whole run. What saw it was the bench's own baseline, comparing
+response BYTES; what reported it was nothing, because `burnin.sh` scored only
+the server-side counters and printed `BURNIN OK` over 308 changed answers.
+Both halves are fixed: the shim stamps the envelope, and a changed answer is
+now fatal to the burn-in.
+
+The class is small enough to enumerate, so it was:
+`grep -rnE "request\._[a-z_]+ *=" --include='*.py'` over `odoo/` and
+`addons/` returns `_response_version` and `ir_qweb_assets`' four
+`_esm_import_map_*` / `_esm_page_bundles` writes, and nothing else. The
+second group is asset rendering, which no routed read reaches. So this was
+the only request-scoped side effect on a read path the kernel serves, and
+there is not a second one waiting.
+
 ## `web_search_read`
 
 The web client does not call `search_read`; every list, kanban and pivot goes
@@ -650,6 +1033,25 @@ capture that cannot be written is logged and never fails the request.
 ```sh
 RUSTORM_REPLAY=/path/to/capture.jsonl harness/verify.sh --db <db>
 ```
+
+**A capture no longer has to come from somewhere else, which is why this
+stage used to SKIP on every run anybody made.** `harness/parity.sh` arms the
+capture on its OFF leg -- Python answering the whole parity corpus, one
+realistic RPC call after another -- so a full `verify.sh` writes
+`$OUT/parity/capture.jsonl` and the replay stage picks it up without a second
+boot. `RUSTORM_REPLAY` still wins when it is set, and `--quick` skips parity,
+so the stage SKIPs there exactly as before. It is not real users' traffic and
+the checklist item that asks for that is still open; it is the difference
+between a lane that runs and a lane that has never run.
+
+First run: **2,776 calls replayed, shadow ok=1848, diff=0**, routed share
+0.77, gate=1016, error=270. **Read `error` as "the kernel raised", not as
+"the kernel failed"** -- the great majority of those 270 are an `AccessError`
+that PYTHON RAISES TOO on the same call (`error` and `raised` match row for
+row in the per-`(model, method)` breakdown), which is agreement about an
+access decision and not a divergence; the rest are the compiler declining a
+non-stored field. Zero of them are database errors, which is the number that
+would mean something was wrong.
 
 `harness/replay.py` feeds the file back through the shim with routing in
 shadow mode, so each call is answered by Python AND by the kernel and every
@@ -947,8 +1349,8 @@ encoder (differentially tested against psycopg), running under `workers > 0`
 (the tokio runtime and the connection free list both survive the fork now),
 serving a host that has more than one database (others are delegated to
 psycopg rather than broken), turning routing off without a restart
-(`ir.config_parameter`), and the absence of a concurrent end-to-end
-measurement.
+(`ir.config_parameter`), the absence of a concurrent end-to-end
+measurement, and the inequality against an unset value (below).
 
 - **Python model overrides** (`_search`, `_compute_display_name`, computed
   fields): invisible to a registry built from the DB alone. This is the
@@ -964,6 +1366,137 @@ measurement.
   `res.company.country_id`). The first two also declare `search=`, so both the
   value and the domain leaf need Python. This is the measured size of the
   business-logic problem, not an estimate.
+- **A field declaring `bypass_search_access` turns the comodel's access OFF
+  for a subquery through it, and the kernel used to apply it anyway.** Odoo's
+  `_optimize_any_with_rights` rewrites `any` to `any!` exactly when the field
+  declares it, and `_search(bypass_access=True)` then skips the comodel's ACL
+  check AND its record rules. **90 fields of a 73-module database declare
+  it** -- every mail-thread `message_ids` and `activity_ids`, every
+  `attachment_ids`, `res.users.partner_id`, `account.move.line.move_id`,
+  `product.product.product_tmpl_id`. The kernel compiled the comodel's rules
+  into the subquery regardless, so it answered with FEWER rows than Python:
+  fail-closed, and still a wrong answer. Reproduced on a real database rather
+  than argued -- an internal user who cannot read a private `res.partner`
+  still finds, through Python, the `account.analytic.account` that points at
+  it, because `partner_id` bypasses:
+
+        account.analytic.account, ('partner_id.name','ilike',…), uid 197
+            python  [{id: 1}]      kernel  []        <- before
+            python  1              kernel  0         <- the same as search_count
+            python  [{id: 1}]      kernel  [{id: 1}] <- after
+        the same domain at su matched throughout, which is what says the
+        record-rule path is the one that moved
+
+  `bypass_search_access` is now exported per field and honoured. **`any!` is
+  REFUSED, and briefly was not, which is the cautionary half of this entry.**
+  It is Odoo's internal spelling for the same bypass -- the optimizer rewrites
+  `any` to `any!` when the field declares the flag -- so honouring it looked
+  like completeness. It is not: `Domain()` REJECTS `any!` in an incoming
+  domain, so no domain reaching this kernel can legitimately carry one, and
+  honouring it turned a harmless extra spelling into a rule bypass a CALLER
+  COULD ASK FOR. Measured on the same scenario, at the identity that cannot
+  read the partner:
+
+        ('parent_id', 'any',  [('name','ilike',…)])   python []   kernel []
+        ('parent_id', 'any!', [('name','ilike',…)])   python raises ValueError
+                                                      kernel returned the row
+
+  It is refused in `domain::parse`, the single door every domain and
+  sub-domain comes through, and no operator string can grant a bypass any
+  more -- only the field's own declaration can. Found by auditing which
+  operators the compiler implements that no corpus exercises: `any!` was the
+  only one, and it was the one that had just changed meaning.
+  **The `ir_model` bootstrap cannot see
+  it**, so a registry built that way carries `None` and REFUSES a traversal
+  whose comodel has rules, rather than guessing: applying them answers with
+  too few rows and skipping them with too many, and neither is safe to
+  assume. A comodel with no rules is the same answer either way and still
+  compiles.
+- **A `like` over a translated `index="trigram"` field could not use the
+  index Odoo built for it, and now does.** This is the one entry here that is
+  about SPEED rather than answers, and it points the wrong way: the kernel
+  was slower than the Python it replaces, on the path a product autocomplete
+  takes. Odoo's `_String.condition_to_sql` ANDs a conjunct onto every
+  positive `like` / `ilike`, and the GIN index is declared over that
+  conjunct's expression and nothing else:
+
+        gin (unaccent(jsonb_path_query_array(name, '$.*')::text) gin_trgm_ops)
+
+  Measured on the fixture with `SET enable_seqscan = off`, which is what
+  separates "the planner preferred a scan" from "the index cannot be used":
+
+        with the conjunct     Bitmap Index Scan on product_template__name_index
+        without it            Seq Scan   (with sequential scans DISABLED)
+
+  What that is worth, `EXPLAIN ANALYZE` on 200,000 rows of the same shape --
+  and reported across selectivities, because the flattering number alone
+  would be a lie by omission:
+
+        pattern         rows matched   without    with     
+        c4ca4238a0b9               1   70.5 ms    0.7 ms   102x faster
+        abc                    1,462   67.1 ms    8.3 ms     8x faster
+        Produit                    0   71.9 ms   72.5 ms   neutral
+        widget               200,000   71.7 ms  176.2 ms   2.5x SLOWER
+
+  **The accelerator is not a universal win, and it is not supposed to be.**
+  A pattern that matches most rows pays for a GIN scan that excludes nothing;
+  `Produit` is the shape where the prefilter searches EVERY translation and
+  so matches everything the base condition then rejects. Odoo has exactly
+  this profile, because this is Odoo's conjunct -- and parity with Odoo's
+  PLAN is the goal, not a plan of our own that is better on one workload and
+  worse on another. What the fix buys is that a selective search, which is
+  what an autocomplete is, stops being two orders of magnitude slower than
+  the Python it replaced.
+
+  The conjunct is implied by the condition it accompanies -- the array of
+  every translation contains the one the base condition tests -- so it
+  changes no row. `crate::trigram` ports Odoo's two pattern builders;
+  `_TRIGRAM_PATTERN_RE`'s lookbehind is not expressible in Rust's `regex`, so
+  the scanner is hand-written and was validated differentially against
+  Odoo's own functions over **40,040** inputs (0 mismatches) before any of it
+  was written in Rust. Two behaviours that cost three rounds to find and are
+  in the tests: Python's `$` matches before a single trailing newline, so a
+  segment ends there -- *unless* a backslash escaped it; and a dangling
+  backslash drops only the segment it ends, not the whole pattern.
+  A single-valued `in` -- which is what an `=` becomes -- is accelerated the
+  same way, through `value_to_translated_trigram_pattern` and compared with
+  LIKE rather than ILIKE, because the equality it accompanies is
+  case-sensitive. Checked against Odoo's own emitted SQL, including where it
+  is WITHHELD: a value shorter than a trigram, a falsy operand, more than one
+  value, and `!=` are all unaccelerated on both sides.
+- **`child_of` on a `_parent_store` model resolves to an id list where Odoo
+  inlines a prefix match.** Both are correct and the corpus says so across
+  224 cases; the plans differ. Odoo compiles
+  `('id','child_of',N)` straight into the main query as
+  `parent_path LIKE '1/2/16/%'`, one indexed predicate. The kernel's
+  `resolve_hierarchy` rewrites every hierarchy leaf to `id in [...]` before
+  compiling, which keeps the rest of the compiler simple and costs two extra
+  round trips (fetch the prefixes, then fetch the matching ids) plus an `IN`
+  list as long as the subtree. It DOES take the `parent_path` fast path --
+  `can_use_parent_path` is true for all 7 `_parent_store` models here, so
+  this is not the O(depth) walk it would otherwise be.
+  **Not implemented, deliberately**: emitting the prefix match as a
+  condition instead is a small change, and on this fixture the hierarchies
+  are a handful of rows, so there is no measurement to justify it and no
+  measurement to check it against. It belongs on a database with a deep
+  category tree, which is where the `IN` list would start to hurt.
+- **A one2many whose inverse is not a column is refused, and used to be a
+  database error instead.** `store` on a one2many says its INVERSE is a
+  column, and Odoo does not require that:
+  `account.analytic.account.line_ids` inverts
+  `account.analytic.line.auto_account_id`, a non-stored many2one with a
+  `search=` method, and no such column exists. The kernel read the one2many's
+  own flag, emitted `s0_account_analytic_line.auto_account_id`, and learned
+  from PostgreSQL that it does not exist -- fail-safe, since the shim falls
+  back on the error, but one wasted round trip per call and a database ERROR
+  in the log for something the compiler can see. It now asks the COMODEL's
+  field, through one `Field::o2m_inverse_column(owner, comodel)` that BOTH
+  the filter path and the read path call -- fixing only the filter path left
+  the registry sweep emitting the identical error, because reading a
+  one2many resolves its inverse in `scan.rs` and not in the compiler. Found
+  on 2026-09-08 by seeding the fixture's first `account.analytic.account`
+  row: the shape had always been compiled and never reached, because the
+  sweep skips a model with nothing in it.
 - Rules the mini-evaluator cannot compile make the model **refused**, not
   silently served without its rules: queries error and the routing shim falls
   back to Python. The evaluator handles `+` on lists and resolves
@@ -1002,16 +1535,97 @@ measurement.
   false). One upstream test (`test_rec_names_search`) fails under it on the
   *stock* psycopg stack too, so it is a harness artifact rather than a kernel
   or cursor defect — left visible instead of waived.
+- **An OID the cursor cannot encode is REFUSED by `set_types`, and used to be
+  silently encoded as TEXT.** Binary COPY carries no type tags: PostgreSQL
+  reads whatever bytes arrive as the column's own binary format, so
+  substituting TEXT for an unknown type does not fail, it writes the wrong
+  bytes. Demonstrated on this workspace's `vector` type (pgvector is
+  installed and `ai.embedding.embedding_vector` is a real column):
+
+        COPY … (v vector) FROM STDIN (FORMAT BINARY), value "[1,2,3]"
+          before   SQLSTATE 54000  vector cannot have more than 16000 dimensions
+                   -- the first two bytes of the string became a dimension count
+          after    refused by set_types, naming the oid
+
+  **It was not reachable through Odoo, and that is worth stating precisely
+  rather than as reassurance.** Odoo's `_can_dump_binary` guard asks PSYCOPG
+  whether it has a binary dumper, and it still works under the shim -- it
+  answers False for `vector`, so a bulk create falls back to text COPY and
+  the cursor is never handed the OID. Measured: of the 11 distinct column
+  types in this database psycopg refuses exactly one, `vector`. So the safety
+  rested entirely on psycopg's accepted set being a SUBSET of what
+  tokio-postgres knows, and nothing checked that. It is checked now:
+  `every_oid_psycopg_dumps_in_binary_is_one_this_cursor_can_encode` pins all
+  **58** OIDs psycopg will dump in binary (of 291 `pg_catalog` base types)
+  against `Type::from_oid`.
+
+  The contract this restores is Odoo's own: psycopg's `set_types` raises for
+  a type it cannot dump, and
+  `test_db_cursor.py::test_can_dump_binary_agrees_with_set_types_on_every_type`
+  asserts the guard and the cursor agree. **That test is not in
+  `phase2_allowlist.json`** -- `phase2_tests` runs `test_expression` and
+  `test_search` and nothing else -- so the rust cursor had never been held to
+  it. It was run by hand, and the result is worth recording exactly, because
+  the fix does not make it pass:
+
+        71 pg_catalog array types, 47 mismatches, ALL in one direction:
+            psycopg=False  rust=True     47   int2vector, oidvector, _xml,
+                                              point, lseg, box, line, _circle…
+            psycopg=True   rust=False     0
+
+  Zero in the direction that would be corruption -- there is no type psycopg
+  dumps that this cursor refuses. The 47 are types `Type::from_oid` RESOLVES
+  and `py_to_sql` cannot encode: `set_types` accepts the declaration and
+  `write_row` then fails with `COPY encode failed`. Loud, late, and
+  unreachable through Odoo, since `_can_dump_binary` returns False for every
+  one of them and no binary COPY is attempted. Closing that last gap means
+  duplicating `py_to_sql`'s coverage in `set_types`, which is a second list
+  to keep in step for cases that cannot arrive; it is not done, and this is
+  the record of the decision rather than an oversight.
+
+  **And `phase2_tests` could not gate this even if the module were added.**
+  It compares a baseline leg against a routed leg, and what it toggles is ORM
+  ROUTING -- the db shim is installed in BOTH legs, so the cursor is
+  rust-backed in both. A cursor regression appears identically on both sides
+  and lands in the "pre-existing in both modes" bucket the gate ignores. A
+  real cursor gate would have to diff the rust cursor against psycopg, which
+  is a different harness from the one that exists.
 - `RustConn::copy` implements binary `COPY FROM STDIN` (the format v19's bulk
   create requests). Text/CSV format, `ON_ERROR`, and a custom writer are not
   implemented — nothing in the read or create path asks for them.
 - A `search_read` with no `fields` is refused. Odoo returns every readable
   field there; enumerating them is a `fields_get` this kernel does not have.
-- An inequality against an unset value is refused. Odoo's answer is
-  type-dependent -- `('id','>',False)` and `('write_date','<',False)` both
-  optimize to FALSE while `('name','>',False)` is kept and compared -- and a
-  kernel that guesses at that is wrong on every row of whichever case it
-  guessed wrong.
+- An inequality against an unset value is **served**, and closing it turned
+  up two live wrong answers next to it. Odoo's rule is one attribute --
+  `Field.falsy_value`, the value the column holds for an unset field -- and
+  the answer follows from whether the field has one: `('id','>',False)` and
+  `('write_date','<',False)` fold to FALSE because `id` and `datetime` have
+  none, while `('name','>',False)` compares against `''` and
+  `('name','>=',False)` also takes the NULL rows, because `''` satisfies it.
+  The kernel already computed that from the field's TYPE, which is the bug:
+  **Odoo declares `falsy_value` on the field CLASS.** Measured over the 7,042
+  fields of a 73-module database, exactly two classes disagree with their own
+  type, and the kernel was wrong on both -- `id` is a `fields.Id` and not an
+  `Integer`, so it has no `0`; and `many2one_reference` has `0` where its
+  relational siblings have none, so `('res_id','=',False)` must match the
+  rows holding `0` as well as the NULL ones and `('res_id','!=',False)` must
+  exclude them. That second one was not a refusal: it silently returned the
+  wrong rows, and no lane could see it, for two reasons measured rather than
+  supposed: **0** of the shadow corpus's 279 cases compares against `False`
+  with an ordering operator at all, and **0** rows across all **8** stored
+  `many2one_reference` columns of a 73-module database hold the value `0`,
+  so even the cases that do run agree for want of a discriminating row.
+  A green result diff is evidence about the rows the database happens to
+  hold, and this is what that is worth. `sweep_corpus.py` now probes the
+  family per model -- 4,970 sweep cases become 5,850, of which the ones
+  actually compared against Python rather than denied rise 1,678 -> 2,451.
+- Every operator but `in` / `not in` over a **boolean** field is refused,
+  because Odoo raises `ValueError` on all of them (`active > False`,
+  `active > True` and `active like 'x'` alike) rather than answering. The
+  kernel used to compile them, which was the worse failure of the two: it
+  returned rows for a question Python declines to answer. The refusal costs
+  no routed share worth having -- the fallback runs Python, which raises, so
+  the caller gets the error it would have got with the kernel switched off.
 - A model whose `_rec_name` IS `display_name` cannot have a display-name search
   compiled: it would search display_name to answer display_name. Odoo breaks
   that loop in Python (`display_name.no_error`); here it is a refusal, and a

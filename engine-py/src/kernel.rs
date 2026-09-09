@@ -49,7 +49,7 @@ impl RustKernel {
     pub fn build(py: Python<'_>, db: &RustDb, export_json: &str) -> PyResult<Self> {
         crate::logbridge::install();
         let export: serde_json::Value = serde_json::from_str(export_json).map_err(rerr)?;
-        let conn = db.connect(py)?;
+        let conn = db.connect(py, None)?;
         let handle = conn.handle().clone();
         let client = conn.client();
         let registry = py

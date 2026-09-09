@@ -31,6 +31,7 @@ Usage:
         --threads 8 --seconds 20
 """
 import argparse
+import collections
 import http.cookiejar
 import json
 import statistics
@@ -176,9 +177,21 @@ def main():
         "p99_ms": round(lat[int(n * 0.99)] * 1000, 2) if n else None,
         "mean_ms": round(statistics.mean(lat) * 1000, 2) if n else None,
         "errors": len(errors),
+        # Broken out because the two are not the same finding: an RPC error
+        # is a request that failed, an ANSWER CHANGED is a request that
+        # SUCCEEDED and returned something else than the baseline. A harness
+        # reading only the total cannot tell them apart, and the second is
+        # the one a routing burn-in exists to catch.
+        "answer_changed": sum(1 for e in errors if e.startswith("ANSWER CHANGED")),
     }))
-    for e in errors[:5]:
-        print("  error: %s" % e, file=sys.stderr)
+    # Every kind, counted -- `errors[:5]` printed the first five occurrences,
+    # so a run whose first five shared one kind hid every other kind behind
+    # them however many there were.
+    kinds = collections.Counter(errors)
+    for kind, n in kinds.most_common(10):
+        print("  error: %s (x%d)" % (kind, n), file=sys.stderr)
+    if len(kinds) > 10:
+        print("  error: ... and %d more kinds" % (len(kinds) - 10), file=sys.stderr)
     return 1 if errors else 0
 
 

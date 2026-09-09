@@ -6,3 +6,4 @@ pub mod registry;
 pub mod scan;
 pub mod security;
 pub mod sqlgen;
+pub mod trigram;

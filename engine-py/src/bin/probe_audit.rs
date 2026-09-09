@@ -139,6 +139,48 @@ CASES = [
     ("text[]",      [["a", "b"], [], None]),
     ("bool[]",      [[True, False], None]),
     ("float8[]",    [[1.5, 2.5], None]),
+    # Arrays of everything the scalar list above already covers. Each of these
+    # decoded to RAW BINARY BYTES until 2026-09-09 -- a `date[]` column read
+    # back as b"\x00\x00\x00\x01..." -- and the reason no gate saw it is
+    # that this list did not name them. A type layer is only covered for the
+    # types its corpus mentions.
+    ("numeric[]",     [["1.25", "-3.5"], [], None]),
+    ("date[]",        [["2026-01-31", "1970-01-01"], None]),
+    ("time[]",        [["01:02:03"], None]),
+    ("timestamp[]",   [["2026-01-31 12:34:56"], None]),
+    ("timestamptz[]", [["2026-01-31 12:34:56+00"], None]),
+    ("bytea[]",       [[b"ab", b"\x00\xff"], None]),
+    ("oid[]",         [[1, 2], None]),
+    # pgvector. Not a catalog type -- its oid is per-database, so it is
+    # matched by NAME -- but it is in this workspace's database template and
+    # agromarin's AI modules store embeddings in it. It had already cost this
+    # repo once, encoded as TEXT into a binary COPY; it was reading back as
+    # raw bytes and refusing every write until 2026-09-09.
+]
+
+# Extension types: skipped, not failed, where the extension is absent -- the
+# probe must run against any database, and a case that cannot be created is
+# not a mismatch. Both are matched by NAME in the cursor, their oids being
+# per-database.
+EXTENSION_CASES = [
+    ("vector", "vector(3)",  ["[1,2,3]", None]),
+    ("postgis", "geometry",  ["SRID=4326;POINT(1 2)", None]),
+]
+
+# Read-only: this cursor DECODES these but cannot yet ENCODE them, so only
+# psycopg writes and both read. Splitting the direction is what lets the gate
+# hold at zero while still covering the half that works -- the alternative was
+# no coverage at all, which is how the array types above stayed broken.
+# (required extension or None, type, values)
+READ_ONLY_CASES = [
+    (None, "interval", ["1 day", "1 month 2 days 03:04:05", None]),
+    # geography DECODES fine and cannot be written: PostgreSQL has an
+    # implicit text->geometry cast and none for geography, and this transport
+    # binds every parameter in binary against the statement's resolved type,
+    # so a text literal cannot reach the server's input function the way
+    # psycopg's untyped parameter does. Writing it needs an EWKB encoder.
+    ("postgis", "geography", ["SRID=4326;POINT(1 2)", None]),
+    (None, "uuid", ["00000000-0000-0000-0000-000000000001", None]),
 ]
 
 def norm(v):
@@ -156,8 +198,17 @@ pc = psycopg.connect(CONNINFO, autocommit=True)
 pcur = pc.cursor()
 
 bad, checked = [], 0
+pcur.execute("SELECT extname FROM pg_extension")
+have = {r[0] for r in pcur.fetchall()}
+skipped = [ext for ext, _, _ in EXTENSION_CASES if ext not in have]
+CASES = CASES + [(ct, vs) for ext, ct, vs in EXTENSION_CASES if ext in have]
+
 for coltype, values in CASES:
-    t = "probe_t_" + coltype.replace("[]", "_arr")
+    # A type name is not an identifier: `vector(3)` and `int4[]` both need
+    # flattening before they can name a table.
+    t = "probe_t_" + "".join(
+        ch if ch.isalnum() or ch == "_" else "_" for ch in coltype.replace("[]", "_arr")
+    )
     pcur.execute("DROP TABLE IF EXISTS %s" % t)
     pcur.execute("CREATE TABLE %s (i serial primary key, w text, v %s)" % (t, coltype))
     for v in values:
@@ -203,7 +254,37 @@ for coltype, values in CASES:
         pcur.execute("DELETE FROM %s" % t)
     pcur.execute("DROP TABLE %s" % t)
 
-print("PROBE types checked=%d mismatches=%d" % (checked, len(bad)))
+for ext, coltype, values in READ_ONLY_CASES:
+    if ext is not None and ext not in have:
+        skipped.append(ext)
+        continue
+    t = "probe_ro_" + "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in coltype)
+    pcur.execute("DROP TABLE IF EXISTS %s" % t)
+    pcur.execute("CREATE TABLE %s (i serial primary key, v %s)" % (t, coltype))
+    for v in values:
+        checked += 1
+        pcur.execute("INSERT INTO %s (v) VALUES (%%s)" % t, (v,))
+        try:
+            rcur.execute("SELECT v FROM %s ORDER BY i" % t)
+            by_rust = [norm(r[0]) for r in rcur.fetchall()]
+            rust.commit()
+        except Exception as e:
+            bad.append((coltype, repr(v)[:34], "READ RAISED " + str(e)[:48], "ok"))
+            try:
+                rust.rollback()
+            except Exception:
+                pass
+            pcur.execute("DELETE FROM %s" % t)
+            continue
+        pcur.execute("SELECT v FROM %s ORDER BY i" % t)
+        by_py = [norm(r[0]) for r in pcur.fetchall()]
+        if by_rust != by_py:
+            bad.append((coltype, repr(v)[:34], repr(by_rust)[:64], repr(by_py)[:64]))
+        pcur.execute("DELETE FROM %s" % t)
+    pcur.execute("DROP TABLE %s" % t)
+
+print("PROBE types checked=%d mismatches=%d skipped_extensions=%s"
+      % (checked, len(bad), ",".join(sorted(set(skipped))) or "none"))
 for b in bad:
     print("PROBE types MISMATCH %-12s value=%-20s rust=%-42s psycopg=%s" % b)
 "##;
@@ -304,7 +385,7 @@ fn main() -> Result<()> {
         let ns = PyDict::new(py);
         let conns = pyo3::types::PyList::empty(py);
         for _ in 0..n {
-            conns.append(rust_db.connect(py)?.into_pyobject(py)?)?;
+            conns.append(rust_db.connect(py, None)?.into_pyobject(py)?)?;
         }
         ns.set_item("conns", &conns)?;
         ns.set_item("N", n)?;

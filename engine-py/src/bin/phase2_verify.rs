@@ -356,16 +356,20 @@ def run(reg, orm_shim, originals):
 "#;
 
 fn main() -> Result<()> {
-    let rt = std::sync::Arc::new(tokio::runtime::Runtime::new()?);
+    // SAFETY: main has spawned no thread yet, so no other thread can be reading
+    // the environment concurrently.
+    unsafe {
+        std::env::set_var("ODOO_DISABLE_COPY", "1");
 
-    std::env::set_var("ODOO_DISABLE_COPY", "1");
-
-    if std::env::var_os("RUSTORM_CORPUS_PATH").is_none() {
-        std::env::set_var(
-            "RUSTORM_CORPUS_PATH",
-            odoo_kernel::config::harness_dir().join("corpus.json"),
-        );
+        if std::env::var_os("RUSTORM_CORPUS_PATH").is_none() {
+            std::env::set_var(
+                "RUSTORM_CORPUS_PATH",
+                odoo_kernel::config::harness_dir().join("corpus.json"),
+            );
+        }
     }
+
+    let rt = std::sync::Arc::new(tokio::runtime::Runtime::new()?);
     Python::initialize();
 
     let result: String = Python::attach(|py| -> PyResult<String> {
@@ -443,8 +447,10 @@ fn main() -> Result<()> {
     println!("== whole-registry sweep ==");
     println!(
         "  kernel-verified at EVERY identity: {}  (allowlist written), mismatches: {}, gated/fallback: {}, no-access skipped: {}",
-        out["sweep"]["kernel_ok"], out["sweep"]["mismatch"],
-        out["sweep"]["gated_or_error"], out["sweep"]["denied"]
+        out["sweep"]["kernel_ok"],
+        out["sweep"]["mismatch"],
+        out["sweep"]["gated_or_error"],
+        out["sweep"]["denied"]
     );
     println!(
         "  query shapes compared: {} ({} routed to the kernel)",

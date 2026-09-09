@@ -53,9 +53,20 @@ trap stop EXIT
 leg() {
   local mode="$1" log="$OUT/$1.log"
   stop
+  # `server_wide_modules` is APPENDED to, not replaced. Two reasons, and
+  # each of them broke a run: a second `server_wide_modules =` in the same
+  # section is a hard `malformed configuration file` from configparser, so a
+  # conf that already declares one (this workspace's does) could not boot the
+  # burn-in at all; and overwriting it with a fixed `base,web,rust_engine`
+  # silently drops whatever else the conf loads server-wide -- `rpc` here,
+  # which is the module the JSON-RPC bench calls through.
+  local swm
+  swm=$(sed -n 's/^server_wide_modules[[:space:]]*=[[:space:]]*//p' "$OUT/burnin.conf" | tail -1)
+  swm="${swm:-base,web}"
+  case ",$swm," in *,rust_engine,*) ;; *) swm="$swm,rust_engine" ;; esac
   {
-    grep -v '^rust_engine_' "$OUT/burnin.conf"
-    echo "server_wide_modules = base,web,rust_engine"
+    grep -vE '^(rust_engine_|server_wide_modules[[:space:]]*=)' "$OUT/burnin.conf"
+    echo "server_wide_modules = $swm"
     echo "rust_engine_db = $DB"
     echo "rust_engine_mode = $mode"
     echo "rust_engine_verify_sample = $SAMPLE"
@@ -105,8 +116,17 @@ leg() {
   echo "  $mode: $result"
   if grep -q 'error:' "$OUT/bench_$mode.err" 2>/dev/null; then
     echo "  $mode: bench errors by kind:"
-    sed -n 's/^  error: //p' "$OUT/bench_$mode.err" | sed 's/[0-9]\{3,\}/N/g' | sort | uniq -c | sort -rn | awk 'NR<=5' | sed 's/^/    /'
+    sed -n 's/^  error: //p' "$OUT/bench_$mode.err" | sed 's/^/    /'
   fi
+  # A CLIENT-side answer change is a divergence and must be fatal. The
+  # server-side `diff` counter cannot see one: it compares the METHOD's
+  # result, and a routed `web_search_read` that returns identical records
+  # inside a response envelope missing a key is equal by that comparison and
+  # different to whoever consumes the response. This gate was blind to
+  # exactly that, and the first burn-in that ran found one.
+  local changed
+  changed=$(sed -n 's/.*"answer_changed": *\([0-9][0-9]*\).*/\1/p' <<<"$result" | head -1)
+  changed=${changed:-0}
   printf '  %s: routed=%d verified=%d divergences=%d errors=%d (%d/%d workers reporting)  rss %d -> %d KB (%+d)  conns %s -> %s\n' \
     "$mode" "$routed" "$verified" "$diff" "$errors" "$reporting" "$WORKERS" \
     "$rss_before" "$rss_after" "$((rss_after - rss_before))" "$conns_before" "$conns_after"
@@ -114,8 +134,8 @@ leg() {
   fivehundred=$(grep -ac 'Exception during request' "$log" || true)
   bugs=$(grep -ac 'routing path raised' "$log" || true)
   divlines=$(grep -ac 'SHADOW DIVERGENCE' "$log" || true)
-  echo "  $mode: 500s=$fivehundred routing-bugs=$bugs divergence-lines=$divlines"
-  BURNIN_DIFF=$((${BURNIN_DIFF:-0} + diff + divlines))
+  echo "  $mode: 500s=$fivehundred routing-bugs=$bugs divergence-lines=$divlines answers-changed=$changed"
+  BURNIN_DIFF=$((${BURNIN_DIFF:-0} + diff + divlines + changed))
   BURNIN_BUGS=$((${BURNIN_BUGS:-0} + fivehundred + bugs))
   BURNIN_ERRORS=$((${BURNIN_ERRORS:-0} + errors))
 

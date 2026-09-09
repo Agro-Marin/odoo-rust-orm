@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{NaiveDate, NaiveDateTime};
 use sea_query::{Alias, Cond, Condition, Expr, ExprTrait, Func, JoinType, Order, Value};
 use serde_json::Value as Json;
@@ -448,7 +448,7 @@ impl<'a> Compiler<'a> {
             .fields
             .get(&path[path.len() - 1])
             .ok_or_else(|| anyhow::anyhow!("unknown field {}", leaf.field))?;
-        if field.ttype.falsy_json().is_some() {
+        if field.falsy_json().is_some() {
             return Ok(inverted);
         }
         Ok(Node::Or(vec![
@@ -502,15 +502,15 @@ impl<'a> Compiler<'a> {
             );
         }
 
-        if let Some((uid, groups)) = &self.ctx.access {
-            if !self.ctx.registry.field_readable(field, groups) {
-                bail!(
-                    "uid {uid} may not filter on {}.{}: the field is restricted to {:?}",
-                    self.model.name,
-                    field.name,
-                    field.groups.as_deref().unwrap_or(".")
-                );
-            }
+        if let Some((uid, groups)) = &self.ctx.access
+            && !self.ctx.registry.field_readable(field, groups)
+        {
+            bail!(
+                "uid {uid} may not filter on {}.{}: the field is restricted to {:?}",
+                self.model.name,
+                field.name,
+                field.groups.as_deref().unwrap_or(".")
+            );
         }
 
         match field.ttype {
@@ -521,7 +521,12 @@ impl<'a> Compiler<'a> {
                 if matches!(leaf.op.as_str(), "any" | "not any" | "any!" | "not any!") =>
             {
                 let sub = crate::domain::parse(&leaf.value)?;
-                return self.m2o_any(field, &sub, !leaf.op.starts_with("not"));
+                return self.m2o_any(
+                    field,
+                    &sub,
+                    !leaf.op.starts_with("not"),
+                    field.bypass_search_access,
+                );
             }
             _ => {}
         }
@@ -556,6 +561,11 @@ impl<'a> Compiler<'a> {
 
         let cond = match op {
             "in" | "not in" => self.in_condition(field, sql_field, op, &values, can_be_null),
+            _ if field.ttype == FieldType::Boolean => bail!(
+                "operator {op:?} is not supported on the boolean field {}.{}",
+                self.model.name,
+                field.name
+            ),
             _ if op.ends_with("like") => {
                 self.like_condition(field, sql_field, op, &values[0], can_be_null)
             }
@@ -564,6 +574,10 @@ impl<'a> Compiler<'a> {
             }
             other => bail!("unsupported operator {other:?}"),
         }?;
+        let cond = match self.trigram_accelerator_for_value(field, &values) {
+            Some(accelerator) if op == "in" => accelerator.and(cond),
+            _ => cond,
+        };
         Ok(self.company_dependent_guard(field, op, &values, cond))
     }
 
@@ -609,9 +623,9 @@ impl<'a> Compiler<'a> {
             value: value.clone(),
         });
         match head.ttype {
-            FieldType::Many2one => self.m2o_any(head, &sub_leaf, true),
+            FieldType::Many2one => self.m2o_any(head, &sub_leaf, true, head.bypass_search_access),
             FieldType::One2many | FieldType::Many2many => {
-                self.x2many_subselect(head, Some(&sub_leaf), true, true)
+                self.x2many_subselect(head, Some(&sub_leaf), true, true, head.bypass_search_access)
             }
             _ => bail!(
                 "cannot traverse non-relational {}.{}",
@@ -653,18 +667,18 @@ impl<'a> Compiler<'a> {
         }
         if field.ttype == FieldType::One2many {
             let inverse = field.inverse_column()?;
-            if let Some(inv) = co.fields.get(inverse) {
-                if inv.ttype == FieldType::Many2oneReference {
-                    let model_field = inv.model_field.as_deref().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "{}.{} is a many2one_reference with no model_field; a \
+            if let Some(inv) = co.fields.get(inverse)
+                && inv.ttype == FieldType::Many2oneReference
+            {
+                let model_field = inv.model_field.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "{}.{} is a many2one_reference with no model_field; a \
                              one2many over it would read other models' rows",
-                            co.name,
-                            inverse
-                        )
-                    })?;
-                    cond = cond.add(col(&compiler.alias, model_field).eq(owner.name.as_str()));
-                }
+                        co.name,
+                        inverse
+                    )
+                })?;
+                cond = cond.add(col(&compiler.alias, model_field).eq(owner.name.as_str()));
             }
         }
         Ok(cond)
@@ -695,12 +709,22 @@ impl<'a> Compiler<'a> {
         Ok(Cond::all().add(col(&self.alias, active_name).is_in([true])))
     }
 
-    fn comodel_rules(&self, co: &'a Model) -> Result<Option<&'a Node>> {
+    /// The comodel's record rules to AND into a subquery, if any apply.
+    ///
+    /// `bypass` is the field's `bypass_search_access`, and Odoo's answer to
+    /// it is total: `_optimize_any_with_rights` rewrites the condition to
+    /// `any!`, and `_search(bypass_access=True)` skips the comodel's ACL
+    /// check AND its record rules. The `_search` purity check stays either
+    /// way -- a bypass does not make a Python `_search` reproducible.
+    fn comodel_rules(&self, co: &'a Model, bypass: Option<bool>) -> Result<Option<&'a Node>> {
         if !co.search_pure {
             bail!(
                 "the subquery traverses {}, which defines `_search` in Python",
                 co.name
             );
+        }
+        if bypass == Some(true) {
+            return Ok(None);
         }
         if self.su {
             return Ok(None);
@@ -720,7 +744,18 @@ impl<'a> Compiler<'a> {
         }
         self.rules.ensure_evaluated(&co.name)?;
 
-        Ok(self.rules.get(&co.name))
+        let rules = self.rules.get(&co.name);
+        if bypass.is_none() && rules.is_some() {
+            bail!(
+                "whether {} bypasses {}'s record rules is not recorded in \
+                 `ir_model_fields`, and applying them when Odoo would not \
+                 answers with fewer rows; build the registry from a \
+                 live-registry export",
+                self.model.name,
+                co.name
+            );
+        }
+        Ok(rules)
     }
 
     fn m2o_name_search(&self, field: &Field, op: &str, value: &Json) -> Result<Expr> {
@@ -728,7 +763,7 @@ impl<'a> Compiler<'a> {
         let positive = !op.starts_with("not ");
         let pos_op = op.strip_prefix("not ").unwrap_or(op);
         let sub = Self::display_name_node(co, pos_op, value)?;
-        self.m2o_any(field, &sub, positive)
+        self.m2o_any(field, &sub, positive, field.bypass_search_access)
     }
 
     fn display_name_condition(&self, model: &Model, op: &str, value: &Json) -> Result<Expr> {
@@ -785,12 +820,18 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    fn m2o_any(&self, field: &Field, sub_node: &Node, positive: bool) -> Result<Expr> {
+    fn m2o_any(
+        &self,
+        field: &Field,
+        sub_node: &Node,
+        positive: bool,
+        bypass: Option<bool>,
+    ) -> Result<Expr> {
         let co = self.ctx.registry.get(field.comodel()?)?;
         let sub_alias = format!("s{}_{}", self.depth, co.table);
         let sub_compiler = self.sub_compiler(co, sub_alias.clone());
         let mut cond = Cond::all().add(sub_compiler.compile(sub_node)?);
-        if let Some(rules) = self.comodel_rules(co)? {
+        if let Some(rules) = self.comodel_rules(co, bypass)? {
             cond = cond.add(sub_compiler.compile(rules)?);
         }
         let mut select = sea_query::Query::select();
@@ -816,7 +857,13 @@ impl<'a> Compiler<'a> {
         match op {
             "any" | "not any" | "any!" | "not any!" => {
                 let sub = crate::domain::parse(value)?;
-                self.x2many_subselect(field, Some(&sub), !op.starts_with("not"), true)
+                self.x2many_subselect(
+                    field,
+                    Some(&sub),
+                    !op.starts_with("not"),
+                    true,
+                    field.bypass_search_access,
+                )
             }
             "in" | "=" | "not in" | "!=" => {
                 let positive = matches!(op, "in" | "=");
@@ -848,10 +895,22 @@ impl<'a> Compiler<'a> {
                         op: "in".into(),
                         value: serde_json::json!(ids),
                     });
-                    Some(self.x2many_subselect(field, Some(&sub), true, false)?)
+                    Some(self.x2many_subselect(
+                        field,
+                        Some(&sub),
+                        true,
+                        false,
+                        field.bypass_search_access,
+                    )?)
                 };
                 let empty = match match_empty {
-                    true => Some(self.x2many_subselect(field, None, false, false)?),
+                    true => Some(self.x2many_subselect(
+                        field,
+                        None,
+                        false,
+                        false,
+                        field.bypass_search_access,
+                    )?),
                     false => None,
                 };
                 let combined = match (matching, empty) {
@@ -873,6 +932,7 @@ impl<'a> Compiler<'a> {
         sub_node: Option<&Node>,
         positive: bool,
         apply_active: bool,
+        bypass: Option<bool>,
     ) -> Result<Expr> {
         let co = self.ctx.registry.get(field.comodel()?)?;
         let sub_alias = format!("s{}_{}", self.depth, co.table);
@@ -886,17 +946,14 @@ impl<'a> Compiler<'a> {
                 cond = cond.add(sub_compiler.active_filter(field, co, Some(node))?);
             }
         }
-        if let Some(rules) = self.comodel_rules(co)? {
+        if let Some(rules) = self.comodel_rules(co, bypass)? {
             cond = cond.add(sub_compiler.compile(rules)?);
         }
 
         let mut select = sea_query::Query::select();
         match field.ttype {
             FieldType::One2many => {
-                let inverse = field
-                    .relation_field
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("one2many without relation_field"))?;
+                let inverse = field.o2m_inverse_column(&self.model.name, co)?;
                 select
                     .expr(col(&sub_alias, inverse))
                     .from_as(Alias::new(&co.table), Alias::new(sub_alias.as_str()))
@@ -943,7 +1000,7 @@ impl<'a> Compiler<'a> {
             .cloned()
             .collect();
         let mut null_in_condition = params.len() < values.len();
-        if let Some(falsy) = field.ttype.falsy_json() {
+        if let Some(falsy) = field.falsy_json() {
             if field.ttype == FieldType::Boolean {
                 if null_in_condition {
                     params.push(falsy);
@@ -985,6 +1042,70 @@ impl<'a> Compiler<'a> {
         sql.ok_or_else(|| anyhow::anyhow!("missing sql for {op} {values:?}"))
     }
 
+    /// Odoo's trigram accelerator: a conjunct on the ONE expression the GIN
+    /// index is declared over, which the base condition already implies.
+    ///
+    /// Without it a `like` over a translated `index="trigram"` field is a
+    /// sequential scan, because the index is on
+    /// `unaccent(jsonb_path_query_array(col, '$.*')::text)` and nothing else
+    /// can use it -- so the kernel was slower than the Python it replaces on
+    /// exactly the path a product autocomplete takes. See `crate::trigram`.
+    ///
+    /// Only the POSITIVE operators, as Odoo does: `not like` gets no
+    /// conjunct, because "does not contain" is not implied by the prefilter.
+    fn trigram_indexed(&self, field: &Field) -> bool {
+        self.ctx.registry.has_trigram
+            && field.translated
+            && field.index.as_deref() == Some("trigram")
+    }
+
+    /// The conjunct itself, over the RAW jsonb column rather than the
+    /// language extraction the base condition compares: the index is over
+    /// every translation, and only that expression can use it.
+    fn trigram_conjunct(&self, field: &Field, pattern: String, insensitive: bool) -> Expr {
+        let left = Expr::cust_with_exprs(
+            "jsonb_path_query_array($1, '$.*')::text",
+            [col(&self.alias, &field.name)],
+        );
+        let keyword = if insensitive { "ILIKE" } else { "LIKE" };
+        if self.ctx.registry.has_unaccent {
+            Expr::cust_with_exprs(
+                format!("unaccent($1) {keyword} unaccent($2)"),
+                [left, Expr::val(pattern)],
+            )
+        } else {
+            Expr::cust_with_exprs(format!("$1 {keyword} $2"), [left, Expr::val(pattern)])
+        }
+    }
+
+    fn trigram_accelerator(&self, field: &Field, op: &str, raw: &str) -> Option<Expr> {
+        if !self.trigram_indexed(field) || op.starts_with("not ") || raw.is_empty() {
+            return None;
+        }
+        let pattern = crate::trigram::pattern_to_pattern(raw);
+        if pattern == "%" {
+            return None;
+        }
+        Some(self.trigram_conjunct(field, pattern, op.ends_with("ilike")))
+    }
+
+    /// The same accelerator for a single-valued `in` -- which is what an `=`
+    /// on a translated field becomes. Odoo compares it with LIKE rather than
+    /// ILIKE, because the equality it accompanies is case-sensitive too.
+    fn trigram_accelerator_for_value(&self, field: &Field, values: &[Json]) -> Option<Expr> {
+        if !self.trigram_indexed(field) {
+            return None;
+        }
+        let [Json::String(one)] = values else {
+            return None;
+        };
+        let pattern = crate::trigram::value_to_pattern(one);
+        if pattern == "%" {
+            return None;
+        }
+        Some(self.trigram_conjunct(field, pattern, false))
+    }
+
     fn like_condition(
         &self,
         field: &Field,
@@ -1007,7 +1128,7 @@ impl<'a> Compiler<'a> {
         let pattern = if need_wildcard {
             format!("%{raw}%")
         } else {
-            raw
+            raw.clone()
         };
         let insensitive = op.ends_with("ilike");
         let negative = op.starts_with("not ");
@@ -1030,6 +1151,9 @@ impl<'a> Compiler<'a> {
         if negative && can_be_null {
             sql = sql.or(sql_field.is_null());
         }
+        if let Some(accelerator) = self.trigram_accelerator(field, op, &raw) {
+            sql = accelerator.and(sql);
+        }
         Ok(sql)
     }
 
@@ -1041,17 +1165,16 @@ impl<'a> Compiler<'a> {
         value: &Json,
         can_be_null: bool,
     ) -> Result<Expr> {
-        if is_null_like(value) {
-            bail!(
-                "{}.{} `{op}` against an unset value: Odoo's result depends on the \
-                 field type and this kernel does not model it",
-                self.model.name,
-                field.name
-            );
+        let falsy = field.falsy_json();
+        if is_null_like(value) && falsy.is_none() {
+            // `_optimize_inequality_against_null`: with nothing to stand in
+            // for the unset value there is nothing to order against, and
+            // Odoo folds the condition to FALSE rather than comparing.
+            return Ok(Expr::cust("FALSE"));
         }
         let mut value = value.clone();
         let mut accept_null = false;
-        if let Some(falsy) = field.ttype.falsy_json() {
+        if let Some(falsy) = falsy {
             if is_null_like(&value) {
                 value = falsy.clone();
             }

@@ -1,16 +1,16 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use sea_query::{Cond, Condition, ExprTrait};
-use serde_json::{json, Value as Json};
+use serde_json::{Value as Json, json};
 use tokio_postgres::Client;
 
 use crate::db::Db;
 use crate::domain::{self};
 use crate::registry::{Field, FieldType, Model, Registry, SignalChange};
 use crate::security::{self, RuleSet, UserCtx};
-use crate::sqlgen::{col, Compiler, ExprCtx};
+use crate::sqlgen::{Compiler, ExprCtx, col};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RegistryStale;
@@ -308,10 +308,10 @@ impl<'a> Orm<'a> {
         let (company_id, company_ids) = match req.allowed_company_ids.as_deref() {
             Some([]) | None => (default_company_id, user_company_ids),
             Some(allowed) => {
-                if !req.su {
-                    if let Some(bad) = allowed.iter().find(|c| !user_company_ids.contains(c)) {
-                        bail!("uid {uid} is not allowed in company {bad}");
-                    }
+                if !req.su
+                    && let Some(bad) = allowed.iter().find(|c| !user_company_ids.contains(c))
+                {
+                    bail!("uid {uid} is not allowed in company {bad}");
                 }
                 (allowed[0], allowed.to_vec())
             }
@@ -449,10 +449,10 @@ impl<'a> Orm<'a> {
             .map(str::to_string)
             .collect::<Vec<String>>();
         for fname in named {
-            if let Some(f) = model.fields.get(&fname) {
-                if let Some(co) = &f.relation {
-                    out.push(co.clone());
-                }
+            if let Some(f) = model.fields.get(&fname)
+                && let Some(co) = &f.relation
+            {
+                out.push(co.clone());
             }
         }
 
@@ -497,12 +497,11 @@ impl<'a> Orm<'a> {
                 m = next;
             }
 
-            if let Some(last) = out.last() {
-                if let (Ok(co), Ok(sub)) = (self.registry.get(last), domain::parse(&value)) {
-                    if !matches!(sub, domain::Node::True) {
-                        out.extend(self.comodels_of_with(ctx, co, &sub));
-                    }
-                }
+            if let Some(last) = out.last()
+                && let (Ok(co), Ok(sub)) = (self.registry.get(last), domain::parse(&value))
+                && !matches!(sub, domain::Node::True)
+            {
+                out.extend(self.comodels_of_with(ctx, co, &sub));
             }
         }
         out
@@ -919,13 +918,13 @@ impl<'a> Orm<'a> {
         let compiler = Compiler::root(&ctx, model, rules, env.su);
         let mut cond = Cond::all().add(compiler.compile(&node)?);
 
-        if let Some(active_name) = model.active_name.as_deref() {
-            if env.active_test {
-                let mut referenced = Vec::new();
-                domain::referenced_fields(&node, &mut referenced);
-                if !referenced.iter().any(|f| f == active_name) {
-                    cond = cond.add(col(&model.table, active_name).is_in([true]));
-                }
+        if let Some(active_name) = model.active_name.as_deref()
+            && env.active_test
+        {
+            let mut referenced = Vec::new();
+            domain::referenced_fields(&node, &mut referenced);
+            if !referenced.iter().any(|f| f == active_name) {
+                cond = cond.add(col(&model.table, active_name).is_in([true]));
             }
         }
         if !env.su {

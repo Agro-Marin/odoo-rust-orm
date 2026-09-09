@@ -1,5 +1,5 @@
-use anyhow::{bail, Result};
-use serde_json::{json, Value as Json};
+use anyhow::{Result, bail};
+use serde_json::{Value as Json, json};
 
 use crate::db::Db;
 use crate::registry::{FieldType, Registry};

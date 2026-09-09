@@ -1,16 +1,16 @@
 use std::collections::{BTreeSet, HashMap};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use chrono::{NaiveDate, NaiveDateTime};
 use sea_query::{Alias, Condition, Expr, ExprTrait, JoinType, PostgresQueryBuilder, Query};
 use sea_query_postgres::PostgresBinder;
-use serde_json::{json, Value as Json};
+use serde_json::{Value as Json, json};
 
 use crate::orm::{Env, Orm, Request};
 
 use crate::registry::{Field, FieldType, Model};
 use crate::security::{self, RuleSet};
-use crate::sqlgen::{self, col, Compiler, ExprCtx, OrderItem};
+use crate::sqlgen::{self, Compiler, ExprCtx, OrderItem, col};
 
 pub(crate) enum ColKind {
     IntZero,
@@ -59,13 +59,14 @@ pub(crate) fn decode(row: &tokio_postgres::Row, i: usize, kind: &ColKind) -> Res
         },
 
         ColKind::Datetime => match row.try_get::<_, Option<NaiveDateTime>>(i)? {
-            Some(d) => json!(d
-                .format(if d.and_utc().timestamp_subsec_micros() == 0 {
+            Some(d) => json!(
+                d.format(if d.and_utc().timestamp_subsec_micros() == 0 {
                     "%Y-%m-%d %H:%M:%S"
                 } else {
                     "%Y-%m-%d %H:%M:%S%.6f"
                 })
-                .to_string()),
+                .to_string()
+            ),
             None => json!(false),
         },
         ColKind::M2o { .. } => match row.try_get::<_, Option<i32>>(i)? {
@@ -243,10 +244,10 @@ impl<'a> Orm<'a> {
             for (i, (_, kind)) in kinds.iter().enumerate() {
                 rec.push(decode(row, i, kind)?);
             }
-            if let Some(ci) = display_name_col {
-                if !rec[ci].is_string() {
-                    rec[ci] = json!(format!("{},{}", model.name, rec[0].as_i64().unwrap_or(0)));
-                }
+            if let Some(ci) = display_name_col
+                && !rec[ci].is_string()
+            {
+                rec[ci] = json!(format!("{},{}", model.name, rec[0].as_i64().unwrap_or(0)));
             }
             cells.push(rec);
         }
@@ -378,10 +379,10 @@ impl<'a> Orm<'a> {
 
         let field_compiler = Compiler::root(&ctx, comodel, rules, env.su);
         let mut field_cond = Compiler::field_domain_cond(&field_compiler, field, comodel, owner)?;
-        if let Some(active_name) = comodel.active_name.as_deref() {
-            if field.context_active_test()?.unwrap_or(true) {
-                field_cond = field_cond.add(col(&comodel.table, active_name).is_in([true]));
-            }
+        if let Some(active_name) = comodel.active_name.as_deref()
+            && field.context_active_test()?.unwrap_or(true)
+        {
+            field_cond = field_cond.add(col(&comodel.table, active_name).is_in([true]));
         }
 
         let rule_cond: Option<Condition> = match rules.get(&comodel.name) {
@@ -393,7 +394,7 @@ impl<'a> Orm<'a> {
         let mut select = Query::select();
         match field.ttype {
             FieldType::One2many => {
-                let inverse = field.inverse_column()?;
+                let inverse = field.o2m_inverse_column(&owner.name, comodel)?;
                 select
                     .from(Alias::new(&comodel.table))
                     .expr(col(&comodel.table, inverse))
