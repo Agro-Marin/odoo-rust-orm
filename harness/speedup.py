@@ -52,13 +52,25 @@ def main():
         sys.exit("no cases in common")
     speedups = sorted(((c, py[c] / rs[c]) for c in common), key=lambda x: x[1])
     values = [s for _, s in speedups]
+    # Two different questions. The median of per-case ratios gives every case
+    # one vote whatever it costs, so 71 sub-millisecond `res.country` reads
+    # outvote one 196 ms scan; the time-weighted ratio is what a workload
+    # shaped like the corpus would see end to end. Neither is "the speedup".
+    weighted = sum(py[c] for c in common) / sum(rs[c] for c in common)
+    # Cases only one side produced never enter the ratio. `bench_python.py`
+    # drops a case that raises without a word, so the intersection silently
+    # shrank the denominator; the count is printed so it cannot.
+    py_only, rs_only = len(set(py) - set(rs)), len(set(rs) - set(py))
 
     print(f"cases: {len(common)}   python runs: {len(py_runs)}   rust runs: {len(rs_runs)}")
+    if py_only or rs_only:
+        print(f"  dropped before comparing: {py_only} python-only, {rs_only} rust-only")
     for label, runs in (("python", py_runs), ("rust", rs_runs)):
         d = drift(runs)
         if d is not None:
             print(f"  {label} cross-run drift (median): {d * 100:.0f}%")
-    print(f"median speedup: {statistics.median(values):.2f}x")
+    print(f"median per-case speedup: {statistics.median(values):.2f}x   (one vote per case)")
+    print(f"time-weighted speedup:   {weighted:.2f}x   (total python / total rust over the same cases)")
     print(f"rust faster in: {sum(1 for v in values if v > 1)}/{len(values)}")
     print(f"range: {values[0]:.2f}x .. {values[-1]:.2f}x")
     print("  slowest:", [(c, round(s, 2)) for c, s in speedups[:5]])

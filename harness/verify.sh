@@ -228,6 +228,12 @@ else
   stage "copy encoder" SKIP "no libengine_py.so; cargo build --release"
 fi
 
+if out=$("$PY" "$ROOT/harness/test_speedup.py" 2>&1); then
+  stage "speedup units" OK "$(printf '%s' "$out" | grep -E '^SPEEDUP' | head -1)"
+else
+  stage "speedup units" FAIL "$(printf '%s' "$out" | grep -E '^ *[a-z]|^SPEEDUP' | head -1 | cut -c1-70)"
+fi
+
 # The only stage that compares what the SERVER SENDS rather than what a
 # method returned. It boots two servers, so it is minutes rather than
 # seconds -- but it is the only lane that can see an envelope key, a

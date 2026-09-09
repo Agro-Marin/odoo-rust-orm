@@ -243,6 +243,7 @@ harness/verify.sh --db newdb --build base,mail,account   # create it first
 | upstream suites | routing changes no upstream test result |
 | cursor type layer | 20 Postgres types round-trip identically to psycopg |
 | concurrency | several identities interleaved across threads, no cache cross-talk |
+| speedup units | `speedup.py`'s two aggregates and its drop count, with no database: the median and the time-weighted ratio disagree by design on a corpus of tiny cases, and a case only one side produced is said, not swallowed |
 | replay | captured browser traffic fed back through the shim in shadow mode: routed share and divergences per (model, method); SKIP without a capture file |
 | soak | sustained load against `serve`: every answer still right, RSS flat, still healthy after |
 
@@ -634,6 +635,16 @@ timed doing less work. Median of 3 independent runs per side:
 | big wins | mail.message reads 68–125×, company-dependent filters 75× |
 | losses | small `search_count` where fixed cost dominates (worst 0.79×) |
 | registry + security load | ~170 ms for 950 models |
+
+The median is a median of per-case ratios, unweighted: a 0.05 ms
+`res.country` read and a 196 ms `res.partner` scan count the same, and
+`res.country` is 71 of the corpus's 279 cases. It is not a throughput figure.
+`speedup.py` now prints the time-weighted ratio beside it — total Python time
+over total Rust time on the same cases, which is what a workload shaped like
+the corpus would see — and how many cases each side dropped before the
+intersection, since `bench_python.py` used to drop a raising case without a
+word. The weighted figure was not measured for this table; the range is the
+honest content.
 
 **Quote these with their error bars.** A single benchmark process is not
 reproducible: identical code re-run drifts **41%** per case at the median on
