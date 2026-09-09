@@ -1200,8 +1200,16 @@ server says which one it is in:
 
 | `RUSTORM_SERVE_TOKEN` | behaviour |
 |---|---|
-| set | requests must carry `X-Rustorm-Token`; a caller that presents it may name an identity, because it had to be told the secret |
+| set | requests must carry `X-Rustorm-Token`; a caller that presents it may name a `uid`, because it had to be told the secret. `su` is **refused** unless the server was started with `RUSTORM_SERVE_ALLOW_SU=1`: the secret says the caller may pick an identity, not that one shared string should be a superuser read of the whole database |
 | unset | `uid`/`su` in the body are **ignored** and every request runs as uid 2, non-superuser — the server cannot be used to impersonate |
+
+The token compare does not short-circuit: it runs over the longer of the two
+strings and folds the length mismatch into the same accumulator, so the
+position of the first wrong byte is not measurable from the response time.
+The earlier form returned as soon as the lengths differed, before comparing a
+byte. (The loop is as long as the longer input, so the secret's length is the
+one thing a patient caller could still infer; that is the trade every
+constant-time compare makes, and the secret is not shorter for it.)
 
 This is a PoC transport, not a session layer: it authenticates the *caller*, not
 a user, and there is no login, no cookie and no CSRF story. It is enough that
