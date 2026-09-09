@@ -553,15 +553,11 @@ async fn rules_domain_inner(
         });
     };
     let user_groups = &user.groups;
-    let mut global_domains: Vec<Json> = Vec::new();
-    let mut group_domains: Vec<Json> = Vec::new();
-    let mut any_applied = false;
+    let mut applied: Vec<(&crate::registry::Rule, Json)> = Vec::new();
     for rule in rules {
-        let is_group = !rule.groups.is_empty();
-        if is_group && !rule.groups.iter().any(|g| user_groups.contains(g)) {
+        if !rule.groups.is_empty() && !rule.groups.iter().any(|g| user_groups.contains(g)) {
             continue;
         }
-        any_applied = true;
         let dom = match &rule.domain_force {
             Some(src) => {
                 let parsed = parse_py(src)?;
@@ -569,23 +565,41 @@ async fn rules_domain_inner(
             }
             None => json!([]),
         };
-        if is_group {
-            group_domains.push(dom);
-        } else {
-            global_domains.push(dom);
-        }
+        applied.push((rule, dom));
     }
-    if !any_applied {
-        return Ok(if inherited.is_empty() {
+    Ok(combine_rules(inherited, applied))
+}
+
+/// Odoo's combination (`ir_rule.py::_get_domain_accessible_records`): the
+/// `_inherits` parents' domains and every applicable GLOBAL rule are ANDed,
+/// and the applicable GRANTING group rules are ORed together and ANDed onto
+/// that. This fork lets a group rule RESTRICT instead
+/// (`ir.rule.composition`): such a rule is ANDed like a global, narrowing
+/// what the user's other rules grant rather than widening it. Treating it as
+/// a grant -- which is what classifying on "has groups" alone did -- turned
+/// a restriction into an additional way in.
+///
+/// `None` when no rule applied and there is no parent domain, which is what
+/// the caller reads as "unruled".
+pub fn combine_rules(
+    inherited: Vec<Json>,
+    applied: Vec<(&crate::registry::Rule, Json)>,
+) -> Option<Json> {
+    if applied.is_empty() {
+        return if inherited.is_empty() {
             None
         } else {
             Some(Json::Array(inherited))
-        });
+        };
     }
-
     let mut combined: Vec<Json> = inherited;
-    for d in global_domains {
-        combined.extend(d.as_array().cloned().unwrap_or_default());
+    let mut group_domains: Vec<Json> = Vec::new();
+    for (rule, dom) in applied {
+        if rule.is_granting_group() {
+            group_domains.push(dom);
+        } else {
+            combined.extend(dom.as_array().cloned().unwrap_or_default());
+        }
     }
     if !group_domains.is_empty() {
         combined.extend(
@@ -595,7 +609,7 @@ async fn rules_domain_inner(
                 .unwrap_or_default(),
         );
     }
-    Ok(Some(Json::Array(combined)))
+    Some(Json::Array(combined))
 }
 
 pub fn check_read_access(

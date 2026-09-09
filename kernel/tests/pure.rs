@@ -1564,3 +1564,55 @@ fn an_equality_on_a_translated_trigram_field_is_accelerated_too() {
         );
     }
 }
+
+#[test]
+fn a_restricting_group_rule_is_anded_like_a_global_not_ored_like_a_grant() {
+    use odoo_kernel::registry::Rule;
+    use odoo_kernel::security::combine_rules;
+
+    let grant = Rule {
+        groups: vec![1],
+        domain_force: None,
+        restrict: false,
+    };
+    let restrict = Rule {
+        groups: vec![1],
+        domain_force: None,
+        restrict: true,
+    };
+    let global = Rule {
+        groups: vec![],
+        domain_force: None,
+        restrict: false,
+    };
+    let a = json!([["x", "=", 1]]);
+    let b = json!([["y", "=", 2]]);
+
+    // two grants: either one is enough
+    let out = combine_rules(vec![], vec![(&grant, a.clone()), (&grant, b.clone())]).unwrap();
+    assert_eq!(out, json!(["|", ["x", "=", 1], ["y", "=", 2]]));
+
+    // a grant and a restriction: the restriction narrows, it is not a second way in
+    let out = combine_rules(vec![], vec![(&grant, a.clone()), (&restrict, b.clone())]).unwrap();
+    assert_eq!(out, json!([["y", "=", 2], ["x", "=", 1]]));
+
+    // a global and a restriction: both AND, no OR at all
+    let out = combine_rules(vec![], vec![(&global, a.clone()), (&restrict, b.clone())]).unwrap();
+    assert_eq!(out, json!([["x", "=", 1], ["y", "=", 2]]));
+
+    // the parent's domain (via _inherits) is ANDed in front of everything
+    let parent = json!(["partner_id", "any", [["z", "=", 3]]]);
+    let out = combine_rules(vec![parent.clone()], vec![(&grant, a.clone())]).unwrap();
+    assert_eq!(out, json!([parent, ["x", "=", 1]]));
+
+    // nothing applied: unruled unless a parent said otherwise
+    assert!(combine_rules(vec![], vec![]).is_none());
+    assert_eq!(
+        combine_rules(vec![parent.clone()], vec![]),
+        Some(json!([parent]))
+    );
+
+    assert!(grant.is_granting_group());
+    assert!(!restrict.is_granting_group());
+    assert!(!global.is_granting_group());
+}

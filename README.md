@@ -53,7 +53,8 @@ against the Python ORM on a real database) and **performance**.
 - **Security**: `ir.model.access` read checks and **record rules**: a small
   Python-expression evaluator for `domain_force` (literals, lists, dotted
   `user.…` chains resolved through stored/related m2o hops, `company_ids`),
-  Odoo's combination semantics (AND globals, OR matching group rules),
+  Odoo's combination semantics (AND globals, OR matching group rules — and,
+  in this fork, AND a group rule whose `composition` is `restrict`),
   comodel rules injected into any-subqueries and x2many reads like
   `_search` does. Resolved rule ASTs cached per (uid, company, companies),
   and dropped when Odoo's `orm_signaling_*` watermark moves. A rule the
@@ -1358,6 +1359,16 @@ measurement, and the inequality against an unset value (below).
   `search=` are detected via the live-registry export and refused; the
   `ir_model` bootstrap cannot see them, so it is not a safe primary source —
   `serve` takes `--export` and warns loudly when it has none.
+- **A restricting group rule is ANDed, as this fork ANDs it.** The fork adds
+  `ir.rule.composition` (`grant` | `restrict`): a group rule that restricts
+  joins the globals in the AND, where a granting one is ORed with its peers
+  (`ir_rule.py::_get_domain_accessible_records`). The kernel classified on
+  "has groups" alone, so a restriction became one more way in. It now reads
+  the column when the schema has it — stock Odoo does not, and there every
+  group rule grants — and `security::combine_rules` is the one place the
+  combination is decided, unit-tested against the four shapes. Latent on the
+  reference database, where every active rule is `grant`; wrong the day one
+  is not.
 - **25 of 222 ruled models on a real database** cannot have their rules
   compiled and fall back to Python — `account.move`, `account.move.line`,
   `sale.order`, `sale.order.line`, `hr.employee` among them. Every one is now

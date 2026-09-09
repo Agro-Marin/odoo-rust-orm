@@ -278,6 +278,19 @@ pub struct Model {
 pub struct Rule {
     pub groups: Vec<i32>,
     pub domain_force: Option<String>,
+    /// The fork's `ir.rule.composition`: a group rule that RESTRICTS is ANDed
+    /// with the globals, where a granting one is ORed with its peers
+    /// (`ir_rule.py::_get_domain_accessible_records`). Always false on a
+    /// database without the column, where every group rule grants.
+    pub restrict: bool,
+}
+
+impl Rule {
+    /// The one kind of rule Odoo ORs: it has groups and it grants. A global
+    /// rule and a restricting group rule are both ANDed.
+    pub fn is_granting_group(&self) -> bool {
+        !self.groups.is_empty() && !self.restrict
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1016,21 +1029,37 @@ impl Registry {
         {
             rule_groups.entry(row.get(0)).or_default().push(row.get(1));
         }
-        for row in client
-            .query(
-                "SELECT r.id, m.model, r.domain_force FROM ir_rule r
-                 JOIN ir_model m ON r.model_id = m.id
-                 WHERE r.active AND r.perm_read ORDER BY r.id",
+        // The fork adds `ir_rule.composition` (grant | restrict); stock Odoo
+        // has no such column and every group rule grants. Asked of the
+        // schema rather than assumed, so one binary serves both, and read
+        // as a boolean so the classification cannot drift from the fork's
+        // own spelling of the value.
+        let has_composition = client
+            .query_opt(
+                "SELECT 1 FROM information_schema.columns
+                 WHERE table_name = 'ir_rule' AND column_name = 'composition'",
                 &[],
             )
             .await?
-        {
+            .is_some();
+        let rules_sql = if has_composition {
+            "SELECT r.id, m.model, r.domain_force,
+                    COALESCE(r.composition = 'restrict', FALSE)
+             FROM ir_rule r JOIN ir_model m ON r.model_id = m.id
+             WHERE r.active AND r.perm_read ORDER BY r.id"
+        } else {
+            "SELECT r.id, m.model, r.domain_force, FALSE
+             FROM ir_rule r JOIN ir_model m ON r.model_id = m.id
+             WHERE r.active AND r.perm_read ORDER BY r.id"
+        };
+        for row in client.query(rules_sql, &[]).await? {
             let rid: i32 = row.get(0);
             security.rules.entry(row.get(1)).or_default().push(Rule {
                 groups: rule_groups.get(&rid).cloned().unwrap_or_default(),
                 domain_force: row
                     .get::<_, Option<String>>(2)
                     .filter(|d| !d.trim().is_empty()),
+                restrict: row.get(3),
             });
         }
 
