@@ -82,7 +82,9 @@ against the Python ORM on a real database) and **performance**.
 
 ## Correctness: shadow-diff harness
 
-`harness/corpus.json`: 263 cases across 16 models — every operator family,
+`harness/corpus.json`: 279 cases across 22 models (221 `search_read`, 35
+`read_group`, 23 `search_count`; `harness/corpus_stats.py` counts the file,
+which is where every figure about it should come from) — every operator family,
 all M1 features, security-sensitive models (`res.partner`, `ir.filters`,
 `res.users.log`), each base shape swept across **superuser** and
 **`active_test=False`**, plus explicit coverage for ordering chains,
@@ -171,7 +173,8 @@ to the lowest active user that is neither OdooBot nor admin, so a case at a
 non-admin identity runs on any database — a hardcoded uid that does not exist
 makes both sides error, i.e. passes vacuously.
 
-**Result: 275/275 with nothing failing**, re-verified 2026-08-28 against THREE
+**Result: 275/275 with nothing failing** (the corpus of the time; it holds
+279 cases today), re-verified 2026-08-28 against THREE
 databases built from this workspace's `tpl_p314o19marin` template — base-only;
 base+mail+account+uom; and **agromarin + enterprise** (129 modules, 790 models,
 222 ruled models, 15,674 fields). All runs use a live-registry export.
@@ -188,8 +191,8 @@ routed-Python against original-Python, so every comparison it makes travels
 through `rust_orm_shim` — which sends `groupby_labels=False`, gates out every
 model whose read path is Python, and refuses several parameter shapes. It is
 evidence about the HYBRID and says nothing about `odoo-poc query`,
-`run-corpus` or `serve`. The shadow corpus IS kernel-direct, and is 275
-hand-written cases over 16 models. The kernel sweep is the third thing —
+`run-corpus` or `serve`. The shadow corpus IS kernel-direct, and is 279
+hand-written cases over 22 models. The kernel sweep is the third thing —
 kernel-direct and broad, at admin and at a seeded non-admin identity — and it
 found two fail-open defects on its first run: a field with `groups=` read from
 its column, and a subquery traversing into a model the reader has no access to.
@@ -201,8 +204,8 @@ generated (a company-dependent field could not be grouped by, because its
 bound parameter was emitted twice) and a rule domain the evaluator refused over
 a `#` comment.
 
-On the `ir_model` bootstrap the same corpus is **206/267 with 53 refusals and
-zero wrong answers**: that registry cannot see an x2many's field-level domain,
+On the `ir_model` bootstrap the same corpus was **206/267 with 53 refusals and
+zero wrong answers** (measured on the 267-case corpus of the time): that registry cannot see an x2many's field-level domain,
 so it declines rather than reading more rows than Python would. `Registry::
 source` is what makes the difference sayable in code.
 
@@ -232,7 +235,7 @@ harness/verify.sh --db newdb --build base,mail,account   # create it first
 | fork contract | every Odoo symbol the shims, the addon and the harness import or patch still exists in the checkout -- no database, no extension, seconds |
 | shim units | the two Python shims, with no database: dsn parsing, the kill switch, datetime round trips |
 | registry export | the export describes this database (it refuses to write one that does not) |
-| shadow corpus | 275 cases byte-equal to the Python ORM, across identities and contexts |
+| shadow corpus | 279 cases byte-equal to the Python ORM, across identities and contexts |
 | kernel sweep | every model, kernel-DIRECT, on a fixture it seeds itself |
 | fuzz | seeded random domains, values sampled from the columns |
 | registry sweep | every model, every identity, ~25k query shapes |
