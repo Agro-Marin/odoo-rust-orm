@@ -37,6 +37,11 @@ against the Python ORM on a real database) and **performance**.
     operator instead, because there is no `any` to move it onto and
     `NOT (col ILIKE ...)` drops the NULL rows that `col NOT ILIKE ... OR col
     IS NULL` keeps
+  - **an empty `like` pattern is not a LIKE**, as `_optimize_like_str`
+    compiles it: `like ''` is every row (NULLs included) where `col LIKE
+    '%%'` dropped them, `not like ''` is no row where `col NOT LIKE '%%' OR
+    col IS NULL` returned every NULL one — a filter that failed open — and
+    the `=`-forms and relational fields become a set-ness test on the column
   - many2one values filtered through the comodel's ACL **and record rules**,
     exactly as `Many2one.convert_to_read_multi` does: an unreadable target
     reads `False`, not `[id, name]`, while the name of a readable one is still

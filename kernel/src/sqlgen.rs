@@ -1119,6 +1119,42 @@ impl<'a> Compiler<'a> {
             Json::Number(n) => n.to_string(),
             other => bail!("invalid value for {op}: {other}"),
         };
+        // Odoo's `_optimize_like_str`: an EMPTY pattern is not a LIKE at all.
+        // `like ''` is every row, NULLs included, where `col LIKE '%%'` drops
+        // them; `not like ''` is no row, where `col NOT LIKE '%%' OR col IS
+        // NULL` is every NULL one -- a filter that fails OPEN. The `=`-forms
+        // and relational fields turn into a set-ness test on the column
+        // instead, and a pattern that is only `%` is the positive case of the
+        // same two answers.
+        let negative = op.starts_with("not ");
+        let eq_like = op.contains('=');
+        let relational = matches!(
+            field.ttype,
+            FieldType::Many2one | FieldType::One2many | FieldType::Many2many
+        );
+        if raw.is_empty() {
+            let result = negative == eq_like;
+            if relational || eq_like {
+                return self.compile_leaf(&Leaf {
+                    field: field.name.clone(),
+                    op: (if result { "!=" } else { "=" }).to_string(),
+                    value: Json::Bool(false),
+                });
+            }
+            return Ok(Expr::cust(if result { "TRUE" } else { "FALSE" }));
+        }
+        if raw.chars().all(|c| c == '%') {
+            let result = !negative;
+            if relational {
+                return self.compile_leaf(&Leaf {
+                    field: field.name.clone(),
+                    op: (if result { "!=" } else { "=" }).to_string(),
+                    value: Json::Bool(false),
+                });
+            }
+            return Ok(Expr::cust(if result { "TRUE" } else { "FALSE" }));
+        }
+
         let sql_left = if field.ttype.is_text() {
             sql_field.clone()
         } else {
@@ -1131,7 +1167,6 @@ impl<'a> Compiler<'a> {
             raw.clone()
         };
         let insensitive = op.ends_with("ilike");
-        let negative = op.starts_with("not ");
 
         let mut sql = if insensitive && self.ctx.registry.has_unaccent {
             let keyword = if negative { "NOT ILIKE" } else { "ILIKE" };

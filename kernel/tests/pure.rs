@@ -1468,6 +1468,51 @@ fn trigram_registry() -> Registry {
     reg
 }
 
+#[test]
+fn an_empty_like_pattern_is_not_a_like_at_all() {
+    // Odoo's `_optimize_like_str`: `like ''` is every row (NULLs included),
+    // `not like ''` is no row, the `=`-forms become a set-ness test on the
+    // column, and a pattern that is only `%` is the positive case of each.
+    let reg = base_registry();
+    let sql = compile(&reg, json!([["name", "like", ""]]));
+    assert!(
+        sql.contains("TRUE") && !sql.contains("LIKE"),
+        "every row: {sql}"
+    );
+    let sql = compile(&reg, json!([["name", "not like", ""]]));
+    assert!(
+        sql.contains("FALSE") && !sql.contains("LIKE"),
+        "no row: {sql}"
+    );
+    let sql = compile(&reg, json!([["name", "ilike", "%%"]]));
+    assert!(
+        sql.contains("TRUE") && !sql.contains("LIKE"),
+        "only wildcards: {sql}"
+    );
+    let sql = compile(&reg, json!([["name", "not ilike", "%"]]));
+    assert!(
+        sql.contains("FALSE") && !sql.contains("LIKE"),
+        "negated wildcards: {sql}"
+    );
+    // the `=`-forms become `= False` / `!= False`, whatever shape the falsy
+    // machinery gives those on this column; the point is that no LIKE is left
+    let sql = compile(&reg, json!([["name", "=like", ""]]));
+    assert!(
+        !sql.contains("LIKE") && (sql.contains("IS NULL") || sql.contains("IN ('')")),
+        "`=like ''` is `= False`, a set-ness test: {sql}"
+    );
+    let sql = compile(&reg, json!([["name", "not =like", ""]]));
+    assert!(
+        !sql.contains("LIKE") && (sql.contains("IS NOT NULL") || sql.contains("NOT IN ('')")),
+        "`not =like ''` is `!= False`: {sql}"
+    );
+    let sql = compile(&reg, json!([["name", "like", "a"]]));
+    assert!(
+        sql.contains("LIKE"),
+        "a real pattern is still a LIKE: {sql}"
+    );
+}
+
 // Measured on the fixture with `SET enable_seqscan = off`: WITH this
 // conjunct the plan is a `Bitmap Index Scan on product_template__name_index`;
 // WITHOUT it the plan is a `Seq Scan` even with sequential scans disabled,
