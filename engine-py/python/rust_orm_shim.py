@@ -13,6 +13,7 @@ DBNAME = None
 
 KERNEL_FACTORY = None
 _KERNEL_TRIED_PID = None
+_KERNEL_PID = None
 _KERNEL_LOCK = threading.Lock()
 
 PROCESS_HOOK = None
@@ -85,26 +86,32 @@ def _bound_db(env):
     return DBNAME is None or env.registry.db_name == DBNAME
 
 
+def set_kernel(kernel):
+    """The one way a kernel is installed in this process.
+
+    It records the pid alongside, because a kernel is bound to the tokio
+    runtime it was built on and a forked child does not inherit that
+    runtime's threads -- only the handle to them. A child that used the
+    parent's kernel called `block_on` on a runtime nobody was driving and
+    hung, instead of falling back to Python. Under `-d`, the master preloads
+    the registry before forking, so the hook builds a kernel there and every
+    worker inherits it: the common configuration, not the edge case.
+    """
+    global KERNEL, _KERNEL_PID
+    KERNEL = kernel
+    _KERNEL_PID = os.getpid() if kernel is not None else None
+
+
+def _kernel_is_ours():
+    return KERNEL is not None and _KERNEL_PID == os.getpid()
+
+
 def _ensure_kernel(env):
     global KERNEL, _KERNEL_TRIED_PID, _PROCESS_PID
     if _PROCESS_PID != os.getpid() and PROCESS_HOOK is not None:
         _PROCESS_PID = os.getpid()
         try:
             PROCESS_HOOK()
-        except Exception:
-            _logger.exception("the rust engine process hook failed")
-    if KERNEL is not None:
-        return True
-    if KERNEL_FACTORY is None or _KERNEL_TRIED_PID == os.getpid():
-        return False
-    with _KERNEL_LOCK:
-        if KERNEL is not None:
-            return True
-        if _KERNEL_TRIED_PID == os.getpid():
-            return False
-        _KERNEL_TRIED_PID = os.getpid()
-        try:
-            KERNEL = KERNEL_FACTORY(env.registry)
         except Exception:
             _logger.exception("the rust engine process hook failed")
     if _kernel_is_ours():

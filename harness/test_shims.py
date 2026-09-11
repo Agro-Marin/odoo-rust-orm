@@ -74,6 +74,39 @@ def main():
         orm_shim.MODE, orm_shim.KERNEL, orm_shim.DBNAME = saved
         orm_shim.STATS["errors_by_model"].clear()
 
+    # A kernel inherited across a fork is bound to a runtime this process is
+    # not driving; `_ensure_kernel` must drop it and build its own, not use it.
+    saved_kernel = (orm_shim.KERNEL, orm_shim._KERNEL_PID, orm_shim._KERNEL_TRIED_PID,
+                    orm_shim.KERNEL_FACTORY, orm_shim.PROCESS_HOOK)
+    try:
+        built = []
+
+        class _Env:
+            registry = object()
+
+        def factory(registry):
+            built.append(registry)
+            return ("kernel", len(built))
+
+        orm_shim.PROCESS_HOOK = None
+        orm_shim.KERNEL_FACTORY = factory
+        orm_shim._KERNEL_TRIED_PID = None
+        orm_shim.set_kernel(("kernel", "parent"))
+        check("a kernel set here is ours", orm_shim._ensure_kernel(_Env()), True)
+        check("and is not rebuilt", built, [])
+
+        orm_shim._KERNEL_PID = os.getpid() - 1     # what a forked child sees
+        check("an inherited kernel is replaced", orm_shim._ensure_kernel(_Env()), True)
+        check("by one built in this process", orm_shim.KERNEL, ("kernel", 1))
+        check("stamped with this pid", orm_shim._KERNEL_PID, os.getpid())
+        check("the parent's is never used", built, [_Env.registry])
+
+        orm_shim.set_kernel(None)
+        check("set_kernel(None) clears the pid too", orm_shim._KERNEL_PID, None)
+    finally:
+        (orm_shim.KERNEL, orm_shim._KERNEL_PID, orm_shim._KERNEL_TRIED_PID,
+         orm_shim.KERNEL_FACTORY, orm_shim.PROCESS_HOOK) = saved_kernel
+
     saved_sample = orm_shim.SAMPLE
     try:
         orm_shim.set_sample(0)

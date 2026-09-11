@@ -280,11 +280,14 @@ def _arm_registry_hook():
     def new(cls, db_name, **kw):
         registry = orig_new(cls, db_name, **kw)
         if db_name == _STATE["db"]:
+            _, orm_shim = _STATE["shims"]
             try:
-                _STATE["shims"][1].KERNEL = _build_kernel(registry)
+                # Through the setter, which stamps the pid: under `-d` this
+                # hook fires in the prefork master, and a worker that inherits
+                # the result must know it is not its own.
+                orm_shim.set_kernel(_build_kernel(registry))
             except Exception:
-                _, orm_shim = _STATE["shims"]
-                orm_shim.KERNEL = None
+                orm_shim.set_kernel(None)
                 _logger.exception(
                     "could not build the rust kernel for %s; "
                     "this database will be served from python",

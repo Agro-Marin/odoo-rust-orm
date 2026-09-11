@@ -933,7 +933,13 @@ defect first:
   `post_load` runs in the prefork MASTER and the workers are forked before any
   registry exists, so a kernel built from the master's registry is built after
   the fork that would have carried it. The shim takes a `KERNEL_FACTORY` and
-  calls it in whichever process first reaches the gate.
+  calls it in whichever process first reaches the gate. And when a kernel
+  DOES cross a fork — under `-d` the master preloads the registry before
+  forking, so the hook builds one there and every worker inherits it — the
+  worker drops it and builds its own: the inherited one is bound to a tokio
+  runtime whose threads did not survive the fork, and a call on it hung
+  instead of falling back. `set_kernel` stamps the pid so `_ensure_kernel`
+  can tell.
 - **Enabling it for one database leaves the others alone.** Connections for
   any other database are delegated to the psycopg pool they would have had and
   the gate declines them, so this is a per-database decision on a server that
