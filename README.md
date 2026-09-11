@@ -2331,6 +2331,16 @@ psycopg rather than broken), turning routing off without a restart
 measurement, and TLS in the connector (`require` and `verify-full`, see
 above).
 
+- **Non-stored related fields are read as SQL only where Odoo reads them as
+  SQL.** `_traverse_related_sql` allows the correlated subquery for `env.su`,
+  `compute_sudo` and `inherited` fields, and computes every other related
+  field in Python under the caller's own access. The subquery carries no ACL
+  and no rules, so the kernel used to read the comodel unfiltered for exactly
+  the fields Odoo would not; it now refuses them for a non-superuser caller
+  (in `search_read` fields, `_read_group` groupbys and aggregates, and
+  `ORDER BY`), and the export carries `inherited` beside `compute_sudo` so it
+  can tell. A domain leaf on such a field is unaffected: `related_search`
+  already follows `search_related` and applies the comodel's rules.
 - **Domain nesting is capped at 100 structural levels**, as Odoo's
   `MAX_DOMAIN_NESTING` caps it, and counted the same way: a run of the same
   n-ary operator is one level (the parser flattens it, as `DomainNary` does)

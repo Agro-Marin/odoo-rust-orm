@@ -186,9 +186,32 @@ impl<'a> ExprCtx<'a> {
         Ok(raw)
     }
 
+    /// Whether a non-stored related field may be read as a correlated
+    /// subquery for THIS caller. `_traverse_related_sql` allows it for
+    /// `env.su`, `compute_sudo` or `inherited`, and for nobody else: the
+    /// subquery carries no ACL and no rules, so anyone else would read the
+    /// comodel unfiltered where Odoo computes the value in Python under their
+    /// own access. (A domain LEAF on such a field is a different path: there
+    /// `related_search` follows `search_related` and applies the comodel's
+    /// rules through `any`, so it needs no guard.)
+    pub fn related_allowed(&self, model: &Model, f: &Field) -> Result<()> {
+        if self.access.is_none() || f.compute_sudo || f.inherited {
+            return Ok(());
+        }
+        refuse!(
+            "related {}.{} is neither sudoed nor inherited: Odoo computes it \
+             in Python under the caller's access, and a subquery here would \
+             read {} without ACL or rules",
+            model.name,
+            f.name,
+            f.related.as_deref().unwrap_or("its comodel")
+        )
+    }
+
     pub fn read_expr(&self, model: &Model, f: &Field, alias: &str) -> Result<Expr> {
         if !f.has_column {
             if f.related.is_some() {
+                self.related_allowed(model, f)?;
                 let path = self.normalize_path(model, std::slice::from_ref(&f.name))?;
                 return self.related_expr(alias, model, &path, 0);
             }
@@ -2437,6 +2460,8 @@ fn order_terms(
             if field.related.is_none() {
                 refuse!("cannot order {} by non-stored {fname}", model.name);
             }
+            ctx.related_allowed(model, field)
+                .with_context(|| format!("cannot order {} by related {fname}", model.name))?;
             let path = ctx
                 .normalize_path(model, std::slice::from_ref(&field.name))
                 .with_context(|| format!("cannot resolve order field {}.{fname}", model.name))?;

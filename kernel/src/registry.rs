@@ -141,6 +141,10 @@ pub struct Field {
     pub bypass_search_access: Option<bool>,
 
     pub compute_sudo: bool,
+    /// Reached through `_inherits`: the parent's rules are already ANDed
+    /// onto the child's search, so `_traverse_related_sql` lets it through
+    /// to SQL for any caller, as it does a `compute_sudo` field.
+    pub inherited: bool,
     pub required: bool,
     pub group_by_field: Option<String>,
     pub order_by_field: Option<String>,
@@ -999,6 +1003,7 @@ impl Registry {
                     falsy,
                     bypass_search_access: None,
                     compute_sudo: false,
+                    inherited: false,
                     required: false,
                     group_by_field: None,
                     order_by_field: None,
@@ -1115,6 +1120,7 @@ impl Registry {
                             .get("bypass_search_access")
                             .and_then(serde_json::Value::as_bool),
                         compute_sudo: ef["compute_sudo"].as_bool().unwrap_or(false),
+                        inherited: ef["inherited"].as_bool().unwrap_or(false),
                         required: ef["required"].as_bool().unwrap_or(false),
                         group_by_field: ef["group_by_field"].as_str().map(str::to_string),
                         order_by_field: ef["order_by_field"].as_str().map(str::to_string),
