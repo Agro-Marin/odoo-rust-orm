@@ -2382,6 +2382,13 @@ above).
   `res.company.country_id`). The first two also declare `search=`, so both the
   value and the domain leaf need Python. This is the measured size of the
   business-logic problem, not an estimate.
+- **`edit_translations` is served from Python.** The shim sends `env._lang`
+  rather than `context['lang']`; the two agree except under
+  `edit_translations` / `check_translations`, where Odoo reads translated
+  columns through a `_xx_XX` pseudo-language the kernel's `res_lang` check
+  refuses — which is the fallback that mode needs. Before, the plain language
+  was served there and the translation editor showed translated values where
+  Odoo shows the sources.
 - **A field declaring `bypass_search_access` turns the comodel's access OFF
   for a subquery through it, and the kernel used to apply it anyway.** Odoo's
   `_optimize_any_with_rights` rewrites `any` to `any!` exactly when the field
