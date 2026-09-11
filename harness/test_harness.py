@@ -212,3 +212,20 @@ def test_shell_scripts_bootstrap_without_file(script) -> None:
     assert '"__file__" in globals()' in src, (
         "%s must survive exec() without __file__" % script
     )
+
+
+def test_corpus_stats_counts_the_file() -> None:
+    corpus_stats = load("corpus_stats")
+    s = corpus_stats.stats(os.path.join(HERE, "corpus.json"))
+    cases = json.loads(pathlib.Path(HERE, "corpus.json").read_text(encoding="utf-8"))
+    assert s["cases"] == len(cases)
+    assert s["models"] == len({c["model"] for c in cases})
+    assert sum(s["methods"].values()) == len(cases)
+    line = corpus_stats.describe(s)
+    assert line.startswith("%d cases across %d models (" % (s["cases"], s["models"]))
+    # the README's descriptive claim is the same sentence, so it cannot drift
+    readme = pathlib.Path(HERE).parent.joinpath("README.md").read_text(encoding="utf-8")
+    assert (
+        "`harness/corpus.json`: %d cases across %d models" % (s["cases"], s["models"])
+        in readme
+    )
