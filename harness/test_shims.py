@@ -1388,6 +1388,9 @@ def test_install_is_idempotent_and_keeps_stamps() -> None:
 
     class _Env:
         uid, su, context = 2, False, {}
+        # what `Environment._lang` reads: the context language, or en_US, with
+        # the `_` prefix under edit_translations / check_translations
+        _lang = "en_US"
 
         class registry:
             registry_sequence = 7
