@@ -1384,6 +1384,12 @@ measurement, and the inequality against an unset value (below).
   previous day, month, quarter or year. The shim now sends `context['tz']`,
   the kernel refuses such a groupby unless the zone is `UTC`, and the shim
   falls back. A `date` has no time and is never shifted, so it is served.
+- **`edit_translations` is served from Python.** The shim sends `env._lang`
+  rather than `context['lang']`; the two agree except under
+  `edit_translations` / `check_translations`, where Odoo reads translated
+  columns through a `_xx_XX` pseudo-language the kernel's `res_lang` check
+  refuses — which is the fallback that mode needs. Before, the plain language
+  was served there.
 - **A field declaring `bypass_search_access` turns the comodel's access OFF
   for a subquery through it, and the kernel used to apply it anyway.** Odoo's
   `_optimize_any_with_rights` rewrites `any` to `any!` exactly when the field

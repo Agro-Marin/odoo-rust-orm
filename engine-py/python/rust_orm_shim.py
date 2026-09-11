@@ -283,7 +283,13 @@ def _request(model, method, **kw):
         "method": method,
         "uid": env.uid,
         "su": bool(env.su),
-        "lang": env.context.get("lang") or None,
+        # `env._lang`, not `context['lang']`: the two agree except under
+        # `edit_translations` / `check_translations`, where Odoo reads the
+        # translated columns through the `_xx_XX` pseudo-language. The kernel
+        # validates the code against `res_lang` and refuses one it does not
+        # have, which is exactly the fallback that mode needs; the context
+        # value would have been served as the plain language.
+        "lang": env._lang,
         "allowed_company_ids": env.context.get("allowed_company_ids") or None,
         "active_test": bool(env.context.get("active_test", True)),
         # Read by `_read_group` only, where a datetime granularity under a
