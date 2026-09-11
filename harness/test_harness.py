@@ -229,3 +229,57 @@ def test_corpus_stats_counts_the_file() -> None:
         "`harness/corpus.json`: %d cases across %d models" % (s["cases"], s["models"])
         in readme
     )
+
+
+def _speedup_run(tmp_path, python_ms, rust_ms):
+    py = tmp_path / "py.json"
+    py.write_text(
+        json.dumps({c: {"p50": ms} for c, ms in python_ms.items()}), encoding="utf-8"
+    )
+    rs = tmp_path / "rust.txt"
+    rs.write_text(
+        "header line that is not a case\n"
+        + "".join("%s %s 0 0\n" % (c, ms) for c, ms in rust_ms.items()),
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [
+            sys.executable,
+            os.path.join(HERE, "speedup.py"),
+            "--python",
+            str(py),
+            "--rust",
+            str(rs),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    lines = {
+        l.split(":")[0].strip(): l.strip() for l in proc.stdout.splitlines() if ":" in l
+    }
+    return proc.returncode, lines
+
+
+def test_speedup_reports_both_aggregates_and_what_it_dropped(tmp_path) -> None:
+    # three tiny cases at 10x and one big case at 1x: the median says 10x,
+    # the clock says the corpus barely moved -- a reader given only the
+    # median had no way to know
+    py = {"c1": 0.10, "c2": 0.10, "c3": 0.10, "c4": 200.0}
+    rs = {"c1": 0.01, "c2": 0.01, "c3": 0.01, "c4": 200.0}
+    code, lines = _speedup_run(tmp_path, py, rs)
+    assert code == 0
+    assert lines["median per-case speedup"].split()[3] == "10.00x"
+    weighted = float(lines["time-weighted speedup"].split()[2].rstrip("x"))
+    assert 1.0 <= weighted < 1.01
+    assert "dropped before comparing" not in lines
+
+    # a case only python produced, and one only rust produced, are counted
+    # out loud instead of vanishing from the denominator
+    code, lines = _speedup_run(tmp_path, {**py, "py_only": 5.0}, {**rs, "rs_only": 5.0})
+    assert code == 0
+    assert (
+        lines["dropped before comparing"]
+        == "dropped before comparing: 1 python-only, 1 rust-only"
+    )
+    assert lines["cases"].split()[1] == "4"
