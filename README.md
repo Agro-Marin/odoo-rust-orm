@@ -1540,6 +1540,15 @@ error body carries `kind`, `internal` or `refusal`. `/health` reports `auth`
 (`{"mode":"token"}` or `{"mode":"pinned","uid":N}`) so a harness can tell
 whether the identities it names would be honoured.
 
+A connection whose transaction could not be ENDED is discarded, not pooled.
+A failed `COMMIT`/`ROLLBACK` used to be a `warn!` and the connection went back
+to the pool in a state nobody could name — the next request on it could run
+inside the previous snapshot, or inside an aborted transaction. It now
+surfaces as a typed `TxEndFailed` (a database error to the shim, not a
+refusal), the server poisons the connection instead of issuing a second
+`ROLLBACK` on it, and the next `acquire` replaces it — the same path the
+request timeout and a dropped `TxGuard` already take.
+
 The token is compared as two keyed-SipHash digests of fixed size, so neither
 a length mismatch nor an early differing byte returns sooner.
 

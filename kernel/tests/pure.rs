@@ -3055,6 +3055,40 @@ fn a_rule_granted_by_a_constant_folds_before_its_other_branches_compile() {
     ));
 }
 
+#[test]
+fn a_failed_transaction_end_is_recognisable_by_the_holder() {
+    use odoo_kernel::error::ErrorKind;
+    use odoo_kernel::orm::{TxEndFailed, is_tx_end_failure};
+    let e: anyhow::Error = TxEndFailed {
+        end: "COMMIT",
+        error: "server closed the connection".into(),
+        original: None,
+    }
+    .into();
+    assert!(is_tx_end_failure(&e));
+    assert!(e.to_string().contains("must be discarded"), "{e}");
+    assert_eq!(
+        ErrorKind::of(&e),
+        ErrorKind::Database,
+        "a failed COMMIT is a database error, not a refusal the shim should fall back on"
+    );
+    let wrapped = e.context("dispatching search_read");
+    assert!(is_tx_end_failure(&wrapped), "survives a context layer");
+    let plain = anyhow::anyhow!("unknown field res.partner.nope");
+    assert!(!is_tx_end_failure(&plain));
+    let after_error: anyhow::Error = TxEndFailed {
+        end: "ROLLBACK",
+        error: "x".into(),
+        original: Some("unknown field".into()),
+    }
+    .into();
+    assert!(
+        after_error
+            .to_string()
+            .contains("the request itself had failed")
+    );
+}
+
 fn trigram_registry() -> Registry {
     let mut name = field("name", FieldType::Char);
     name.translated = true;

@@ -453,7 +453,14 @@ async fn dispatch_once(state: &AppState, req: &Request) -> Result<String> {
         ok = out.is_ok(),
         "served one call on a pooled connection"
     );
-    if out.is_err()
+    if let Err(e) = &out
+        && odoo_kernel::orm::is_tx_end_failure(e)
+    {
+        // the COMMIT or the ROLLBACK itself failed: the transaction state is
+        // unknown, and a second ROLLBACK on it proves nothing
+        tracing::warn!(error = %e, "the transaction could not be ended; poisoning");
+        conn.poison();
+    } else if out.is_err()
         && let Err(e) = conn.client.batch_execute("ROLLBACK").await
     {
         tracing::warn!(error = %e, "could not roll back after a failed dispatch; poisoning");
