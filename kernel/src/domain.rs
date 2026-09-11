@@ -19,6 +19,62 @@ pub struct Leaf {
     pub value: Json,
 }
 
+/// The structural depth a domain may reach, counted the way Odoo counts it
+/// (`odoo/orm/domain/ast.py::MAX_DOMAIN_NESTING`): a run of the same n-ary
+/// operator is ONE level, and a double negation is none. Anything deeper is
+/// refused at parse time, before any recursive walk of the tree exists --
+/// `compile`, `negate` and `fold_constants` all recurse over it.
+pub const MAX_DOMAIN_NESTING: usize = 100;
+
+/// A parsed node with the structural depth it reached, so the cap is checked
+/// as the tree is built and never by walking it afterwards.
+struct Item {
+    node: Node,
+    depth: usize,
+}
+
+fn checked(depth: usize) -> Result<usize> {
+    if depth > MAX_DOMAIN_NESTING {
+        refuse!(
+            "domain nesting too deep (>{MAX_DOMAIN_NESTING} levels); refusing \
+             to build it rather than recurse over it"
+        );
+    }
+    Ok(depth)
+}
+
+/// Combine `operands` under `op`, folding an operand that is already the same
+/// n-ary node into its parent. Odoo's `DomainNary` flattens the same way, so a
+/// prefix chain of ten thousand `&` is one AND of ten thousand leaves, not a
+/// ten-thousand-deep tree.
+fn nary(op: &str, operands: Vec<Item>) -> Result<Item> {
+    let mut children = Vec::new();
+    let mut depth = 1;
+    for item in operands {
+        let same = matches!((&item.node, op), (Node::And(_), "&") | (Node::Or(_), "|"));
+        if same {
+            let inner = match item.node {
+                Node::And(v) | Node::Or(v) => v,
+                _ => unreachable!("guarded by `same`"),
+            };
+            children.extend(inner);
+            depth = depth.max(item.depth);
+        } else {
+            depth = depth.max(item.depth + 1);
+            children.push(item.node);
+        }
+    }
+    let node = if op == "&" {
+        Node::And(children)
+    } else {
+        Node::Or(children)
+    };
+    Ok(Item {
+        node,
+        depth: checked(depth)?,
+    })
+}
+
 pub fn parse(domain: &Json) -> Result<Node> {
     let Json::Array(items) = domain else {
         refuse!("domain must be a JSON array, got {domain}");
@@ -29,7 +85,7 @@ pub fn parse(domain: &Json) -> Result<Node> {
         domain = %domain,
         "parsing a prefix-notation domain"
     );
-    let mut stack: Vec<Node> = Vec::new();
+    let mut stack: Vec<Item> = Vec::new();
 
     for item in items.iter().rev() {
         match item {
@@ -39,20 +95,31 @@ pub fn parse(domain: &Json) -> Result<Node> {
                 let (Some(a), Some(b)) = (a, b) else {
                     refuse!("operator {op} missing operands");
                 };
-                stack.push(if op == "&" {
-                    Node::And(vec![a, b])
-                } else {
-                    Node::Or(vec![a, b])
-                });
+                stack.push(nary(op, vec![a, b])?);
             }
             Json::String(op) if op == "!" => {
                 let Some(a) = stack.pop() else {
                     refuse!("operator ! missing operand");
                 };
-                stack.push(Node::Not(Box::new(a)));
+                // `~~x` is `x`: Odoo's `DomainNot` collapses the pair, and
+                // keeping it would let a flat run of `!` build a tree as deep
+                // as the request body allows.
+                stack.push(match a.node {
+                    Node::Not(inner) => Item {
+                        node: *inner,
+                        depth: a.depth - 1,
+                    },
+                    other => Item {
+                        node: Node::Not(Box::new(other)),
+                        depth: checked(a.depth + 1)?,
+                    },
+                });
             }
             Json::Array(leaf) if leaf.len() == 3 => {
-                stack.push(parse_leaf(leaf)?);
+                stack.push(Item {
+                    node: parse_leaf(leaf)?,
+                    depth: 1,
+                });
             }
             other => refuse!("invalid domain term {other}"),
         }
@@ -61,7 +128,7 @@ pub fn parse(domain: &Json) -> Result<Node> {
     stack.reverse();
     let node = match stack.len() {
         0 => Node::True,
-        1 => stack.pop().unwrap(),
+        1 => stack.pop().unwrap().node,
         // an implicit conjunction: Odoo ANDs the terms a prefix domain left
         // on the stack, and a domain that relies on it reads differently
         // from one that spells `&` out
@@ -71,7 +138,7 @@ pub fn parse(domain: &Json) -> Result<Node> {
                 members = n,
                 "the domain left several terms on the stack; ANDing them implicitly"
             );
-            Node::And(stack)
+            nary("&", stack)?.node
         }
     };
     Ok(node)
