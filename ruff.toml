@@ -1,0 +1,18 @@
+# The fork's rules, verbatim: this repo is not distributed apart from the fork
+# it mirrors, so an `extend` is one source of truth rather than a copy to sync.
+extend = "../odoo/ruff.toml"
+
+[lint.per-file-ignores]
+# the shims are one module of process state (mode, sample, kernel handle, pid)
+# with setters the addon and the kill switch call; that is what `global` is for
+"engine-py/python/rust_*_shim.py" = ["PLW0603"]
+"addons/*/__manifest__.py" = ["B018"]
+# the harness is command-line scripts: they print their reports, put the
+# workspace on sys.path before importing odoo, and fetch from the server they
+# just started
+"harness/*.py" = ["T201", "E402", "S310", "PLW0603", "PTH118", "PTH120", "PTH100"]
+"harness/test_*.py" = ["T201", "E402", "S310", "PLW0603", "PTH118", "PTH120", "PTH100", "S101", "FBT003", "RUF012"]
+
+[lint]
+# annotations are the fork's contract for its own core packages; this PoC is not one
+extend-ignore = ["ANN"]

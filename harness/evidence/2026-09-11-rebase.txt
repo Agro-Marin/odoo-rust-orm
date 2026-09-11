@@ -1,0 +1,330 @@
+Rust ORM rebase validation, 2026-09-11
+
+Full live verification
+verifying 'codex_rustorm_rebase_20260911'   (artifacts in /tmp/codex-rustorm-rebase-checked)
+  fork contract          OK FORK OK (27 imports, 48 seams)
+  shim units             OK SHIMS OK (30 tests, 0 skipped)
+  runtime contracts      OK 
+  fixture + sweep corpus OK wrote 7886 cases, identities: {'portal': 5, 'debug': 6, 'grouped': 7, 'admin': None})
+  registry export        OK exported 175 models
+  replay gate controls   OK 
+  kernel sweep           OK PASS 6688/7886  (COMPARED 3366, DENIED 3322 — both raised AccessError, which is agreement on the access decision)  REFUSED 1180 (kernel declines, shim falls back)  REJECTED 18 (Python raised, kernel declined; no value to compare)
+  shadow corpus          OK PASS 333/425  (COMPARED 328, DENIED 5 — both raised AccessError, which is agreement on the access decision)  REFUSED 28 (kernel declines, shim falls back)  SKIPPED 59 (this database lacks the model or field)  REJECTED 5 (Python raised, kernel declined; no value to compare)
+  hybrid (phase 1)       OK 
+  fuzz                   OK  seed1:PASS seed2:PASS seed3:PASS
+  registry sweep         OK query shapes compared: 13627 (12059 routed to the kernel)
+  upstream suites        OK 
+  cursor type layer      OK mismatches=0
+  concurrency            OK wrong=0
+  load into odoo         OK 7 checks
+  web tours (shadow)     OK 0 failed, 0 error(s) of 12 tests; routed=188 share=0.30 gate=361; divergences 0
+  replay                 OK OK: 51 captured, 29 replayed, routed share 0.66, shadow ok=17 diff=0, gate=25 error=0 refused=2 missing_user=22
+  copy encoder           OK COPY streams opened through the rust cursor: 3 (threshold 
+  byte parity            OK cases 784   stable 774   nondeterministic 10   answered 764 (rest raised on both legs)   DIVERGED 0
+  cursor parity          OK ran psycopg=379 rust=379   not-ok both=19   ONLY-RUST=3   only-psycopg=0
+  (soak server on port 9450)
+  soak                   OK 44811 requests in 20.0s on 8 threads = 2236 req/s (after 5982 in a 15s warm-up); model probes at uid 5 (other), corpus baseline at every identity
+
+VERIFY OK   (codex_rustorm_rebase_20260911)
+
+Soak
+health: {'status': 'ok', 'models': 175, 'source': 'Export', 'pool': 16, 'auth': {'mode': 'token'}, 'export': '/tmp/codex-rustorm-rebase-checked/soak_export.json'}
+baseline /tmp/codex-rustorm-rebase-checked/soak_expected.json (db=codex_rustorm_rebase_20260911): 361 corpus cases comparable at this auth, 0 dropped
+refused by the kernel at baseline (kept as refusals): 28
+cases: 369 (36 self-consistent, 333 against the baseline)
+
+44811 requests in 20.0s on 8 threads = 2236 req/s (after 5982 in a 15s warm-up)
+latency ms: p50=2.3 p95=12.2 p99=16.9 max=42.3
+            mean=3.4
+rss: 71260 KB -> 71304 KB (+44 KB, +0.1% over 44811 requests; bound 20%) ok
+errors: 0   mismatches: 0
+health after: {'status': 'ok', 'models': 175, 'source': 'Export', 'pool': 16, 'auth': {'mode': 'token'}, 'export': '/tmp/codex-rustorm-rebase-checked/soak_export.json'}
+
+SOAK OK
+
+Rust tests
+   Compiling odoo-engine-py v0.1.0 (/home/marin/Odoo/odoo-rust-orm/engine-py)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.19s
+     Running unittests src/lib.rs (target/debug/deps/engine_py-2f32ee1ecb37eace)
+
+running 20 tests
+test cursor::copy_format_tests::a_table_or_column_called_binary_is_not_a_binary_stream ... ok
+test cursor::copy_format_tests::the_format_is_read_from_the_options_after_from_stdin ... ok
+test cursor::copy_type_tests::every_oid_psycopg_dumps_in_binary_is_one_this_cursor_can_encode ... ok
+test cursor::tests::double_percent_unescapes ... ok
+test cursor::tests::comment_does_not_swallow_the_rest_of_the_statement ... ok
+test cursor::tests::dollar_quoting_hides_its_contents ... ok
+test cursor::tests::keyword_scan_skips_comments ... ok
+test cursor::tests::multi_statement_detection ... ok
+test cursor::prepared_invalidation_tests::it_matches_psycopgs_rollback_and_drop_tags ... ok
+test cursor::tests::escape_strings_hide_their_contents ... ok
+test cursor::tests::named_placeholders_keep_order ... ok
+test cursor::tests::non_ascii_text_survives_placeholder_translation_and_keyword_scans ... ok
+test cursor::tests::numeric_binary_renders_as_postgres_text_does ... ok
+test cursor::tests::percent_inside_quoted_identifier_is_left_alone ... ok
+test cursor::tests::percent_inside_string_literal_is_left_alone ... ok
+test cursor::tests::placeholder_inside_block_comment_is_left_alone ... ok
+test cursor::tests::placeholder_inside_line_comment_is_left_alone ... ok
+test cursor::tests::positional_placeholders_are_numbered ... ok
+test cursor::tests::returning_is_matched_as_a_keyword_not_a_substring ... ok
+test cursor::tests::row_returning_statements_detected ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/export_registry.rs (target/debug/deps/export_registry-6243c8210a0cba8a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/phase1_shell.rs (target/debug/deps/phase1_shell-c96e946bbd0576b8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/phase2_tests.rs (target/debug/deps/phase2_tests-43c8318d24398192)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/phase2_verify.rs (target/debug/deps/phase2_verify-1f0ca85b1419d18c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/probe_audit.rs (target/debug/deps/probe_audit-ad7dbc7f953bc440)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/odoo_kernel-2d1109b2258bbdda)
+
+running 38 tests
+test config::tests::env_overrides_win ... ok
+test config::tests::a_uri_dsn_takes_the_requested_database_in_its_path ... ok
+test config::tests::a_named_database_keeps_the_rest_of_the_dsn ... ok
+test config::tests::odoo_root_holds_an_odoo_checkout ... ok
+test config::tests::odoo_conf_resolves_to_a_real_file ... ok
+test config::tests::venv_site_holds_installed_packages ... ok
+test error::tests::unknown_errors_are_not_refusals_and_context_preserves_categories ... ok
+test connect::tests::sslmode_and_rootcert_are_lifted_out_of_the_dsn_the_connector_parses ... ok
+test scan::tests::a_falsy_rec_name_renders_display_name_false_as_odoo_does ... ok
+test scan::tests::a_model_without_rec_name_renders_its_name_and_id ... ok
+test config::tests::python_versions_sort_numerically ... ok
+test scan::tests::a_field_name_needing_escapes_is_escaped_once_not_per_row ... ok
+test scan::tests::a_row_is_an_object_and_the_set_is_an_array ... ok
+test scan::tests::a_row_with_no_columns_is_still_an_object ... ok
+test scan::tests::more_cells_than_names_is_an_error_not_a_panic ... ok
+test orm::tests::the_same_identity_at_the_same_watermark_still_hits ... ok
+test orm::tests::a_late_insert_from_a_stale_snapshot_is_never_served ... ok
+test orm::tests::clear_collects_entries_from_every_watermark ... ok
+test scan::tests::no_rows_is_an_empty_array_not_an_empty_string ... ok
+test security::tests::a_comment_does_not_swallow_the_rest_of_the_expression ... ok
+test scan::tests::the_many2one_and_x2many_shapes_survive_the_buffer ... ok
+test security::tests::a_comment_in_a_domain_is_skipped ... ok
+test security::tests::a_single_member_needs_no_operator ... ok
+test security::tests::a_member_with_several_terms_stays_one_conjunction_under_or ... ok
+test security::tests::an_empty_member_makes_the_whole_disjunction_true ... ok
+test security::tests::mapped_is_rewritten_into_the_attribute_chain ... ok
+test security::tests::mapped_of_a_dotted_field_expands_to_several_segments ... ok
+test security::tests::mapped_of_a_non_literal_is_refused_not_guessed ... ok
+test security::tests::normalizing_leaves_an_explicit_prefix_domain_alone ... ok
+test security::tests::or_of_nothing_is_false_not_everything ... ok
+test security::tests::or_of_two_domains_emits_one_operator ... ok
+test security::tests::string_escapes_follow_python_and_unknown_ones_are_refused ... ok
+test security::tests::three_members_emit_two_operators_and_still_parse ... ok
+test sqlgen::like_tests::like_matches_the_way_postgres_does ... ok
+test trigram::tests::a_short_run_cannot_constrain_the_index_and_is_dropped ... ok
+test trigram::tests::the_conjunct_never_narrows_past_the_literal_runs ... ok
+test trigram::tests::the_port_agrees_with_odoo_on_every_recorded_pair ... ok
+test connect::tests::disable_needs_no_connector_and_the_others_build_one ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/db_probe.rs (target/debug/deps/db_probe-b4354961bad6f5e5)
+
+running 3 tests
+test a_stale_plan_inside_a_transaction_is_dropped_and_reported_not_retried ... ignored
+test a_timed_out_request_is_cancelled_and_the_next_one_runs_on_a_fresh_snapshot ... ignored
+test a_tls_dsn_encrypts_the_session_and_rejects_an_untrusted_certificate ... ignored
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/pure.rs (target/debug/deps/pure-b3ef781512092f56)
+
+running 136 tests
+test a_bootstrap_registry_refuses_x2many_rather_than_guessing ... ok
+test a_comodel_ordered_by_id_needs_no_join ... ok
+test a_boolean_field_takes_no_operator_but_membership ... ok
+test a_bypassing_field_drops_the_comodels_rules ... ok
+test a_comodel_whose_display_name_searches_itself_is_refused_too ... ok
+test a_comodel_whose_read_path_is_python_is_refused_in_a_subquery ... ok
+test a_comodel_that_only_overrides_read_is_still_traversable ... ok
+test a_bypass_search_access_field_opens_its_subquery_without_the_comodels_rules ... ok
+test a_comodels_rules_are_applied_to_an_ordinary_traversal ... ok
+test a_cycle_in_the_order_chain_terminates ... ok
+test a_datetime_groupby_is_truncated_in_the_context_timezone_and_a_date_is_not ... ok
+test a_bare_date_in_another_timezone_names_that_zones_day_in_utc ... ok
+test a_domain_naming_active_suppresses_the_automatic_filter ... ok
+test a_composed_any_bang_bypasses_the_comodel_rules_while_any_applies_them ... ok
+test a_field_group_spec_is_evaluated_the_way_has_groups_does ... ok
+test a_false_leaf_renders_as_false_not_as_an_empty_condition ... ok
+test a_like_on_a_many2one_searches_the_comodel_display_name ... ok
+test a_bare_date_against_a_datetime_names_the_whole_utc_day ... ok
+test a_like_on_display_name_searches_the_name_columns ... ok
+test a_like_with_an_empty_or_wildcard_only_pattern_is_the_domain_odoo_makes_of_it ... ok
+test a_list_field_domain_is_applied_not_ignored ... ok
+test a_long_not_in_list_becomes_all ... ok
+test a_many2one_reference_inequality_against_nothing_compares_with_zero ... ok
+test a_display_name_that_searches_itself_is_refused_not_recursed ... ok
+test a_long_in_list_becomes_one_array_parameter ... ok
+test a_model_that_orders_in_python_refuses_every_order ... ok
+test a_negative_like_on_display_name_negates_the_condition ... ok
+test a_non_text_rec_name_withdraws_the_default_display_name ... ok
+test a_many2one_reference_stores_an_unset_value_as_zero ... ok
+test a_many2one_traversal_does_not ... ok
+test a_negative_like_negates_the_any_not_the_pattern ... ok
+test a_properties_field_in_a_domain_is_refused ... ok
+test a_one2many_whose_inverse_has_no_column_is_refused ... ok
+test a_negative_operator_on_a_related_field_negates_the_positive_form ... ok
+test a_pure_comodel_still_compiles_the_subquery ... ok
+test a_python_display_name_is_still_refused ... ok
+test a_reference_inverse_is_filtered_by_model_name ... ok
+test a_reference_inverse_without_a_model_field_is_refused ... ok
+test a_registry_that_cannot_see_the_flag_refuses_rather_than_guessing ... ok
+test a_related_field_searched_for_an_unset_value_also_matches_an_unset_hop ... ok
+test a_rule_domain_does_not_need_read_access_on_the_comodel_it_traverses ... ok
+test a_ruled_model_that_was_not_compiled_is_refused ... ok
+test a_restricted_many2one_cannot_be_filtered_through_a_name_search_or_a_path ... ok
+test a_search_count_refuses_the_x2many_active_test_knob_rather_than_ignoring_it ... ok
+test a_relational_rec_name_searches_the_comodel_display_name_on_the_path ... ok
+test a_required_hop_never_gets_the_unset_branch_and_compute_sudo_traverses_as_any_bang ... ok
+test a_rule_domain_is_compiled_as_superuser_so_the_comodels_own_rules_do_not_apply ... ok
+test a_timezone_resolves_through_the_alias_table_or_not_at_all ... ok
+test a_short_in_list_is_still_a_bound_list ... ok
+test a_rule_domain_traverses_an_x2many_without_the_active_filter ... ok
+test a_week_starts_on_the_languages_first_weekday_and_number_granularities_are_date_parts ... ok
+test an_empty_pattern_on_a_many2one_is_the_relation_being_set ... ok
+test a_translated_trigram_field_gets_the_indexable_conjunct ... ok
+test a_zero_id_is_the_absence_of_a_relation ... ok
+test an_empty_pattern_through_a_path_is_optimised_against_the_target_field ... ok
+test an_identifier_with_a_quote_in_it_is_escaped ... ok
+test an_id_list_membership_test_keeps_archived_rows ... ok
+test a_string_member_of_a_relational_in_is_a_display_name_lookup ... ok
+test an_equality_on_display_name_searches_the_name_columns_and_handles_unset_names ... ok
+test an_inequality_against_unset_compares_against_the_falsy_value ... ok
+test an_inequality_against_false_on_a_boolean_is_refused_not_rewritten_forever ... ok
+test an_inequality_against_nothing_follows_the_field_type ... ok
+test an_inequality_against_unset_folds_to_false_without_a_falsy_value ... ok
+test an_id_membership_past_the_threshold_is_one_array_parameter ... ok
+test an_equality_on_a_translated_trigram_field_is_accelerated_too ... ok
+test an_inequality_on_a_boolean_is_refused ... ok
+test an_inequality_on_id_against_nothing_is_false_because_id_has_no_falsy_value ... ok
+test an_order_by_related_uses_its_own_alias_family ... ok
+test an_order_term_the_user_may_not_read_is_dropped_as_odoo_does ... ok
+test an_unmodelled_context_key_is_refused ... ok
+test an_unparsable_order_term_is_an_error_not_a_silent_drop ... ok
+test an_untranslated_or_unindexed_field_gets_nothing ... ok
+test an_unpadded_date_is_not_a_day_because_fromisoformat_rejects_it ... ok
+test compiling_it_and_finding_no_restriction_is_not_the_same_as_not_compiling ... ok
+test an_x2many_with_a_python_domain_is_refused_not_widened ... ok
+test an_x2many_traversal_hides_archived_comodel_rows ... ok
+test custom_search_field_is_refused_in_domains ... ok
+test empty_domain_is_true ... ok
+test ensure_evaluated_reports_only_the_failing_model ... ok
+test descending_many2one_reverses_the_comodel_order ... ok
+test empty_in_list_is_false_and_not_in_is_true ... ok
+test an_x2many_membership_test_by_id_or_by_absence_runs_as_superuser ... ok
+test evaluated_comodel_rule_still_compiles ... ok
+test id_is_the_one_integer_with_no_falsy_value ... ok
+test falsy_string_equals_matches_null ... ok
+test ilike_is_unaccented_when_the_database_provides_it ... ok
+test implicit_and_over_consecutive_leaves ... ok
+test ilike_is_untouched_without_the_extension ... ok
+test malformed_domains_are_errors_not_panics ... ok
+test language_and_company_are_bound_parameters_so_one_plan_serves_every_identity ... ok
+test negating_an_inequality_adds_the_unset_case_only_where_odoo_does ... ok
+test many2one_order_recurses_through_the_whole_chain ... ok
+test negative_operator_includes_nulls ... ok
+test negative_ilike_unaccents_and_keeps_null_handling ... ok
+test non_stored_order_field_raises ... ok
+test no_field_domain_adds_no_condition ... ok
+test not_negates_the_optimised_leaf_not_the_raw_one ... ok
+test not_over_a_leaf_inverts_the_operator ... ok
+test in_with_a_scalar_that_is_falsy_is_the_empty_set ... ok
+test not_over_not_cancels ... ok
+test nullable_boolean_order_is_coalesced_to_false ... ok
+test nulls_clause_is_parsed_not_dropped ... ok
+test only_security_bearing_signals_reload_the_snapshot ... ok
+test not_over_an_and_becomes_an_or_of_negations ... ok
+test order_by_plain_column ... ok
+test nulls_on_a_many2one_applies_to_the_foreign_key ... ok
+test parse_py_chains_additions ... ok
+test parse_py_dotted_names ... ok
+test parse_py_literals ... ok
+test parse_py_rejects_real_expressions ... ok
+test parse_py_supports_list_concatenation ... ok
+test not_over_a_dotted_path_negates_the_traversal_not_the_comparison ... ok
+test partially_unresolvable_order_raises ... ok
+test numeric_and_boolean_comparands_are_coerced_from_strings ... ok
+test plain_like_is_never_unaccented ... ok
+test prefix_operators_bind_following_operands ... ok
+test positive_equality_does_not_leak_nulls ... ok
+test scalar_and_collection_forms_are_normalised_the_way_odoo_does ... ok
+test sibling_order_chains_get_distinct_join_aliases ... ok
+test the_debug_group_is_never_held_because_the_kernel_sees_no_session ... ok
+test the_any_bang_operator_is_refused_as_odoo_refuses_it ... ok
+test the_internal_any_bang_operators_are_refused_at_the_caller_boundary ... ok
+test the_type_derivation_is_only_a_bootstrap_fallback ... ok
+test true_and_false_leaves ... ok
+test the_exported_falsy_value_overrides_what_the_type_would_say ... ok
+test the_fields_own_context_turns_the_filter_off ... ok
+test unevaluated_comodel_rule_refuses_the_subquery ... ok
+test the_conjunct_is_withheld_wherever_odoo_withholds_it ... ok
+test unknown_order_field_raises ... ok
+test unrelated_signal_keeps_checked_security_during_concurrent_refresh ... ok
+test x2many_empty_list_is_false ... ok
+test x2many_equals_false_means_no_links ... ok
+test x2many_in_with_falsy_also_matches_records_with_no_links ... ok
+test x2many_name_members_search_the_comodel_display_name ... ok
+test x2many_in_without_falsy_is_a_plain_membership ... ok
+test the_company_dependent_guard_follows_the_live_fallback_not_the_export ... ok
+
+test result: ok. 136 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/stmt_cache_bench.rs (target/debug/deps/stmt_cache_bench-a2e537e7001e57a3)
+
+running 1 test
+test connection_scoped_cache_beats_request_scoped ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/odoo_poc-eb72bc921e0557cd)
+
+running 3 tests
+test http::tests::a_dropped_guard_poisons_and_the_pool_recovers_from_a_dead_reconnect ... ignored
+test http::tests::a_poisoned_connection_is_replaced_on_the_next_acquire ... ignored
+test http::tests::a_token_matches_only_itself ... ok
+
+test result: ok. 1 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests engine_py
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests odoo_kernel
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+Clippy
+    Checking odoo-engine-py v0.1.0 (/home/marin/Odoo/odoo-rust-orm/engine-py)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.52s

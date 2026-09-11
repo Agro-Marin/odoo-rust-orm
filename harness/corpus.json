@@ -1,0 +1,6601 @@
+[
+ {
+  "id": "c01",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "code",
+   "phone_code",
+   "state_required"
+  ],
+  "limit": 20
+ },
+ {
+  "id": "c02",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "ilike",
+    "a"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code",
+   "currency_id"
+  ],
+  "limit": 15
+ },
+ {
+  "id": "c03",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "phone_code",
+    ">",
+    300
+   ]
+  ],
+  "fields": [
+   "name",
+   "phone_code"
+  ]
+ },
+ {
+  "id": "c04",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "vat_label",
+    "!=",
+    false
+   ]
+  ],
+  "fields": [
+   "name",
+   "vat_label"
+  ],
+  "limit": 10
+ },
+ {
+  "id": "c05",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "state_required",
+    "=",
+    false
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 5
+ },
+ {
+  "id": "c06",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "currency_id",
+    "=",
+    false
+   ]
+  ]
+ },
+ {
+  "id": "c07",
+  "model": "res.country",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "name_position",
+  "aggregates": [
+   "__count"
+  ]
+ },
+ {
+  "id": "c08",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "in",
+    [
+     "US",
+     "MX",
+     "CA"
+    ]
+   ]
+  ],
+  "fields": [
+   "name",
+   "state_ids"
+  ]
+ },
+ {
+  "id": "c09",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "like",
+    "A"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code",
+   "country_id"
+  ],
+  "limit": 25
+ },
+ {
+  "id": "c10",
+  "model": "res.country.state",
+  "method": "search_count",
+  "domain": []
+ },
+ {
+  "id": "c11",
+  "model": "res.country.state",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "country_id",
+  "aggregates": [
+   "__count"
+  ]
+ },
+ {
+  "id": "c12",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "san"
+   ]
+  ],
+  "fields": [
+   "name",
+   "country_id"
+  ],
+  "limit": 30
+ },
+ {
+  "id": "c13",
+  "model": "res.currency",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "symbol",
+   "active",
+   "decimal_places",
+   "rounding",
+   "position"
+  ],
+  "limit": 30
+ },
+ {
+  "id": "c14",
+  "model": "res.currency",
+  "method": "search_read",
+  "domain": [
+   [
+    "active",
+    "in",
+    [
+     true,
+     false
+    ]
+   ]
+  ],
+  "fields": [
+   "name",
+   "active"
+  ],
+  "limit": 10
+ },
+ {
+  "id": "c15",
+  "model": "res.currency",
+  "method": "search_read",
+  "domain": [
+   [
+    "decimal_places",
+    ">",
+    2
+   ]
+  ],
+  "fields": [
+   "name",
+   "decimal_places"
+  ]
+ },
+ {
+  "id": "c16",
+  "model": "res.currency",
+  "method": "search_read",
+  "domain": [
+   [
+    "rounding",
+    "<",
+    0.01
+   ]
+  ],
+  "fields": [
+   "name",
+   "rounding"
+  ]
+ },
+ {
+  "id": "c17",
+  "model": "res.currency",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "position",
+  "aggregates": [
+   "__count",
+   "decimal_places:sum"
+  ]
+ },
+ {
+  "id": "c18",
+  "model": "res.lang",
+  "method": "search_read",
+  "domain": [
+   [
+    "direction",
+    "=",
+    "ltr"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code",
+   "direction",
+   "week_start"
+  ],
+  "limit": 10
+ },
+ {
+  "id": "c19",
+  "model": "res.lang",
+  "method": "search_read",
+  "domain": [
+   [
+    "active",
+    "=",
+    false
+   ]
+  ],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "limit": 10
+ },
+ {
+  "id": "c20",
+  "model": "res.lang",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "=like",
+    "es%"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code"
+  ]
+ },
+ {
+  "id": "c21",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "email",
+   "is_company",
+   "type",
+   "create_date",
+   "country_id"
+  ],
+  "limit": 10
+ },
+ {
+  "id": "c22",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "is_company",
+    "=",
+    true
+   ]
+  ],
+  "fields": [
+   "name"
+  ]
+ },
+ {
+  "id": "c23",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "email",
+    "not ilike",
+    "example"
+   ]
+  ],
+  "fields": [
+   "name",
+   "email"
+  ]
+ },
+ {
+  "id": "c24",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   "|",
+   [
+    "name",
+    "ilike",
+    "admin"
+   ],
+   [
+    "email",
+    "ilike",
+    "admin"
+   ]
+  ],
+  "fields": [
+   "name",
+   "email"
+  ]
+ },
+ {
+  "id": "c25",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "create_date",
+    ">=",
+    "2020-01-01 00:00:00"
+   ]
+  ],
+  "fields": [
+   "name",
+   "create_date"
+  ],
+  "limit": 10
+ },
+ {
+  "id": "c26",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "tag_ids",
+    "!=",
+    false
+   ]
+  ],
+  "fields": [
+   "name",
+   "tag_ids"
+  ],
+  "limit": 10
+ },
+ {
+  "id": "c27",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "supplier_rank",
+    ">",
+    0
+   ]
+  ],
+  "fields": [
+   "name",
+   "supplier_rank"
+  ]
+ },
+ {
+  "id": "c28",
+  "model": "res.groups",
+  "method": "search_read",
+  "domain": [
+   [
+    "share",
+    "=",
+    false
+   ]
+  ],
+  "fields": [
+   "name",
+   "sequence",
+   "privilege_id"
+  ],
+  "limit": 15
+ },
+ {
+  "id": "c29",
+  "model": "res.groups",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "share",
+  "aggregates": [
+   "__count"
+  ]
+ },
+ {
+  "id": "c30",
+  "model": "account.account",
+  "method": "search_read",
+  "domain": [
+   [
+    "account_type",
+    "like",
+    "asset"
+   ]
+  ],
+  "fields": [
+   "name",
+   "account_type",
+   "reconcile"
+  ],
+  "order": "id",
+  "limit": 20
+ },
+ {
+  "id": "c31",
+  "model": "account.account",
+  "method": "search_count",
+  "domain": [
+   [
+    "reconcile",
+    "=",
+    true
+   ]
+  ]
+ },
+ {
+  "id": "c32",
+  "model": "account.account",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "account_type",
+  "aggregates": [
+   "__count"
+  ]
+ },
+ {
+  "id": "c33",
+  "model": "mail.message",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "subject",
+   "message_type",
+   "date",
+   "model",
+   "res_id",
+   "author_id"
+  ],
+  "limit": 15
+ },
+ {
+  "id": "c34",
+  "model": "mail.message",
+  "method": "search_read",
+  "domain": [
+   [
+    "message_type",
+    "in",
+    [
+     "email",
+     "comment"
+    ]
+   ]
+  ],
+  "fields": [
+   "subject",
+   "message_type"
+  ],
+  "limit": 20
+ },
+ {
+  "id": "c35",
+  "model": "mail.message",
+  "method": "search_read",
+  "domain": [
+   [
+    "date",
+    ">=",
+    "2024-01-01 00:00:00"
+   ],
+   [
+    "date",
+    "<",
+    "2027-01-01 00:00:00"
+   ]
+  ],
+  "fields": [
+   "date"
+  ],
+  "limit": 10
+ },
+ {
+  "id": "c36",
+  "model": "uom.uom",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "factor",
+   "relative_factor",
+   "relative_uom_id",
+   "sequence"
+  ],
+  "limit": 15
+ },
+ {
+  "id": "c37",
+  "model": "uom.uom",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "relative_uom_id",
+  "aggregates": [
+   "__count",
+   "relative_factor:sum"
+  ]
+ },
+ {
+  "id": "c38",
+  "model": "payment.method",
+  "method": "search_read",
+  "domain": [
+   [
+    "support_tokenization",
+    "=",
+    true
+   ]
+  ],
+  "fields": [
+   "name",
+   "code",
+   "sequence"
+  ],
+  "limit": 20
+ },
+ {
+  "id": "c39",
+  "model": "mail.template",
+  "method": "search_read",
+  "domain": [
+   [
+    "model",
+    "like",
+    "res."
+   ]
+  ],
+  "fields": [
+   "name",
+   "model",
+   "subject"
+  ],
+  "order": "name, id",
+  "limit": 10
+ },
+ {
+  "id": "c40",
+  "model": "ir.model.fields",
+  "method": "search_read",
+  "domain": [
+   [
+    "model",
+    "=",
+    "res.partner"
+   ],
+   [
+    "ttype",
+    "=",
+    "many2one"
+   ]
+  ],
+  "fields": [
+   "name",
+   "ttype",
+   "relation",
+   "required",
+   "store"
+  ],
+  "limit": 30
+ },
+ {
+  "id": "c41",
+  "model": "ir.model.fields",
+  "method": "search_count",
+  "domain": [
+   [
+    "ttype",
+    "=",
+    "many2one"
+   ]
+  ]
+ },
+ {
+  "id": "c42",
+  "model": "ir.model.fields",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "ttype",
+  "aggregates": [
+   "__count"
+  ]
+ },
+ {
+  "id": "c43",
+  "model": "res.partner.industry",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "a"
+   ]
+  ],
+  "fields": [
+   "name",
+   "full_name",
+   "active"
+  ],
+  "limit": 10
+ },
+ {
+  "id": "c44",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "order": "code desc",
+  "limit": 10,
+  "offset": 5
+ },
+ {
+  "id": "c45",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "order": "name desc, id",
+  "limit": 10
+ },
+ {
+  "id": "c46",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "in",
+    [
+     1,
+     2,
+     3,
+     999999
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ]
+ },
+ {
+  "id": "c47",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "not in",
+    []
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 3
+ },
+ {
+  "id": "c48",
+  "model": "res.currency",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "not in",
+    [
+     "USD",
+     "EUR"
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 10
+ },
+ {
+  "id": "c49",
+  "model": "res.partner",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "is_company",
+  "aggregates": [
+   "__count"
+  ]
+ },
+ {
+  "id": "c50",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "=ilike",
+    "m%"
+   ]
+  ],
+  "fields": [
+   "name"
+  ]
+ },
+ {
+  "id": "c51",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "code",
+   "country_id"
+  ]
+ },
+ {
+  "id": "c52",
+  "model": "ir.model.fields",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "model",
+   "ttype",
+   "store",
+   "required",
+   "relation"
+  ]
+ },
+ {
+  "id": "d01",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [
+   [
+    "country_id.code",
+    "in",
+    [
+     "US",
+     "MX"
+    ]
+   ]
+  ],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "limit": 10
+ },
+ {
+  "id": "d02",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [
+   [
+    "country_id.currency_id.name",
+    "=",
+    "USD"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "limit": 8
+ },
+ {
+  "id": "d03",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "state_ids.code",
+    "=",
+    "CA"
+   ]
+  ],
+  "fields": [
+   "name"
+  ]
+ },
+ {
+  "id": "d04",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "state_ids",
+    "any",
+    [
+     [
+      "name",
+      "ilike",
+      "york"
+     ]
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ]
+ },
+ {
+  "id": "d05",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "state_ids",
+    "not any",
+    [
+     [
+      "code",
+      "like",
+      "A"
+     ]
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 8
+ },
+ {
+  "id": "d06",
+  "model": "res.country.state",
+  "method": "search_count",
+  "domain": [
+   [
+    "country_id",
+    "any",
+    [
+     [
+      "code",
+      "in",
+      [
+       "US",
+       "CA"
+      ]
+     ]
+    ]
+   ]
+  ]
+ },
+ {
+  "id": "d07",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "country_id",
+    "not any",
+    [
+     [
+      "code",
+      "=",
+      "US"
+     ]
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ]
+ },
+ {
+  "id": "d08",
+  "model": "uom.uom",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "child_of",
+    1
+   ]
+  ],
+  "fields": [
+   "name",
+   "relative_factor"
+  ]
+ },
+ {
+  "id": "d09",
+  "model": "uom.uom",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "parent_of",
+    5
+   ]
+  ],
+  "fields": [
+   "name"
+  ]
+ },
+ {
+  "id": "d10",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "child_of",
+    3
+   ]
+  ],
+  "fields": [
+   "name"
+  ]
+ },
+ {
+  "id": "d11",
+  "model": "uom.uom",
+  "method": "search_read",
+  "domain": [
+   [
+    "relative_uom_id",
+    "child_of",
+    1
+   ]
+  ],
+  "fields": [
+   "name"
+  ]
+ },
+ {
+  "id": "d12",
+  "model": "res.users",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "admin"
+   ]
+  ],
+  "fields": [
+   "login",
+   "name"
+  ]
+ },
+ {
+  "id": "d13",
+  "model": "res.users",
+  "method": "search_read",
+  "domain": [
+   [
+    "partner_id.email",
+    "ilike",
+    "@"
+   ]
+  ],
+  "fields": [
+   "login"
+  ]
+ },
+ {
+  "id": "d14",
+  "model": "mail.template",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "model"
+  ],
+  "limit": 5
+ },
+ {
+  "id": "d15",
+  "model": "account.account",
+  "method": "search_read",
+  "domain": [
+   [
+    "code_store",
+    "like",
+    "1"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code_store"
+  ],
+  "order": "id",
+  "limit": 12
+ },
+ {
+  "id": "d16",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "credit_limit",
+    ">",
+    0
+   ]
+  ],
+  "fields": [
+   "name",
+   "credit_limit"
+  ]
+ },
+ {
+  "id": "d18",
+  "model": "mail.message",
+  "method": "read_group",
+  "domain": [],
+  "groupby": [
+   "model",
+   "message_type"
+  ],
+  "aggregates": [
+   "__count"
+  ]
+ },
+ {
+  "id": "d19",
+  "model": "mail.message",
+  "method": "read_group",
+  "domain": [],
+  "groupby": [
+   "date:month"
+  ],
+  "aggregates": [
+   "__count"
+  ]
+ },
+ {
+  "id": "d20",
+  "model": "res.partner",
+  "method": "read_group",
+  "domain": [],
+  "groupby": [
+   "create_date:year"
+  ],
+  "aggregates": [
+   "__count",
+   "partner_latitude:avg"
+  ]
+ },
+ {
+  "id": "d21",
+  "model": "res.currency",
+  "method": "read_group",
+  "domain": [],
+  "groupby": [
+   "position"
+  ],
+  "aggregates": [
+   "decimal_places:min",
+   "decimal_places:max",
+   "rounding:avg"
+  ]
+ },
+ {
+  "id": "d22",
+  "model": "res.country",
+  "method": "read_group",
+  "domain": [],
+  "groupby": [
+   "currency_id",
+   "state_required"
+  ],
+  "aggregates": [
+   "__count"
+  ]
+ },
+ {
+  "id": "d23",
+  "model": "ir.filters",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "order": "id"
+ },
+ {
+  "id": "d24",
+  "model": "res.users.log",
+  "method": "search_count",
+  "domain": []
+ },
+ {
+  "id": "d26",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "state_ids",
+    "=",
+    false
+   ]
+  ]
+ },
+ {
+  "id": "d27",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "=?",
+    false
+   ]
+  ],
+  "fields": [
+   "code"
+  ],
+  "limit": 3
+ },
+ {
+  "id": "d28",
+  "model": "res.company",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "child_of",
+    1
+   ]
+  ],
+  "fields": [
+   "name"
+  ]
+ },
+ {
+  "id": "c01_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "code",
+   "phone_code",
+   "state_required"
+  ],
+  "limit": 20,
+  "su": true
+ },
+ {
+  "id": "c02_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "ilike",
+    "a"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code",
+   "currency_id"
+  ],
+  "limit": 15,
+  "su": true
+ },
+ {
+  "id": "c03_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "phone_code",
+    ">",
+    300
+   ]
+  ],
+  "fields": [
+   "name",
+   "phone_code"
+  ],
+  "su": true
+ },
+ {
+  "id": "c04_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "vat_label",
+    "!=",
+    false
+   ]
+  ],
+  "fields": [
+   "name",
+   "vat_label"
+  ],
+  "limit": 10,
+  "su": true
+ },
+ {
+  "id": "c05_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "state_required",
+    "=",
+    false
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 5,
+  "su": true
+ },
+ {
+  "id": "c06_su",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "currency_id",
+    "=",
+    false
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "c07_su",
+  "model": "res.country",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "name_position",
+  "aggregates": [
+   "__count"
+  ],
+  "su": true
+ },
+ {
+  "id": "c08_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "in",
+    [
+     "US",
+     "MX",
+     "CA"
+    ]
+   ]
+  ],
+  "fields": [
+   "name",
+   "state_ids"
+  ],
+  "su": true
+ },
+ {
+  "id": "c09_su",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "like",
+    "A"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code",
+   "country_id"
+  ],
+  "limit": 25,
+  "su": true
+ },
+ {
+  "id": "c10_su",
+  "model": "res.country.state",
+  "method": "search_count",
+  "domain": [],
+  "su": true
+ },
+ {
+  "id": "c11_su",
+  "model": "res.country.state",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "country_id",
+  "aggregates": [
+   "__count"
+  ],
+  "su": true
+ },
+ {
+  "id": "c12_su",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "san"
+   ]
+  ],
+  "fields": [
+   "name",
+   "country_id"
+  ],
+  "limit": 30,
+  "su": true
+ },
+ {
+  "id": "c13_su",
+  "model": "res.currency",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "symbol",
+   "active",
+   "decimal_places",
+   "rounding",
+   "position"
+  ],
+  "limit": 30,
+  "su": true
+ },
+ {
+  "id": "c14_su",
+  "model": "res.currency",
+  "method": "search_read",
+  "domain": [
+   [
+    "active",
+    "in",
+    [
+     true,
+     false
+    ]
+   ]
+  ],
+  "fields": [
+   "name",
+   "active"
+  ],
+  "limit": 10,
+  "su": true
+ },
+ {
+  "id": "c15_su",
+  "model": "res.currency",
+  "method": "search_read",
+  "domain": [
+   [
+    "decimal_places",
+    ">",
+    2
+   ]
+  ],
+  "fields": [
+   "name",
+   "decimal_places"
+  ],
+  "su": true
+ },
+ {
+  "id": "c16_su",
+  "model": "res.currency",
+  "method": "search_read",
+  "domain": [
+   [
+    "rounding",
+    "<",
+    0.01
+   ]
+  ],
+  "fields": [
+   "name",
+   "rounding"
+  ],
+  "su": true
+ },
+ {
+  "id": "c17_su",
+  "model": "res.currency",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "position",
+  "aggregates": [
+   "__count",
+   "decimal_places:sum"
+  ],
+  "su": true
+ },
+ {
+  "id": "c18_su",
+  "model": "res.lang",
+  "method": "search_read",
+  "domain": [
+   [
+    "direction",
+    "=",
+    "ltr"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code",
+   "direction",
+   "week_start"
+  ],
+  "limit": 10,
+  "su": true
+ },
+ {
+  "id": "c19_su",
+  "model": "res.lang",
+  "method": "search_read",
+  "domain": [
+   [
+    "active",
+    "=",
+    false
+   ]
+  ],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "limit": 10,
+  "su": true
+ },
+ {
+  "id": "c20_su",
+  "model": "res.lang",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "=like",
+    "es%"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "su": true
+ },
+ {
+  "id": "c21_su",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "email",
+   "is_company",
+   "type",
+   "create_date",
+   "country_id"
+  ],
+  "limit": 10,
+  "su": true
+ },
+ {
+  "id": "c22_su",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "is_company",
+    "=",
+    true
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "su": true
+ },
+ {
+  "id": "c23_su",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "email",
+    "not ilike",
+    "example"
+   ]
+  ],
+  "fields": [
+   "name",
+   "email"
+  ],
+  "su": true
+ },
+ {
+  "id": "c24_su",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   "|",
+   [
+    "name",
+    "ilike",
+    "admin"
+   ],
+   [
+    "email",
+    "ilike",
+    "admin"
+   ]
+  ],
+  "fields": [
+   "name",
+   "email"
+  ],
+  "su": true
+ },
+ {
+  "id": "c25_su",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "create_date",
+    ">=",
+    "2020-01-01 00:00:00"
+   ]
+  ],
+  "fields": [
+   "name",
+   "create_date"
+  ],
+  "limit": 10,
+  "su": true
+ },
+ {
+  "id": "c26_su",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "tag_ids",
+    "!=",
+    false
+   ]
+  ],
+  "fields": [
+   "name",
+   "tag_ids"
+  ],
+  "limit": 10,
+  "su": true
+ },
+ {
+  "id": "c27_su",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "supplier_rank",
+    ">",
+    0
+   ]
+  ],
+  "fields": [
+   "name",
+   "supplier_rank"
+  ],
+  "su": true
+ },
+ {
+  "id": "c28_su",
+  "model": "res.groups",
+  "method": "search_read",
+  "domain": [
+   [
+    "share",
+    "=",
+    false
+   ]
+  ],
+  "fields": [
+   "name",
+   "sequence",
+   "privilege_id"
+  ],
+  "limit": 15,
+  "su": true
+ },
+ {
+  "id": "c29_su",
+  "model": "res.groups",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "share",
+  "aggregates": [
+   "__count"
+  ],
+  "su": true
+ },
+ {
+  "id": "c30_su",
+  "model": "account.account",
+  "method": "search_read",
+  "domain": [
+   [
+    "account_type",
+    "like",
+    "asset"
+   ]
+  ],
+  "fields": [
+   "name",
+   "account_type",
+   "reconcile"
+  ],
+  "order": "id",
+  "limit": 20,
+  "su": true
+ },
+ {
+  "id": "c31_su",
+  "model": "account.account",
+  "method": "search_count",
+  "domain": [
+   [
+    "reconcile",
+    "=",
+    true
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "c32_su",
+  "model": "account.account",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "account_type",
+  "aggregates": [
+   "__count"
+  ],
+  "su": true
+ },
+ {
+  "id": "c33_su",
+  "model": "mail.message",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "subject",
+   "message_type",
+   "date",
+   "model",
+   "res_id",
+   "author_id"
+  ],
+  "limit": 15,
+  "su": true
+ },
+ {
+  "id": "c34_su",
+  "model": "mail.message",
+  "method": "search_read",
+  "domain": [
+   [
+    "message_type",
+    "in",
+    [
+     "email",
+     "comment"
+    ]
+   ]
+  ],
+  "fields": [
+   "subject",
+   "message_type"
+  ],
+  "limit": 20,
+  "su": true
+ },
+ {
+  "id": "c35_su",
+  "model": "mail.message",
+  "method": "search_read",
+  "domain": [
+   [
+    "date",
+    ">=",
+    "2024-01-01 00:00:00"
+   ],
+   [
+    "date",
+    "<",
+    "2027-01-01 00:00:00"
+   ]
+  ],
+  "fields": [
+   "date"
+  ],
+  "limit": 10,
+  "su": true
+ },
+ {
+  "id": "c36_su",
+  "model": "uom.uom",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "factor",
+   "relative_factor",
+   "relative_uom_id",
+   "sequence"
+  ],
+  "limit": 15,
+  "su": true
+ },
+ {
+  "id": "c37_su",
+  "model": "uom.uom",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "relative_uom_id",
+  "aggregates": [
+   "__count",
+   "relative_factor:sum"
+  ],
+  "su": true
+ },
+ {
+  "id": "c38_su",
+  "model": "payment.method",
+  "method": "search_read",
+  "domain": [
+   [
+    "support_tokenization",
+    "=",
+    true
+   ]
+  ],
+  "fields": [
+   "name",
+   "code",
+   "sequence"
+  ],
+  "limit": 20,
+  "su": true
+ },
+ {
+  "id": "c39_su",
+  "model": "mail.template",
+  "method": "search_read",
+  "domain": [
+   [
+    "model",
+    "like",
+    "res."
+   ]
+  ],
+  "fields": [
+   "name",
+   "model",
+   "subject"
+  ],
+  "order": "name, id",
+  "limit": 10,
+  "su": true
+ },
+ {
+  "id": "c40_su",
+  "model": "ir.model.fields",
+  "method": "search_read",
+  "domain": [
+   [
+    "model",
+    "=",
+    "res.partner"
+   ],
+   [
+    "ttype",
+    "=",
+    "many2one"
+   ]
+  ],
+  "fields": [
+   "name",
+   "ttype",
+   "relation",
+   "required",
+   "store"
+  ],
+  "limit": 30,
+  "su": true
+ },
+ {
+  "id": "c41_su",
+  "model": "ir.model.fields",
+  "method": "search_count",
+  "domain": [
+   [
+    "ttype",
+    "=",
+    "many2one"
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "c42_su",
+  "model": "ir.model.fields",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "ttype",
+  "aggregates": [
+   "__count"
+  ],
+  "su": true
+ },
+ {
+  "id": "c43_su",
+  "model": "res.partner.industry",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "a"
+   ]
+  ],
+  "fields": [
+   "name",
+   "full_name",
+   "active"
+  ],
+  "limit": 10,
+  "su": true
+ },
+ {
+  "id": "c44_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "order": "code desc",
+  "limit": 10,
+  "offset": 5,
+  "su": true
+ },
+ {
+  "id": "c45_su",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "order": "name desc, id",
+  "limit": 10,
+  "su": true
+ },
+ {
+  "id": "c46_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "in",
+    [
+     1,
+     2,
+     3,
+     999999
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "su": true
+ },
+ {
+  "id": "c47_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "not in",
+    []
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 3,
+  "su": true
+ },
+ {
+  "id": "c48_su",
+  "model": "res.currency",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "not in",
+    [
+     "USD",
+     "EUR"
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 10,
+  "su": true
+ },
+ {
+  "id": "c49_su",
+  "model": "res.partner",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "is_company",
+  "aggregates": [
+   "__count"
+  ],
+  "su": true
+ },
+ {
+  "id": "c50_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "=ilike",
+    "m%"
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "su": true
+ },
+ {
+  "id": "c51_su",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "code",
+   "country_id"
+  ],
+  "su": true
+ },
+ {
+  "id": "c52_su",
+  "model": "ir.model.fields",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "model",
+   "ttype",
+   "store",
+   "required",
+   "relation"
+  ],
+  "su": true
+ },
+ {
+  "id": "d01_su",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [
+   [
+    "country_id.code",
+    "in",
+    [
+     "US",
+     "MX"
+    ]
+   ]
+  ],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "limit": 10,
+  "su": true
+ },
+ {
+  "id": "d02_su",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [
+   [
+    "country_id.currency_id.name",
+    "=",
+    "USD"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "limit": 8,
+  "su": true
+ },
+ {
+  "id": "d03_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "state_ids.code",
+    "=",
+    "CA"
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "su": true
+ },
+ {
+  "id": "d04_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "state_ids",
+    "any",
+    [
+     [
+      "name",
+      "ilike",
+      "york"
+     ]
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "su": true
+ },
+ {
+  "id": "d05_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "state_ids",
+    "not any",
+    [
+     [
+      "code",
+      "like",
+      "A"
+     ]
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 8,
+  "su": true
+ },
+ {
+  "id": "d06_su",
+  "model": "res.country.state",
+  "method": "search_count",
+  "domain": [
+   [
+    "country_id",
+    "any",
+    [
+     [
+      "code",
+      "in",
+      [
+       "US",
+       "CA"
+      ]
+     ]
+    ]
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "d07_su",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "country_id",
+    "not any",
+    [
+     [
+      "code",
+      "=",
+      "US"
+     ]
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "su": true
+ },
+ {
+  "id": "d08_su",
+  "model": "uom.uom",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "child_of",
+    1
+   ]
+  ],
+  "fields": [
+   "name",
+   "relative_factor"
+  ],
+  "su": true
+ },
+ {
+  "id": "d09_su",
+  "model": "uom.uom",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "parent_of",
+    5
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "su": true
+ },
+ {
+  "id": "d10_su",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "child_of",
+    3
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "su": true
+ },
+ {
+  "id": "d11_su",
+  "model": "uom.uom",
+  "method": "search_read",
+  "domain": [
+   [
+    "relative_uom_id",
+    "child_of",
+    1
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "su": true
+ },
+ {
+  "id": "d12_su",
+  "model": "res.users",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "admin"
+   ]
+  ],
+  "fields": [
+   "login",
+   "name"
+  ],
+  "su": true
+ },
+ {
+  "id": "d13_su",
+  "model": "res.users",
+  "method": "search_read",
+  "domain": [
+   [
+    "partner_id.email",
+    "ilike",
+    "@"
+   ]
+  ],
+  "fields": [
+   "login"
+  ],
+  "su": true
+ },
+ {
+  "id": "d14_su",
+  "model": "mail.template",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "model"
+  ],
+  "limit": 5,
+  "su": true
+ },
+ {
+  "id": "d15_su",
+  "model": "account.account",
+  "method": "search_read",
+  "domain": [
+   [
+    "code_store",
+    "like",
+    "1"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code_store"
+  ],
+  "order": "id",
+  "limit": 12,
+  "su": true
+ },
+ {
+  "id": "d16_su",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "credit_limit",
+    ">",
+    0
+   ]
+  ],
+  "fields": [
+   "name",
+   "credit_limit"
+  ],
+  "su": true
+ },
+ {
+  "id": "d18_su",
+  "model": "mail.message",
+  "method": "read_group",
+  "domain": [],
+  "groupby": [
+   "model",
+   "message_type"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "su": true
+ },
+ {
+  "id": "d19_su",
+  "model": "mail.message",
+  "method": "read_group",
+  "domain": [],
+  "groupby": [
+   "date:month"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "su": true
+ },
+ {
+  "id": "d20_su",
+  "model": "res.partner",
+  "method": "read_group",
+  "domain": [],
+  "groupby": [
+   "create_date:year"
+  ],
+  "aggregates": [
+   "__count",
+   "partner_latitude:avg"
+  ],
+  "su": true
+ },
+ {
+  "id": "d21_su",
+  "model": "res.currency",
+  "method": "read_group",
+  "domain": [],
+  "groupby": [
+   "position"
+  ],
+  "aggregates": [
+   "decimal_places:min",
+   "decimal_places:max",
+   "rounding:avg"
+  ],
+  "su": true
+ },
+ {
+  "id": "d22_su",
+  "model": "res.country",
+  "method": "read_group",
+  "domain": [],
+  "groupby": [
+   "currency_id",
+   "state_required"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "su": true
+ },
+ {
+  "id": "d23_su",
+  "model": "ir.filters",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "order": "id",
+  "su": true
+ },
+ {
+  "id": "d24_su",
+  "model": "res.users.log",
+  "method": "search_count",
+  "domain": [],
+  "su": true
+ },
+ {
+  "id": "d26_su",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "state_ids",
+    "=",
+    false
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "d27_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "=?",
+    false
+   ]
+  ],
+  "fields": [
+   "code"
+  ],
+  "limit": 3,
+  "su": true
+ },
+ {
+  "id": "d28_su",
+  "model": "res.company",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "child_of",
+    1
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "su": true
+ },
+ {
+  "id": "c01_at",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "code",
+   "phone_code",
+   "state_required"
+  ],
+  "limit": 20,
+  "active_test": false
+ },
+ {
+  "id": "c02_at",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "ilike",
+    "a"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code",
+   "currency_id"
+  ],
+  "limit": 15,
+  "active_test": false
+ },
+ {
+  "id": "c03_at",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "phone_code",
+    ">",
+    300
+   ]
+  ],
+  "fields": [
+   "name",
+   "phone_code"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "c04_at",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "vat_label",
+    "!=",
+    false
+   ]
+  ],
+  "fields": [
+   "name",
+   "vat_label"
+  ],
+  "limit": 10,
+  "active_test": false
+ },
+ {
+  "id": "c05_at",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "state_required",
+    "=",
+    false
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 5,
+  "active_test": false
+ },
+ {
+  "id": "c08_at",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "in",
+    [
+     "US",
+     "MX",
+     "CA"
+    ]
+   ]
+  ],
+  "fields": [
+   "name",
+   "state_ids"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "c09_at",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "like",
+    "A"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code",
+   "country_id"
+  ],
+  "limit": 25,
+  "active_test": false
+ },
+ {
+  "id": "c12_at",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "san"
+   ]
+  ],
+  "fields": [
+   "name",
+   "country_id"
+  ],
+  "limit": 30,
+  "active_test": false
+ },
+ {
+  "id": "c13_at",
+  "model": "res.currency",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "symbol",
+   "active",
+   "decimal_places",
+   "rounding",
+   "position"
+  ],
+  "limit": 30,
+  "active_test": false
+ },
+ {
+  "id": "c14_at",
+  "model": "res.currency",
+  "method": "search_read",
+  "domain": [
+   [
+    "active",
+    "in",
+    [
+     true,
+     false
+    ]
+   ]
+  ],
+  "fields": [
+   "name",
+   "active"
+  ],
+  "limit": 10,
+  "active_test": false
+ },
+ {
+  "id": "c15_at",
+  "model": "res.currency",
+  "method": "search_read",
+  "domain": [
+   [
+    "decimal_places",
+    ">",
+    2
+   ]
+  ],
+  "fields": [
+   "name",
+   "decimal_places"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "c16_at",
+  "model": "res.currency",
+  "method": "search_read",
+  "domain": [
+   [
+    "rounding",
+    "<",
+    0.01
+   ]
+  ],
+  "fields": [
+   "name",
+   "rounding"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "c18_at",
+  "model": "res.lang",
+  "method": "search_read",
+  "domain": [
+   [
+    "direction",
+    "=",
+    "ltr"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code",
+   "direction",
+   "week_start"
+  ],
+  "limit": 10,
+  "active_test": false
+ },
+ {
+  "id": "c19_at",
+  "model": "res.lang",
+  "method": "search_read",
+  "domain": [
+   [
+    "active",
+    "=",
+    false
+   ]
+  ],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "limit": 10,
+  "active_test": false
+ },
+ {
+  "id": "c20_at",
+  "model": "res.lang",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "=like",
+    "es%"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "c21_at",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "email",
+   "is_company",
+   "type",
+   "create_date",
+   "country_id"
+  ],
+  "limit": 10,
+  "active_test": false
+ },
+ {
+  "id": "c22_at",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "is_company",
+    "=",
+    true
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "c23_at",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "email",
+    "not ilike",
+    "example"
+   ]
+  ],
+  "fields": [
+   "name",
+   "email"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "c24_at",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   "|",
+   [
+    "name",
+    "ilike",
+    "admin"
+   ],
+   [
+    "email",
+    "ilike",
+    "admin"
+   ]
+  ],
+  "fields": [
+   "name",
+   "email"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "c25_at",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "create_date",
+    ">=",
+    "2020-01-01 00:00:00"
+   ]
+  ],
+  "fields": [
+   "name",
+   "create_date"
+  ],
+  "limit": 10,
+  "active_test": false
+ },
+ {
+  "id": "c26_at",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "tag_ids",
+    "!=",
+    false
+   ]
+  ],
+  "fields": [
+   "name",
+   "tag_ids"
+  ],
+  "limit": 10,
+  "active_test": false
+ },
+ {
+  "id": "c27_at",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "supplier_rank",
+    ">",
+    0
+   ]
+  ],
+  "fields": [
+   "name",
+   "supplier_rank"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "c28_at",
+  "model": "res.groups",
+  "method": "search_read",
+  "domain": [
+   [
+    "share",
+    "=",
+    false
+   ]
+  ],
+  "fields": [
+   "name",
+   "sequence",
+   "privilege_id"
+  ],
+  "limit": 15,
+  "active_test": false
+ },
+ {
+  "id": "c30_at",
+  "model": "account.account",
+  "method": "search_read",
+  "domain": [
+   [
+    "account_type",
+    "like",
+    "asset"
+   ]
+  ],
+  "fields": [
+   "name",
+   "account_type",
+   "reconcile"
+  ],
+  "order": "id",
+  "limit": 20,
+  "active_test": false
+ },
+ {
+  "id": "c33_at",
+  "model": "mail.message",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "subject",
+   "message_type",
+   "date",
+   "model",
+   "res_id",
+   "author_id"
+  ],
+  "limit": 15,
+  "active_test": false
+ },
+ {
+  "id": "c34_at",
+  "model": "mail.message",
+  "method": "search_read",
+  "domain": [
+   [
+    "message_type",
+    "in",
+    [
+     "email",
+     "comment"
+    ]
+   ]
+  ],
+  "fields": [
+   "subject",
+   "message_type"
+  ],
+  "limit": 20,
+  "active_test": false
+ },
+ {
+  "id": "c35_at",
+  "model": "mail.message",
+  "method": "search_read",
+  "domain": [
+   [
+    "date",
+    ">=",
+    "2024-01-01 00:00:00"
+   ],
+   [
+    "date",
+    "<",
+    "2027-01-01 00:00:00"
+   ]
+  ],
+  "fields": [
+   "date"
+  ],
+  "limit": 10,
+  "active_test": false
+ },
+ {
+  "id": "c36_at",
+  "model": "uom.uom",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "factor",
+   "relative_factor",
+   "relative_uom_id",
+   "sequence"
+  ],
+  "limit": 15,
+  "active_test": false
+ },
+ {
+  "id": "c38_at",
+  "model": "payment.method",
+  "method": "search_read",
+  "domain": [
+   [
+    "support_tokenization",
+    "=",
+    true
+   ]
+  ],
+  "fields": [
+   "name",
+   "code",
+   "sequence"
+  ],
+  "limit": 20,
+  "active_test": false
+ },
+ {
+  "id": "c39_at",
+  "model": "mail.template",
+  "method": "search_read",
+  "domain": [
+   [
+    "model",
+    "like",
+    "res."
+   ]
+  ],
+  "fields": [
+   "name",
+   "model",
+   "subject"
+  ],
+  "order": "name, id",
+  "limit": 10,
+  "active_test": false
+ },
+ {
+  "id": "c40_at",
+  "model": "ir.model.fields",
+  "method": "search_read",
+  "domain": [
+   [
+    "model",
+    "=",
+    "res.partner"
+   ],
+   [
+    "ttype",
+    "=",
+    "many2one"
+   ]
+  ],
+  "fields": [
+   "name",
+   "ttype",
+   "relation",
+   "required",
+   "store"
+  ],
+  "limit": 30,
+  "active_test": false
+ },
+ {
+  "id": "c43_at",
+  "model": "res.partner.industry",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "a"
+   ]
+  ],
+  "fields": [
+   "name",
+   "full_name",
+   "active"
+  ],
+  "limit": 10,
+  "active_test": false
+ },
+ {
+  "id": "c44_at",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "order": "code desc",
+  "limit": 10,
+  "offset": 5,
+  "active_test": false
+ },
+ {
+  "id": "c45_at",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "order": "name desc, id",
+  "limit": 10,
+  "active_test": false
+ },
+ {
+  "id": "c46_at",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "in",
+    [
+     1,
+     2,
+     3,
+     999999
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "c47_at",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "not in",
+    []
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 3,
+  "active_test": false
+ },
+ {
+  "id": "c48_at",
+  "model": "res.currency",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "not in",
+    [
+     "USD",
+     "EUR"
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 10,
+  "active_test": false
+ },
+ {
+  "id": "c50_at",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "=ilike",
+    "m%"
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "c51_at",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "code",
+   "country_id"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "c52_at",
+  "model": "ir.model.fields",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "model",
+   "ttype",
+   "store",
+   "required",
+   "relation"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "d01_at",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [
+   [
+    "country_id.code",
+    "in",
+    [
+     "US",
+     "MX"
+    ]
+   ]
+  ],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "limit": 10,
+  "active_test": false
+ },
+ {
+  "id": "d02_at",
+  "model": "res.country.state",
+  "method": "search_read",
+  "domain": [
+   [
+    "country_id.currency_id.name",
+    "=",
+    "USD"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "limit": 8,
+  "active_test": false
+ },
+ {
+  "id": "d03_at",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "state_ids.code",
+    "=",
+    "CA"
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "d04_at",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "state_ids",
+    "any",
+    [
+     [
+      "name",
+      "ilike",
+      "york"
+     ]
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "d05_at",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "state_ids",
+    "not any",
+    [
+     [
+      "code",
+      "like",
+      "A"
+     ]
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 8,
+  "active_test": false
+ },
+ {
+  "id": "d07_at",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "country_id",
+    "not any",
+    [
+     [
+      "code",
+      "=",
+      "US"
+     ]
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "d08_at",
+  "model": "uom.uom",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "child_of",
+    1
+   ]
+  ],
+  "fields": [
+   "name",
+   "relative_factor"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "d09_at",
+  "model": "uom.uom",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "parent_of",
+    5
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "d10_at",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "child_of",
+    3
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "d11_at",
+  "model": "uom.uom",
+  "method": "search_read",
+  "domain": [
+   [
+    "relative_uom_id",
+    "child_of",
+    1
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "d12_at",
+  "model": "res.users",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "admin"
+   ]
+  ],
+  "fields": [
+   "login",
+   "name"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "d13_at",
+  "model": "res.users",
+  "method": "search_read",
+  "domain": [
+   [
+    "partner_id.email",
+    "ilike",
+    "@"
+   ]
+  ],
+  "fields": [
+   "login"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "d14_at",
+  "model": "mail.template",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "model"
+  ],
+  "limit": 5,
+  "active_test": false
+ },
+ {
+  "id": "d15_at",
+  "model": "account.account",
+  "method": "search_read",
+  "domain": [
+   [
+    "code_store",
+    "like",
+    "1"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code_store"
+  ],
+  "order": "id",
+  "limit": 12,
+  "active_test": false
+ },
+ {
+  "id": "d16_at",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "credit_limit",
+    ">",
+    0
+   ]
+  ],
+  "fields": [
+   "name",
+   "credit_limit"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "d23_at",
+  "model": "ir.filters",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "order": "id",
+  "active_test": false
+ },
+ {
+  "id": "d27_at",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "=?",
+    false
+   ]
+  ],
+  "fields": [
+   "code"
+  ],
+  "limit": 3,
+  "active_test": false
+ },
+ {
+  "id": "d28_at",
+  "model": "res.company",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "child_of",
+    1
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "active_test": false
+ },
+ {
+  "id": "o01",
+  "model": "ir.model.access",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "perm_read"
+  ],
+  "limit": 15
+ },
+ {
+  "id": "o02",
+  "model": "res.groups",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "limit": 15
+ },
+ {
+  "id": "o03",
+  "model": "ir.model.access",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "order": "group_id desc, id",
+  "limit": 15
+ },
+ {
+  "id": "o04",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "order": "parent_id asc nulls last, id",
+  "limit": 15
+ },
+ {
+  "id": "o05",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "order": "parent_id desc nulls first, id",
+  "limit": 15
+ },
+ {
+  "id": "o01_su",
+  "model": "ir.model.access",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "perm_read"
+  ],
+  "limit": 15,
+  "su": true
+ },
+ {
+  "id": "o01_at",
+  "model": "ir.model.access",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "perm_read"
+  ],
+  "limit": 15,
+  "active_test": false
+ },
+ {
+  "id": "o02_su",
+  "model": "res.groups",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "limit": 15,
+  "su": true
+ },
+ {
+  "id": "o02_at",
+  "model": "res.groups",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "limit": 15,
+  "active_test": false
+ },
+ {
+  "id": "o03_su",
+  "model": "ir.model.access",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "order": "group_id desc, id",
+  "limit": 15,
+  "su": true
+ },
+ {
+  "id": "o03_at",
+  "model": "ir.model.access",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "order": "group_id desc, id",
+  "limit": 15,
+  "active_test": false
+ },
+ {
+  "id": "o04_su",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "order": "parent_id asc nulls last, id",
+  "limit": 15,
+  "su": true
+ },
+ {
+  "id": "o04_at",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "order": "parent_id asc nulls last, id",
+  "limit": 15,
+  "active_test": false
+ },
+ {
+  "id": "o05_su",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "order": "parent_id desc nulls first, id",
+  "limit": 15,
+  "su": true
+ },
+ {
+  "id": "o05_at",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "order": "parent_id desc nulls first, id",
+  "limit": 15,
+  "active_test": false
+ },
+ {
+  "id": "l01",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "order": "code",
+  "limit": 12,
+  "lang": "fr_FR"
+ },
+ {
+  "id": "l02",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "order": "name",
+  "limit": 12,
+  "lang": "fr_FR"
+ },
+ {
+  "id": "l03",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "belgi"
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "lang": "fr_FR"
+ },
+ {
+  "id": "l04",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "belgi"
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "lang": "en_US"
+ },
+ {
+  "id": "l05",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "=",
+    "Belgique"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "lang": "fr_FR"
+ },
+ {
+  "id": "l06",
+  "model": "res.country",
+  "method": "read_group",
+  "domain": [],
+  "groupby": [
+   "currency_id"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "lang": "fr_FR"
+ },
+ {
+  "id": "l01_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "order": "code",
+  "limit": 12,
+  "lang": "fr_FR",
+  "su": true
+ },
+ {
+  "id": "l02_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name"
+  ],
+  "order": "name",
+  "limit": 12,
+  "lang": "fr_FR",
+  "su": true
+ },
+ {
+  "id": "l03_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "belgi"
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "lang": "fr_FR",
+  "su": true
+ },
+ {
+  "id": "l04_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "belgi"
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "lang": "en_US",
+  "su": true
+ },
+ {
+  "id": "l05_su",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "name",
+    "=",
+    "Belgique"
+   ]
+  ],
+  "fields": [
+   "name",
+   "code"
+  ],
+  "lang": "fr_FR",
+  "su": true
+ },
+ {
+  "id": "l06_su",
+  "model": "res.country",
+  "method": "read_group",
+  "domain": [],
+  "groupby": [
+   "currency_id"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "lang": "fr_FR",
+  "su": true
+ },
+ {
+  "id": "x01",
+  "model": "res.company",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "bank_journal_ids"
+  ],
+  "limit": 5
+ },
+ {
+  "id": "x02",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "child_ids"
+  ],
+  "limit": 10
+ },
+ {
+  "id": "x03",
+  "model": "product.category",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "message_ids"
+  ],
+  "limit": 5
+ },
+ {
+  "id": "x04",
+  "model": "ir.cron",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "cron_name",
+   "message_ids"
+  ],
+  "limit": 5
+ },
+ {
+  "id": "x05",
+  "model": "res.company",
+  "method": "search_read",
+  "domain": [
+   [
+    "bank_journal_ids",
+    "!=",
+    false
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 5
+ },
+ {
+  "id": "x06",
+  "model": "product.category",
+  "method": "search_read",
+  "domain": [
+   [
+    "message_ids",
+    "any",
+    [
+     [
+      "id",
+      ">",
+      0
+     ]
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 5
+ },
+ {
+  "id": "x01_su",
+  "model": "res.company",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "bank_journal_ids"
+  ],
+  "limit": 5,
+  "su": true
+ },
+ {
+  "id": "x01_at",
+  "model": "res.company",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "bank_journal_ids"
+  ],
+  "limit": 5,
+  "active_test": false
+ },
+ {
+  "id": "x02_su",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "child_ids"
+  ],
+  "limit": 10,
+  "su": true
+ },
+ {
+  "id": "x02_at",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "child_ids"
+  ],
+  "limit": 10,
+  "active_test": false
+ },
+ {
+  "id": "x03_su",
+  "model": "product.category",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "message_ids"
+  ],
+  "limit": 5,
+  "su": true
+ },
+ {
+  "id": "x03_at",
+  "model": "product.category",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "message_ids"
+  ],
+  "limit": 5,
+  "active_test": false
+ },
+ {
+  "id": "x04_su",
+  "model": "ir.cron",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "cron_name",
+   "message_ids"
+  ],
+  "limit": 5,
+  "su": true
+ },
+ {
+  "id": "x04_at",
+  "model": "ir.cron",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "cron_name",
+   "message_ids"
+  ],
+  "limit": 5,
+  "active_test": false
+ },
+ {
+  "id": "x05_su",
+  "model": "res.company",
+  "method": "search_read",
+  "domain": [
+   [
+    "bank_journal_ids",
+    "!=",
+    false
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 5,
+  "su": true
+ },
+ {
+  "id": "x05_at",
+  "model": "res.company",
+  "method": "search_read",
+  "domain": [
+   [
+    "bank_journal_ids",
+    "!=",
+    false
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 5,
+  "active_test": false
+ },
+ {
+  "id": "x06_su",
+  "model": "product.category",
+  "method": "search_read",
+  "domain": [
+   [
+    "message_ids",
+    "any",
+    [
+     [
+      "id",
+      ">",
+      0
+     ]
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 5,
+  "su": true
+ },
+ {
+  "id": "x06_at",
+  "model": "product.category",
+  "method": "search_read",
+  "domain": [
+   [
+    "message_ids",
+    "any",
+    [
+     [
+      "id",
+      ">",
+      0
+     ]
+    ]
+   ]
+  ],
+  "fields": [
+   "name"
+  ],
+  "limit": 5,
+  "active_test": false
+ },
+ {
+  "id": "i01",
+  "model": "res.lang",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "code",
+   "create_uid",
+   "write_uid"
+  ],
+  "limit": 5,
+  "uid": "other"
+ },
+ {
+  "id": "i02",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "name",
+   "create_uid"
+  ],
+  "limit": 5,
+  "uid": "other"
+ },
+ {
+  "id": "i03",
+  "model": "res.lang",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "create_uid",
+  "aggregates": [
+   "__count"
+  ],
+  "uid": "other"
+ },
+ {
+  "id": "i04",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [],
+  "uid": "other"
+ },
+ {
+  "id": "g01",
+  "model": "account.analytic.plan",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "default_applicability",
+  "aggregates": [
+   "__count"
+  ]
+ },
+ {
+  "id": "g02",
+  "model": "account.analytic.plan",
+  "method": "read_group",
+  "domain": [],
+  "groupby": [
+   "default_applicability",
+   "create_uid"
+  ],
+  "aggregates": [
+   "__count"
+  ]
+ },
+ {
+  "id": "g01_su",
+  "model": "account.analytic.plan",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "default_applicability",
+  "aggregates": [
+   "__count"
+  ],
+  "su": true
+ },
+ {
+  "id": "g02_su",
+  "model": "account.analytic.plan",
+  "method": "read_group",
+  "domain": [],
+  "groupby": [
+   "default_applicability",
+   "create_uid"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "su": true
+ },
+ {
+  "id": "n01",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [],
+  "limit": 5
+ },
+ {
+  "id": "n02",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [],
+  "limit": 1
+ },
+ {
+  "id": "n03",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "code",
+    "=",
+    "BE"
+   ]
+  ],
+  "limit": 100
+ },
+ {
+  "id": "n04",
+  "model": "res.partner",
+  "method": "search_count",
+  "domain": [],
+  "limit": 3
+ },
+ {
+  "id": "n01_su",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [],
+  "limit": 5,
+  "su": true
+ },
+ {
+  "id": "n02_su",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [],
+  "limit": 1,
+  "su": true
+ },
+ {
+  "id": "n03_su",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "code",
+    "=",
+    "BE"
+   ]
+  ],
+  "limit": 100,
+  "su": true
+ },
+ {
+  "id": "n04_su",
+  "model": "res.partner",
+  "method": "search_count",
+  "domain": [],
+  "limit": 3,
+  "su": true
+ },
+ {
+  "id": "dn01",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "in",
+    [
+     "BE",
+     "FR",
+     "MX"
+    ]
+   ]
+  ],
+  "fields": [
+   "display_name",
+   "code"
+  ],
+  "limit": 5
+ },
+ {
+  "id": "dn02",
+  "model": "res.users",
+  "method": "search_read",
+  "domain": [
+   [
+    "id",
+    "=",
+    2
+   ]
+  ],
+  "fields": [
+   "display_name",
+   "login"
+  ]
+ },
+ {
+  "id": "dn03",
+  "model": "ir.module.module",
+  "method": "read_group",
+  "domain": [
+   [
+    "application",
+    "=",
+    true
+   ]
+  ],
+  "groupby": [
+   "category_id"
+  ],
+  "aggregates": [
+   "__count"
+  ]
+ },
+ {
+  "id": "dn04",
+  "model": "ir.module.module",
+  "method": "read_group",
+  "domain": [
+   [
+    "application",
+    "=",
+    true
+   ]
+  ],
+  "groupby": [
+   "category_id"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "order": "category_id"
+ },
+ {
+  "id": "q01_like_empty",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "vat_label",
+    "like",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "q02_not_like_empty",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "vat_label",
+    "not like",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "q03_eqlike_empty",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "vat_label",
+    "=like",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "q04_like_percent",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "vat_label",
+    "like",
+    "%"
+   ]
+  ]
+ },
+ {
+  "id": "q05_m2o_not_ilike_empty",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "currency_id",
+    "not ilike",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "q06_m2o_eqilike_empty",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "currency_id",
+    "=ilike",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "q07_m2o_eq_zero",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "currency_id",
+    "=",
+    0
+   ]
+  ]
+ },
+ {
+  "id": "q08_m2o_in_zero",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "currency_id",
+    "in",
+    [
+     0,
+     1
+    ]
+   ]
+  ]
+ },
+ {
+  "id": "q09_numeric_string",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "phone_code",
+    "=",
+    "32"
+   ]
+  ]
+ },
+ {
+  "id": "q10_numeric_bad_string",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "phone_code",
+    "in",
+    [
+     "32",
+     "x"
+    ]
+   ]
+  ]
+ },
+ {
+  "id": "q11_bool_int",
+  "model": "res.currency",
+  "method": "search_count",
+  "domain": [
+   [
+    "active",
+    "=",
+    1
+   ]
+  ]
+ },
+ {
+  "id": "q12_bool_str",
+  "model": "res.currency",
+  "method": "search_count",
+  "domain": [
+   [
+    "active",
+    "in",
+    [
+     "false"
+    ]
+   ]
+  ],
+  "active_test": false
+ },
+ {
+  "id": "q13_gt_false_int",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "phone_code",
+    ">",
+    false
+   ]
+  ]
+ },
+ {
+  "id": "q14_gt_false_m2o",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "currency_id",
+    ">",
+    false
+   ]
+  ]
+ },
+ {
+  "id": "q15_child_of_name",
+  "model": "res.partner",
+  "method": "search_count",
+  "domain": [
+   [
+    "id",
+    "child_of",
+    "Rustorm Parent"
+   ]
+  ]
+ },
+ {
+  "id": "q16_eq_list",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "code",
+    "=",
+    [
+     "BE",
+     "FR"
+    ]
+   ]
+  ]
+ },
+ {
+  "id": "q17_in_scalar",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "code",
+    "in",
+    "BE"
+   ]
+  ]
+ },
+ {
+  "id": "q18_eqq_zero",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "phone_code",
+    "=?",
+    0
+   ]
+  ]
+ },
+ {
+  "id": "q19_eq_empty_list",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "vat_label",
+    "=",
+    []
+   ]
+  ]
+ },
+ {
+  "id": "q20_display_eqilike_empty",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "display_name",
+    "=ilike",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "q21_x2m_in_zero",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "state_ids",
+    "in",
+    [
+     0
+    ]
+   ]
+  ]
+ },
+ {
+  "id": "t01_month_utc",
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "groupby": "create_date:month",
+  "aggregates": [
+   "__count"
+  ]
+ },
+ {
+  "id": "t02_month_mexico",
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "groupby": "create_date:month",
+  "aggregates": [
+   "__count"
+  ],
+  "tz": "America/Mexico_City"
+ },
+ {
+  "id": "t03_day_calcutta",
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "groupby": "create_date:day",
+  "aggregates": [
+   "__count"
+  ],
+  "tz": "Asia/Calcutta"
+ },
+ {
+  "id": "t04_day_unknown",
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "groupby": "create_date:day",
+  "aggregates": [
+   "__count"
+  ],
+  "tz": "Mars/Olympus"
+ },
+ {
+  "id": "t05_hour_mexico",
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "groupby": "create_date:hour",
+  "aggregates": [
+   "__count"
+  ],
+  "tz": "America/Mexico_City"
+ },
+ {
+  "id": "t06_week_mexico",
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "groupby": "create_date:week",
+  "aggregates": [
+   "__count"
+  ],
+  "tz": "America/Mexico_City"
+ },
+ {
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "id": "w_en_US_utc",
+  "groupby": "create_date:week",
+  "lang": "en_US"
+ },
+ {
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "id": "w_en_US_mx",
+  "groupby": "create_date:week",
+  "lang": "en_US",
+  "tz": "America/Mexico_City"
+ },
+ {
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "id": "w_fr_FR_utc",
+  "groupby": "create_date:week",
+  "lang": "fr_FR"
+ },
+ {
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "id": "w_fr_FR_mx",
+  "groupby": "create_date:week",
+  "lang": "fr_FR",
+  "tz": "America/Mexico_City"
+ },
+ {
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "id": "n_year_number",
+  "groupby": "create_date:year_number",
+  "tz": "America/Mexico_City"
+ },
+ {
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "id": "n_quarter_number",
+  "groupby": "create_date:quarter_number",
+  "tz": "America/Mexico_City"
+ },
+ {
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "id": "n_month_number",
+  "groupby": "create_date:month_number",
+  "tz": "America/Mexico_City"
+ },
+ {
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "id": "n_iso_week_number",
+  "groupby": "create_date:iso_week_number",
+  "tz": "America/Mexico_City"
+ },
+ {
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "id": "n_day_of_year",
+  "groupby": "create_date:day_of_year",
+  "tz": "America/Mexico_City"
+ },
+ {
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "id": "n_day_of_month",
+  "groupby": "create_date:day_of_month",
+  "tz": "America/Mexico_City"
+ },
+ {
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "id": "n_day_of_week",
+  "groupby": "create_date:day_of_week",
+  "tz": "America/Mexico_City"
+ },
+ {
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "id": "n_hour_number",
+  "groupby": "create_date:hour_number",
+  "tz": "America/Mexico_City"
+ },
+ {
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "id": "n_minute_number",
+  "groupby": "create_date:minute_number",
+  "tz": "America/Mexico_City"
+ },
+ {
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "id": "n_second_number",
+  "groupby": "create_date:second_number",
+  "tz": "America/Mexico_City"
+ },
+ {
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "groupby": "create_date:day_of_week",
+  "tz": "America/Mexico_City",
+  "id": "dow_en",
+  "lang": "en_US"
+ },
+ {
+  "model": "res.partner.tag",
+  "method": "read_group",
+  "domain": [
+   [
+    "name",
+    "like",
+    "Rustorm TZ"
+   ]
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "groupby": "create_date:day_of_week",
+  "tz": "America/Mexico_City",
+  "id": "dow_fr",
+  "lang": "fr_FR"
+ },
+ {
+  "id": "d01_dn_eq",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "display_name",
+    "=",
+    "Belgium"
+   ]
+  ]
+ },
+ {
+  "id": "d02_dn_in_with_unset",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "display_name",
+    "in",
+    [
+     "Belgium",
+     false
+    ]
+   ]
+  ]
+ },
+ {
+  "id": "d03_dn_neq_false",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "display_name",
+    "!=",
+    false
+   ]
+  ]
+ },
+ {
+  "id": "d04_dn_not_in",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "display_name",
+    "not in",
+    [
+     "Belgium"
+    ]
+   ]
+  ]
+ },
+ {
+  "id": "d05_dn_eq_false_template",
+  "model": "mail.template",
+  "method": "search_count",
+  "domain": [
+   [
+    "display_name",
+    "=",
+    false
+   ]
+  ],
+  "active_test": false
+ },
+ {
+  "id": "l01_search_read_limit0",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [
+   [
+    "code",
+    "in",
+    [
+     "BE",
+     "FR"
+    ]
+   ]
+  ],
+  "fields": [
+   "code"
+  ],
+  "limit": 0,
+  "order": "code"
+ },
+ {
+  "id": "l02_search_count_limit0",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [],
+  "limit": 0
+ },
+ {
+  "id": "l03_read_group_limit0",
+  "model": "res.country",
+  "method": "read_group",
+  "domain": [],
+  "groupby": "name_position",
+  "aggregates": [
+   "__count"
+  ],
+  "limit": 0
+ },
+ {
+  "id": "l04_offset_no_limit",
+  "model": "res.country",
+  "method": "search_read",
+  "domain": [],
+  "fields": [
+   "code"
+  ],
+  "offset": 249,
+  "order": "id"
+ },
+ {
+  "id": "h01_child_of_name",
+  "model": "ir.module.category",
+  "method": "search_count",
+  "domain": [
+   [
+    "id",
+    "child_of",
+    "Rustorm Root Cat"
+   ]
+  ]
+ },
+ {
+  "id": "h02_parent_of_name",
+  "model": "ir.module.category",
+  "method": "search_count",
+  "domain": [
+   [
+    "id",
+    "parent_of",
+    "Rustorm Kid Cat"
+   ]
+  ]
+ },
+ {
+  "id": "h03_child_of_mixed",
+  "model": "ir.module.category",
+  "method": "search_count",
+  "domain": [
+   [
+    "id",
+    "child_of",
+    [
+     "Rustorm Root Cat",
+     1
+    ]
+   ]
+  ]
+ },
+ {
+  "id": "h04_child_of_no_match",
+  "model": "ir.module.category",
+  "method": "search_count",
+  "domain": [
+   [
+    "id",
+    "child_of",
+    "zzz-nobody"
+   ]
+  ]
+ },
+ {
+  "id": "h05_m2o_child_of_name",
+  "model": "ir.module.category",
+  "method": "search_count",
+  "domain": [
+   [
+    "parent_id",
+    "child_of",
+    "Rustorm Root Cat"
+   ]
+  ]
+ },
+ {
+  "id": "ro1",
+  "model": "ir.model.fields",
+  "method": "read_group",
+  "groupby": [
+   "model_id"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "domain": [],
+  "su": true
+ },
+ {
+  "id": "ro2",
+  "model": "ir.model.fields",
+  "method": "read_group",
+  "groupby": [
+   "model_id"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "domain": [],
+  "order": "model_id",
+  "su": true
+ },
+ {
+  "id": "ro3",
+  "model": "ir.model.fields",
+  "method": "read_group",
+  "groupby": [
+   "model_id"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "domain": [],
+  "order": "model_id desc",
+  "su": true
+ },
+ {
+  "id": "ro4",
+  "model": "ir.model.fields",
+  "method": "read_group",
+  "groupby": [
+   "model_id"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "domain": [],
+  "order": "__count desc, model_id",
+  "su": true
+ },
+ {
+  "id": "ro5",
+  "model": "ir.model.fields",
+  "method": "read_group",
+  "groupby": [
+   "ttype",
+   "store"
+  ],
+  "aggregates": [
+   "__count",
+   "id:max"
+  ],
+  "domain": [],
+  "order": "id:max desc",
+  "su": true
+ },
+ {
+  "id": "ro6",
+  "model": "ir.model.fields",
+  "method": "read_group",
+  "groupby": [
+   "ttype"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "domain": [],
+  "order": "ttype desc nulls last",
+  "su": true
+ },
+ {
+  "id": "ro7",
+  "model": "res.partner",
+  "method": "read_group",
+  "groupby": [
+   "create_date:day_of_week"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "domain": [],
+  "order": "create_date:day_of_week desc",
+  "lang": "en_US",
+  "su": true
+ },
+ {
+  "id": "ro8",
+  "model": "ir.model.fields",
+  "method": "read_group",
+  "groupby": [
+   "model_id"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "domain": [],
+  "order": "name",
+  "su": true
+ },
+ {
+  "id": "tr1",
+  "model": "res.country",
+  "method": "search_read",
+  "fields": [
+   "name",
+   "code"
+  ],
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "allem"
+   ]
+  ],
+  "lang": "fr_FR"
+ },
+ {
+  "id": "tr2",
+  "model": "res.country",
+  "method": "search_read",
+  "fields": [
+   "name",
+   "code"
+  ],
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "allem"
+   ]
+  ],
+  "lang": "en_US"
+ },
+ {
+  "id": "tr3",
+  "model": "res.country",
+  "method": "search_read",
+  "fields": [
+   "name"
+  ],
+  "domain": [],
+  "order": "name",
+  "limit": 5,
+  "lang": "fr_FR"
+ },
+ {
+  "id": "tr4",
+  "model": "res.country",
+  "method": "search_read",
+  "fields": [
+   "name"
+  ],
+  "domain": [],
+  "order": "name desc",
+  "limit": 5,
+  "lang": "fr_FR"
+ },
+ {
+  "id": "tr5",
+  "model": "res.country.state",
+  "method": "search_read",
+  "fields": [
+   "name",
+   "country_id"
+  ],
+  "domain": [
+   [
+    "country_id",
+    "ilike",
+    "allem"
+   ]
+  ],
+  "limit": 5,
+  "lang": "fr_FR"
+ },
+ {
+  "id": "tr6",
+  "model": "res.country.state",
+  "method": "search_read",
+  "fields": [
+   "name",
+   "country_id"
+  ],
+  "domain": [],
+  "order": "country_id, id",
+  "limit": 5,
+  "lang": "fr_FR"
+ },
+ {
+  "id": "tr7",
+  "model": "res.country.state",
+  "method": "read_group",
+  "groupby": [
+   "country_id"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "domain": [],
+  "order": "country_id desc",
+  "lang": "fr_FR"
+ },
+ {
+  "id": "tr8",
+  "model": "ir.model",
+  "method": "read_group",
+  "groupby": [
+   "name"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "domain": [
+   [
+    "model",
+    "like",
+    "res.c"
+   ]
+  ],
+  "lang": "fr_FR"
+ },
+ {
+  "id": "tr9",
+  "model": "res.country",
+  "method": "search_read",
+  "fields": [
+   "display_name"
+  ],
+  "domain": [
+   [
+    "display_name",
+    "ilike",
+    "espagne"
+   ]
+  ],
+  "lang": "fr_FR"
+ },
+ {
+  "id": "tr10",
+  "model": "res.country",
+  "method": "search_read",
+  "fields": [
+   "name"
+  ],
+  "domain": [
+   [
+    "name",
+    "=",
+    "Allemagne"
+   ]
+  ],
+  "lang": "fr_FR"
+ },
+ {
+  "id": "tr11",
+  "model": "res.country",
+  "method": "search_read",
+  "fields": [
+   "name"
+  ],
+  "domain": [
+   [
+    "name",
+    "=",
+    "Germany"
+   ]
+  ],
+  "lang": "fr_FR"
+ },
+ {
+  "id": "tr12",
+  "model": "res.country",
+  "method": "search_read",
+  "fields": [
+   "name"
+  ],
+  "domain": [
+   [
+    "name",
+    "in",
+    [
+     "Allemagne",
+     "Spain"
+    ]
+   ]
+  ],
+  "lang": "fr_FR"
+ },
+ {
+  "id": "tr13",
+  "model": "res.partner",
+  "method": "search_read",
+  "fields": [
+   "name",
+   "country_id"
+  ],
+  "domain": [
+   [
+    "country_id.name",
+    "=",
+    "Allemagne"
+   ]
+  ],
+  "lang": "fr_FR"
+ },
+ {
+  "id": "tr14",
+  "model": "res.partner",
+  "method": "search_read",
+  "fields": [
+   "country_id"
+  ],
+  "domain": [
+   [
+    "country_id",
+    "=",
+    "Allemagne"
+   ]
+  ],
+  "lang": "fr_FR"
+ },
+ {
+  "id": "tr15",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "name",
+    "=ilike",
+    "alle%"
+   ]
+  ],
+  "lang": "fr_FR"
+ },
+ {
+  "id": "tr16",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "name",
+    "not ilike",
+    "e"
+   ]
+  ],
+  "lang": "fr_FR"
+ },
+ {
+  "id": "tr17",
+  "model": "res.partner",
+  "method": "search_read",
+  "fields": [
+   "name"
+  ],
+  "domain": [
+   [
+    "tag_ids",
+    "in",
+    [
+     "RUSTORM SWEEP active"
+    ]
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "tr18",
+  "model": "res.partner",
+  "method": "search_count",
+  "domain": [
+   [
+    "tag_ids",
+    "not in",
+    [
+     "RUSTORM SWEEP active",
+     999999
+    ]
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "tr19",
+  "model": "res.partner",
+  "method": "search_count",
+  "domain": [
+   [
+    "tag_ids",
+    "=",
+    "RUSTORM SWEEP"
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "tr20",
+  "model": "res.country.state",
+  "method": "search_count",
+  "domain": [
+   [
+    "country_id",
+    "not in",
+    [
+     "Allemagne"
+    ]
+   ]
+  ],
+  "lang": "fr_FR"
+ },
+ {
+  "id": "cp1",
+  "model": "res.partner",
+  "method": "search_read",
+  "fields": [
+   "name",
+   "barcode",
+   "company_id"
+  ],
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "RUSTORM co2"
+   ]
+  ],
+  "allowed_company_ids": [
+   252
+  ],
+  "order": "id"
+ },
+ {
+  "id": "cp2",
+  "model": "res.partner",
+  "method": "search_read",
+  "fields": [
+   "name",
+   "barcode",
+   "company_id"
+  ],
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "RUSTORM co2"
+   ]
+  ],
+  "allowed_company_ids": [
+   1
+  ],
+  "order": "id"
+ },
+ {
+  "id": "cp3",
+  "model": "res.partner",
+  "method": "search_read",
+  "fields": [
+   "name",
+   "barcode"
+  ],
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "RUSTORM"
+   ]
+  ],
+  "allowed_company_ids": [
+   252,
+   1
+  ],
+  "order": "id"
+ },
+ {
+  "id": "cp4",
+  "model": "res.partner",
+  "method": "search_read",
+  "fields": [
+   "name",
+   "barcode"
+  ],
+  "domain": [
+   [
+    "barcode",
+    "=",
+    "C2-1"
+   ]
+  ],
+  "allowed_company_ids": [
+   252
+  ]
+ },
+ {
+  "id": "cp5",
+  "model": "res.partner",
+  "method": "search_read",
+  "fields": [
+   "name",
+   "barcode"
+  ],
+  "domain": [
+   [
+    "barcode",
+    "=",
+    "C2-1"
+   ]
+  ],
+  "allowed_company_ids": [
+   1
+  ]
+ },
+ {
+  "id": "cp6",
+  "model": "res.partner",
+  "method": "search_count",
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "RUSTORM co2"
+   ]
+  ],
+  "allowed_company_ids": [
+   1
+  ]
+ },
+ {
+  "id": "cp7",
+  "model": "res.partner",
+  "method": "search_count",
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "RUSTORM co2"
+   ]
+  ],
+  "allowed_company_ids": [
+   252
+  ]
+ },
+ {
+  "id": "cp8",
+  "model": "res.partner",
+  "method": "read_group",
+  "groupby": [
+   "company_id"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "RUSTORM"
+   ]
+  ],
+  "allowed_company_ids": [
+   252,
+   1
+  ]
+ },
+ {
+  "id": "cp9",
+  "model": "res.partner",
+  "method": "search_read",
+  "fields": [
+   "name"
+  ],
+  "domain": [],
+  "allowed_company_ids": [
+   999
+  ],
+  "limit": 1
+ },
+ {
+  "id": "cp10",
+  "model": "res.partner",
+  "method": "search_read",
+  "fields": [
+   "name",
+   "barcode"
+  ],
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "RUSTORM"
+   ]
+  ],
+  "allowed_company_ids": [
+   252
+  ],
+  "order": "barcode desc nulls last, id",
+  "uid": 429
+ },
+ {
+  "id": "cp11",
+  "model": "res.partner",
+  "method": "search_read",
+  "fields": [
+   "name",
+   "barcode"
+  ],
+  "domain": [
+   [
+    "barcode",
+    "ilike",
+    "c"
+   ]
+  ],
+  "allowed_company_ids": [
+   1
+  ],
+  "order": "id"
+ },
+ {
+  "id": "cp12",
+  "model": "res.partner",
+  "method": "search_read",
+  "fields": [
+   "name",
+   "barcode"
+  ],
+  "domain": [
+   [
+    "barcode",
+    "!=",
+    false
+   ]
+  ],
+  "allowed_company_ids": [
+   252
+  ],
+  "order": "id"
+ },
+ {
+  "id": "cp13",
+  "model": "res.partner",
+  "method": "search_count",
+  "domain": [
+   [
+    "company_id",
+    "in",
+    [
+     252
+    ]
+   ]
+  ],
+  "allowed_company_ids": [
+   1
+  ]
+ },
+ {
+  "id": "cp14",
+  "model": "res.partner",
+  "method": "read_group",
+  "groupby": [
+   "barcode"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "domain": [
+   [
+    "name",
+    "ilike",
+    "RUSTORM"
+   ]
+  ],
+  "allowed_company_ids": [
+   252
+  ]
+ },
+ {
+  "id": "cp15",
+  "model": "res.users",
+  "method": "search_read",
+  "fields": [
+   "login"
+  ],
+  "domain": [
+   [
+    "company_ids",
+    "in",
+    [
+     252
+    ]
+   ]
+  ],
+  "su": true,
+  "order": "id"
+ },
+ {
+  "id": "ag1",
+  "model": "discuss.channel.member",
+  "method": "read_group",
+  "groupby": [
+   "channel_id"
+  ],
+  "aggregates": [
+   "id:array_agg"
+  ],
+  "domain": [],
+  "su": true
+ },
+ {
+  "id": "ag2",
+  "model": "res.partner",
+  "method": "read_group",
+  "groupby": [
+   "company_id"
+  ],
+  "aggregates": [
+   "id:array_agg",
+   "active:bool_and",
+   "active:bool_or",
+   "name:array_agg_distinct"
+  ],
+  "domain": [],
+  "su": true,
+  "active_test": false
+ },
+ {
+  "id": "ag3",
+  "model": "res.partner",
+  "method": "read_group",
+  "groupby": [
+   "is_company"
+  ],
+  "aggregates": [
+   "country_id:array_agg",
+   "country_id:array_agg_distinct",
+   "__count"
+  ],
+  "domain": [],
+  "su": true
+ },
+ {
+  "id": "ag4",
+  "model": "res.country",
+  "method": "read_group",
+  "groupby": [
+   "state_required"
+  ],
+  "aggregates": [
+   "code:array_agg_distinct",
+   "phone_code:array_agg"
+  ],
+  "domain": [
+   [
+    "code",
+    "in",
+    [
+     "US",
+     "MX",
+     "BE",
+     "DE"
+    ]
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ag5",
+  "model": "res.country",
+  "method": "read_group",
+  "groupby": [
+   "state_required"
+  ],
+  "aggregates": [
+   "name:array_agg"
+  ],
+  "domain": [
+   [
+    "code",
+    "in",
+    [
+     "US",
+     "MX",
+     "BE",
+     "DE"
+    ]
+   ]
+  ],
+  "lang": "fr_FR",
+  "su": true
+ },
+ {
+  "id": "ag6",
+  "model": "res.partner",
+  "method": "read_group",
+  "groupby": [
+   "company_id"
+  ],
+  "aggregates": [
+   "id:array_agg"
+  ],
+  "domain": [
+   [
+    "id",
+    "=",
+    -1
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ag7",
+  "model": "res.partner",
+  "method": "read_group",
+  "groupby": [
+   "is_company"
+  ],
+  "aggregates": [
+   "id:array_agg"
+  ],
+  "domain": [],
+  "uid": 429,
+  "order": "__count desc"
+ },
+ {
+  "id": "ag8",
+  "model": "res.currency",
+  "method": "read_group",
+  "groupby": [
+   "active"
+  ],
+  "aggregates": [
+   "rounding:array_agg",
+   "rounding:array_agg_distinct"
+  ],
+  "domain": [
+   [
+    "name",
+    "in",
+    [
+     "USD",
+     "EUR",
+     "MXN"
+    ]
+   ]
+  ],
+  "su": true,
+  "active_test": false
+ },
+ {
+  "id": "ch_restrict_count",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [],
+  "uid": "grouped"
+ },
+ {
+  "id": "ch_restrict_read",
+  "model": "res.country",
+  "method": "search_read",
+  "fields": [
+   "code"
+  ],
+  "domain": [
+   [
+    "code",
+    "in",
+    [
+     "US",
+     "BE",
+     "FR",
+     "ZZ"
+    ]
+   ]
+  ],
+  "order": "id",
+  "uid": "grouped"
+ },
+ {
+  "id": "ch_groups_direct",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "x_rustorm_secret",
+    "=",
+    "sesame"
+   ]
+  ],
+  "uid": "grouped"
+ },
+ {
+  "id": "ch_groups_ilike_m2o",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "x_rustorm_secret_currency_id",
+    "ilike",
+    "usd"
+   ]
+  ],
+  "uid": "grouped"
+ },
+ {
+  "id": "ch_groups_dotted",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "x_rustorm_secret_currency_id.name",
+    "=",
+    "USD"
+   ]
+  ],
+  "uid": "grouped"
+ },
+ {
+  "id": "ch_groups_order",
+  "model": "res.country",
+  "method": "search_read",
+  "fields": [
+   "code"
+  ],
+  "domain": [
+   [
+    "code",
+    "in",
+    [
+     "BE",
+     "US"
+    ]
+   ]
+  ],
+  "order": "x_rustorm_secret desc, id",
+  "uid": "grouped"
+ },
+ {
+  "id": "ch_groups_order_su",
+  "model": "res.country",
+  "method": "search_read",
+  "fields": [
+   "code"
+  ],
+  "domain": [
+   [
+    "code",
+    "in",
+    [
+     "BE",
+     "US"
+    ]
+   ]
+  ],
+  "order": "x_rustorm_secret desc, id",
+  "su": true
+ },
+ {
+  "id": "ch_noone_read",
+  "model": "res.country",
+  "method": "search_read",
+  "fields": [
+   "x_rustorm_debug_only"
+  ],
+  "domain": [
+   [
+    "code",
+    "=",
+    "BE"
+   ]
+  ],
+  "uid": "debug"
+ },
+ {
+  "id": "ch_noone_filter",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "x_rustorm_debug_only",
+    "=",
+    "dbg"
+   ]
+  ],
+  "uid": "debug"
+ },
+ {
+  "id": "ch_id_gt_false",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "id",
+    ">",
+    false
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_id_gt_false_neg",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   "!",
+   [
+    "id",
+    ">",
+    false
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_day_le",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "create_date",
+    "<=",
+    "2026-09-10"
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_day_eq",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "create_date",
+    "=",
+    "2026-09-10"
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_day_ne",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "create_date",
+    "!=",
+    "2026-09-10"
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_day_in_mixed",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "create_date",
+    "in",
+    [
+     "2026-09-10",
+     "2020-01-01 10:00:00"
+    ]
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_day_tz",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "create_date",
+    "<=",
+    "2026-09-10"
+   ]
+  ],
+  "su": true,
+  "tz": "America/Mexico_City"
+ },
+ {
+  "id": "ch_day_user_tz",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "create_date",
+    "<=",
+    "2026-09-10"
+   ]
+  ],
+  "uid": "grouped"
+ },
+ {
+  "id": "ch_day_unpadded",
+  "model": "res.country",
+  "method": "search_count",
+  "domain": [
+   [
+    "create_date",
+    "<=",
+    "2026-9-1"
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_any_bang",
+  "model": "res.country.state",
+  "method": "search_count",
+  "domain": [
+   [
+    "country_id",
+    "any!",
+    [
+     [
+      "code",
+      "ilike",
+      "a"
+     ]
+    ]
+   ]
+  ],
+  "uid": "grouped"
+ },
+ {
+  "id": "ch_related_false",
+  "model": "ir.actions.server",
+  "method": "search_count",
+  "domain": [
+   [
+    "crud_model_name",
+    "=",
+    false
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_related_ne",
+  "model": "ir.actions.server",
+  "method": "search_count",
+  "domain": [
+   [
+    "crud_model_name",
+    "!=",
+    "x"
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_related_not_in",
+  "model": "ir.actions.server",
+  "method": "search_count",
+  "domain": [
+   [
+    "crud_model_name",
+    "not in",
+    [
+     "res.partner"
+    ]
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_related_neg",
+  "model": "ir.actions.server",
+  "method": "search_count",
+  "domain": [
+   "!",
+   [
+    "crud_model_name",
+    "=",
+    "res.partner"
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_null_agg",
+  "model": "mail.tracking.value",
+  "method": "read_group",
+  "groupby": [
+   "new_value_char"
+  ],
+  "aggregates": [
+   "new_value_float:max",
+   "new_value_float:min",
+   "new_value_float:sum",
+   "__count"
+  ],
+  "domain": [],
+  "su": true
+ },
+ {
+  "id": "ch_null_gb_int",
+  "model": "mail.tracking.value",
+  "method": "read_group",
+  "groupby": [
+   "new_value_integer"
+  ],
+  "aggregates": [
+   "__count"
+  ],
+  "domain": [],
+  "su": true
+ },
+ {
+  "id": "ch_lang_en",
+  "model": "res.country",
+  "method": "search_read",
+  "fields": [
+   "name"
+  ],
+  "domain": [
+   [
+    "code",
+    "=",
+    "BE"
+   ]
+  ],
+  "lang": "en_US",
+  "su": true
+ },
+ {
+  "id": "ch_lang_missing",
+  "model": "res.country",
+  "method": "search_read",
+  "fields": [
+   "name"
+  ],
+  "domain": [
+   [
+    "code",
+    "=",
+    "BE"
+   ]
+  ],
+  "lang": "xx_XX",
+  "su": true
+ },
+ {
+  "id": "ch_hier_tag_child",
+  "model": "res.partner.tag",
+  "method": "search_read",
+  "fields": [
+   "name",
+   "parent_id"
+  ],
+  "domain": [
+   [
+    "id",
+    "child_of",
+    [
+     1
+    ]
+   ]
+  ],
+  "order": "id",
+  "su": true
+ },
+ {
+  "id": "ch_hier_tag_not",
+  "model": "res.partner.tag",
+  "method": "search_count",
+  "domain": [
+   "!",
+   [
+    "id",
+    "child_of",
+    [
+     1
+    ]
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_hier_tag_parent",
+  "model": "res.partner.tag",
+  "method": "search_count",
+  "domain": [
+   [
+    "id",
+    "parent_of",
+    [
+     3
+    ]
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_hier_dotted",
+  "model": "res.partner.bank",
+  "method": "search_count",
+  "domain": [
+   [
+    "partner_id.parent_id",
+    "child_of",
+    1
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_bool_like",
+  "model": "res.partner.tag",
+  "method": "search_count",
+  "domain": [
+   [
+    "active",
+    "like",
+    "t"
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_dotted_like_empty",
+  "model": "res.country.state",
+  "method": "search_count",
+  "domain": [
+   [
+    "country_id.name",
+    "ilike",
+    ""
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_dotted_like_empty_neg",
+  "model": "res.country.state",
+  "method": "search_count",
+  "domain": [
+   [
+    "country_id.name",
+    "not ilike",
+    ""
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_users_display_exact_login",
+  "model": "res.users",
+  "method": "search_count",
+  "domain": [
+   [
+    "display_name",
+    "ilike",
+    "rustorm_sweep_grouped"
+   ]
+  ]
+ },
+ {
+  "id": "ch_users_display_default_composition",
+  "model": "res.users",
+  "method": "search_count",
+  "domain": [
+   [
+    "display_name",
+    "ilike",
+    "SWEEP grouped"
+   ]
+  ]
+ },
+ {
+  "id": "ch_users_display_exact_in_wins",
+  "model": "res.users",
+  "method": "search_read",
+  "domain": [
+   [
+    "display_name",
+    "in",
+    [
+     "rustorm_sweep_debug",
+     "RUSTORM SWEEP grouped"
+    ]
+   ]
+  ],
+  "fields": [
+   "login"
+  ],
+  "order": "id"
+ },
+ {
+  "id": "ch_users_display_read",
+  "model": "res.users",
+  "method": "search_read",
+  "domain": [
+   [
+    "login",
+    "like",
+    "rustorm_sweep_"
+   ]
+  ],
+  "fields": [
+   "display_name",
+   "login"
+  ],
+  "order": "id"
+ }
+]

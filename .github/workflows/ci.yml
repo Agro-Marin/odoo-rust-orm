@@ -1,0 +1,57 @@
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo test --workspace
+
+  verify:
+    name: full verification battery
+    runs-on: ubuntu-latest
+
+    if: ${{ vars.RUSTORM_HAS_ODOO == 'true' }}
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ['5432:5432']
+    steps:
+      - uses: actions/checkout@v7
+      - name: build
+        run: cargo build --release --workspace
+
+      - name: verify
+        env:
+          RUSTORM_DB: ${{ vars.RUSTORM_DB }}
+          # The byte-parity stage logs into the fixture over HTTP. An unset
+          # secret renders as the empty string, which the script's own `:-`
+          # default absorbs -- the same convergence the RUSTORM_DB fix
+          # established, rather than a second spelling of "unset".
+          RUSTORM_ADMIN_PASSWORD: ${{ secrets.RUSTORM_ADMIN_PASSWORD }}
+        run: harness/verify.sh
