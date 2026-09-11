@@ -1293,8 +1293,9 @@ The fallback now raises rather than inventing a NULL.
 `NUMERIC` read back as a `float` where psycopg returns a `Decimal`, and the
 gate could not see it: `probe_audit.norm` turned Decimals into floats on BOTH
 sides, so the one type most worth checking compared equal for as long as the
-defect existed. The cursor builds `decimal.Decimal` now and the gate compares
-the types.
+defect existed. The cursor decodes the wire format itself and builds
+`decimal.Decimal` from it — exact at any width, where `rust_decimal`'s 96-bit
+mantissa had turned a wide column into NaN — and the gate compares the types.
 
 ## The write path the shim owns
 

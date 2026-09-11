@@ -174,6 +174,11 @@ EXTENSION_CASES = [
 # (required extension or None, type, values)
 READ_ONLY_CASES = [
     (None, "interval", ["1 day", "1 month 2 days 03:04:05", None]),
+    # Wider than rust_decimal's 96-bit mantissa, which the WRITE side still
+    # goes through; the read side decodes the wire format itself and must be
+    # exact at any width and keep the display scale, as psycopg does.
+    (None, "numeric", ["123456789012345678901234567890.5", "1.250",
+                       "-0.000000000000000000000000000001", None]),
     # geography DECODES fine and cannot be written: PostgreSQL has an
     # implicit text->geometry cast and none for geography, and this transport
     # binds every parameter in binary against the statement's resolved type,

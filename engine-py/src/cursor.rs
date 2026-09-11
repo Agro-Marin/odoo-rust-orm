@@ -484,14 +484,102 @@ struct DateTimeTypes {
     decimal: Py<PyAny>,
 }
 
-fn decimal_to_py(
-    py: Python<'_>,
-    dt: &DateTimeTypes,
-    d: rust_decimal::Decimal,
-) -> PyResult<Py<PyAny>> {
-    // Through the string form: rust_decimal keeps the wire scale, so
-    // `1.250` stays `Decimal('1.250')` as psycopg would have it.
-    Ok(dt.decimal.bind(py).call1((d.to_string(),))?.unbind())
+/// A NUMERIC exactly as the wire carries it, rendered to the text psycopg
+/// hands `decimal.Decimal`. Not through `rust_decimal`: that is a 96-bit
+/// mantissa, so a value wider than about 7.9e28 cannot be represented at all
+/// -- it read back as NaN, silently -- where psycopg is exact at any width.
+/// The binary format is a handful of base-10000 digits with a weight, a sign
+/// word and a display scale; rendering it is the whole of the job.
+struct PgNumeric(String);
+
+impl<'a> tokio_postgres::types::FromSql<'a> for PgNumeric {
+    fn from_sql(
+        _ty: &Type,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        numeric_text(raw).map(PgNumeric).map_err(Into::into)
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        *ty == Type::NUMERIC
+    }
+}
+
+/// PostgreSQL's binary NUMERIC: `ndigits`, `weight`, `sign`, `dscale` as
+/// big-endian 16-bit words, then `ndigits` base-10000 digits. `weight` is the
+/// power of 10000 of the FIRST digit, so `weight + 1` digits sit before the
+/// point and everything after is fraction, padded or cut to `dscale` decimal
+/// places -- which is what keeps `1.250` as `1.250`, as psycopg keeps it.
+fn numeric_text(raw: &[u8]) -> Result<String, String> {
+    if raw.len() < 8 {
+        return Err(format!(
+            "numeric: {} bytes on the wire, need at least 8",
+            raw.len()
+        ));
+    }
+    let word = |i: usize| u16::from_be_bytes([raw[i], raw[i + 1]]);
+    let ndigits = word(0) as usize;
+    let weight = i16::from_be_bytes([raw[2], raw[3]]) as i32;
+    let sign = word(4);
+    let dscale = word(6) as usize;
+    if raw.len() < 8 + 2 * ndigits {
+        return Err(format!(
+            "numeric: {} digits announced, {} bytes on the wire",
+            ndigits,
+            raw.len()
+        ));
+    }
+    let digits: Vec<u16> = (0..ndigits).map(|k| word(8 + 2 * k)).collect();
+    match sign {
+        0x0000 | 0x4000 => {}
+        0xC000 => return Ok("NaN".into()),
+        0xD000 => return Ok("Infinity".into()),
+        0xF000 => return Ok("-Infinity".into()),
+        other => return Err(format!("numeric: unknown sign word {other:#06x}")),
+    }
+    let digit = |i: i32| -> u16 {
+        if i < 0 {
+            0
+        } else {
+            digits.get(i as usize).copied().unwrap_or(0)
+        }
+    };
+    let mut out = String::new();
+    if sign == 0x4000 {
+        out.push('-');
+    }
+    if weight < 0 {
+        out.push('0');
+    } else {
+        for i in 0..=weight {
+            let d = digit(i);
+            if i == 0 {
+                out.push_str(&d.to_string());
+            } else {
+                out.push_str(&format!("{d:04}"));
+            }
+        }
+    }
+    if dscale > 0 {
+        out.push('.');
+        let mut written = 0usize;
+        let mut i = weight + 1;
+        while written < dscale {
+            for c in format!("{:04}", digit(i)).chars() {
+                if written == dscale {
+                    break;
+                }
+                out.push(c);
+                written += 1;
+            }
+            i += 1;
+        }
+    }
+    Ok(out)
+}
+
+fn decimal_to_py(py: Python<'_>, dt: &DateTimeTypes, text: &str) -> PyResult<Py<PyAny>> {
+    Ok(dt.decimal.bind(py).call1((text,))?.unbind())
 }
 
 static DT_TYPES: pyo3::sync::PyOnceLock<DateTimeTypes> = pyo3::sync::PyOnceLock::new();
@@ -788,15 +876,10 @@ fn cell_to_py(py: Python<'_>, row: &tokio_postgres::Row, i: usize) -> PyResult<P
             Some(v) => v.into_py_any(py)?,
             None => py.None(),
         },
-        Type::NUMERIC => {
-            match row
-                .try_get::<_, Option<rust_decimal::Decimal>>(i)
-                .map_err(rerr)?
-            {
-                Some(v) => decimal_to_py(py, dt_types(py)?, v)?,
-                None => py.None(),
-            }
-        }
+        Type::NUMERIC => match row.try_get::<_, Option<PgNumeric>>(i).map_err(rerr)? {
+            Some(n) => decimal_to_py(py, dt, &n.0)?,
+            None => py.None(),
+        },
         Type::DATE => match row.try_get::<_, Option<NaiveDate>>(i).map_err(rerr)? {
             Some(d) => {
                 use chrono::Datelike;
@@ -921,7 +1004,7 @@ fn cell_to_py(py: Python<'_>, row: &tokio_postgres::Row, i: usize) -> PyResult<P
                     Type::OID => arr!(u32),
 
                     Type::NUMERIC => {
-                        arr_conv!(rust_decimal::Decimal, |x| decimal_to_py(py, dt, x))
+                        arr_conv!(PgNumeric, |x: PgNumeric| decimal_to_py(py, dt, &x.0))
                     }
                     Type::DATE => arr_conv!(NaiveDate, |x| date_to_py(py, dt, x)),
                     Type::TIME => arr_conv!(chrono::NaiveTime, |x| time_to_py(py, dt, x)),
@@ -2044,6 +2127,84 @@ mod copy_type_tests {
             "psycopg will hand these OIDs to a binary COPY and tokio-postgres \
              does not know them, so `set_types` would encode them as TEXT and \
              PostgreSQL would misread the bytes: {unknown:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod numeric_wire_tests {
+    use super::numeric_text;
+
+    /// The wire form of a NUMERIC: header words, then base-10000 digits.
+    fn wire(digits: &[u16], weight: i16, sign: u16, dscale: u16) -> Vec<u8> {
+        let mut raw = Vec::new();
+        raw.extend((digits.len() as u16).to_be_bytes());
+        raw.extend(weight.to_be_bytes());
+        raw.extend(sign.to_be_bytes());
+        raw.extend(dscale.to_be_bytes());
+        for d in digits {
+            raw.extend(d.to_be_bytes());
+        }
+        raw
+    }
+
+    #[test]
+    fn renders_what_psycopg_renders() {
+        assert_eq!(numeric_text(&wire(&[1, 2500], 0, 0, 2)).unwrap(), "1.25");
+        assert_eq!(
+            numeric_text(&wire(&[1, 2500], 0, 0, 3)).unwrap(),
+            "1.250",
+            "the display scale is kept: Decimal('1.250') is not Decimal('1.25')"
+        );
+        assert_eq!(
+            numeric_text(&wire(&[9, 9999, 9999, 9000], 1, 0x4000, 5)).unwrap(),
+            "-99999.99999"
+        );
+        assert_eq!(numeric_text(&wire(&[12], -1, 0, 4)).unwrap(), "0.0012");
+        assert_eq!(
+            numeric_text(&wire(&[12], -2, 0, 8)).unwrap(),
+            "0.00000012",
+            "a negative weight is leading zero groups"
+        );
+        assert_eq!(numeric_text(&wire(&[], 0, 0, 0)).unwrap(), "0");
+        assert_eq!(numeric_text(&wire(&[], 0, 0, 2)).unwrap(), "0.00");
+        assert_eq!(
+            numeric_text(&wire(&[1], 1, 0, 0)).unwrap(),
+            "10000",
+            "a trailing zero group is implied by the weight"
+        );
+        assert_eq!(numeric_text(&wire(&[7], 0, 0, 0)).unwrap(), "7");
+    }
+
+    #[test]
+    fn is_exact_where_rust_decimal_was_not() {
+        // 123456789012345678901234567890.5 is past a 96-bit mantissa; it used
+        // to come back as NaN, and psycopg gives it exactly.
+        let raw = wire(
+            &[12, 3456, 7890, 1234, 5678, 9012, 3456, 7890, 5000],
+            7,
+            0,
+            1,
+        );
+        assert_eq!(
+            numeric_text(&raw).unwrap(),
+            "123456789012345678901234567890.5"
+        );
+    }
+
+    #[test]
+    fn the_special_values_and_a_bad_buffer() {
+        assert_eq!(numeric_text(&wire(&[], 0, 0xC000, 0)).unwrap(), "NaN");
+        assert_eq!(numeric_text(&wire(&[], 0, 0xD000, 0)).unwrap(), "Infinity");
+        assert_eq!(numeric_text(&wire(&[], 0, 0xF000, 0)).unwrap(), "-Infinity");
+        assert!(numeric_text(&[0, 0, 0]).is_err(), "too short");
+        assert!(
+            numeric_text(&wire(&[1, 2], 0, 0, 0)[..10]).is_err(),
+            "announces two digits, carries one"
+        );
+        assert!(
+            numeric_text(&wire(&[], 0, 0x1234, 0)).is_err(),
+            "unknown sign"
         );
     }
 }
