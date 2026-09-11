@@ -887,12 +887,21 @@ timed doing less work. Median of 3 independent runs per side:
 
 | | |
 |---|---|
-| median speedup | **3.01×** |
+| median per-case speedup | **3.01×** |
 | Rust faster in | 252/257 cases |
 | range | 0.79× … 125× |
 | big wins | mail.message reads 68–125×, company-dependent filters 75× |
 | losses | small `search_count` where fixed cost dominates (worst 0.79×) |
 | registry + security load | ~170 ms for 950 models |
+
+The median is a median of per-case ratios, unweighted: a 0.05 ms `res.country`
+read and a 196 ms `res.partner` scan count the same, and the corpus is
+dominated by the small reads. It is not a throughput figure. `speedup.py` now
+prints the time-weighted ratio beside it — total Python time over total Rust
+time on the same cases, which is what a workload shaped like the corpus would
+see — and how many cases each side dropped before the intersection, since
+`bench_python.py` drops a raising case without a word. The weighted figure was
+not measured for this table; the range is the honest content.
 
 **Quote these with their error bars.** A single benchmark process is not
 reproducible: identical code re-run drifts **41%** per case at the median on
