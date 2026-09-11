@@ -315,6 +315,11 @@ if [ -f "$ROOT/target/release/libengine_py.so" ]; then
      shell_script "$ROOT/harness/load_into_odoo.py" > "$OUT/load.log" 2>&1; rc=$?
   if [ "$rc" = 0 ]; then
     stage "load into odoo" OK "$(grep -acE '^LOAD (read|other db|fork exit)' "$OUT/load.log") checks"
+  elif [ "$rc" = 3 ]; then
+    # the script could not run and said so: SKIP, as `fork contract` already
+    # is; it used to exit 0 here, and a failed export upstream cascaded into
+    # a green stage that had checked nothing
+    stage "load into odoo" SKIP "$(grep -aE '^LOAD SKIP' "$OUT/load.log" | head -1 | cut -c1-70)"
   elif timed_out "$rc"; then stage "load into odoo" FAIL "$expired"
   else
     stage "load into odoo" FAIL "$(grep -aE '^LOAD|Error' "$OUT/load.log" | tail -1 | cut -c1-70)"
@@ -377,6 +382,8 @@ if [ -f "$ROOT/target/release/libengine_py.so" ]; then
   PYTHONPATH="$PYMOD" python_script "$ROOT/harness/copy_path.py" > "$OUT/copy.log" 2>&1; rc=$?
   if [ "$rc" = 0 ]; then
     stage "copy encoder" OK "$(grep -a '^COPY streams' "$OUT/copy.log" | head -1 | cut -c1-58)"
+  elif [ "$rc" = 3 ]; then
+    stage "copy encoder" SKIP "$(grep -aE '^COPY SKIP' "$OUT/copy.log" | head -1 | cut -c1-70)"
   elif timed_out "$rc"; then stage "copy encoder" FAIL "$expired"
   else
     stage "copy encoder" FAIL "$(grep -aE '^ *COPY MISMATCH|^COPY ' "$OUT/copy.log" | tail -1 | cut -c1-70)"

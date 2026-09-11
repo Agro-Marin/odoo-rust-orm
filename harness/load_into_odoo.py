@@ -25,7 +25,7 @@ from odoo.modules.registry import Registry
 EXPORT = os.environ.get("RUSTORM_EXPORT")
 if not EXPORT or not pathlib.Path(EXPORT).exists():
     print("LOAD SKIP: set RUSTORM_EXPORT to a registry export")
-    sys.exit(0)
+    sys.exit(3)  # skipped, not passed
 
 import pathlib
 
