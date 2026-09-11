@@ -1532,6 +1532,34 @@ fn a_datetime_granularity_under_a_non_utc_zone_is_refused() {
     );
 }
 
+#[test]
+fn a_failed_transaction_end_is_recognisable_by_the_holder() {
+    use odoo_kernel::orm::{TxEndFailed, is_tx_end_failure};
+    let e: anyhow::Error = TxEndFailed {
+        end: "COMMIT",
+        error: "server closed the connection".into(),
+        original: None,
+    }
+    .into();
+    assert!(is_tx_end_failure(&e));
+    assert!(e.to_string().contains("must be discarded"), "{e}");
+    let wrapped = e.context("dispatching search_read");
+    assert!(is_tx_end_failure(&wrapped), "survives a context layer");
+    let plain = anyhow::anyhow!("unknown field res.partner.nope");
+    assert!(!is_tx_end_failure(&plain));
+    let after_error: anyhow::Error = TxEndFailed {
+        end: "ROLLBACK",
+        error: "x".into(),
+        original: Some("unknown field".into()),
+    }
+    .into();
+    assert!(
+        after_error
+            .to_string()
+            .contains("the request itself had failed")
+    );
+}
+
 // Measured on the fixture with `SET enable_seqscan = off`: WITH this
 // conjunct the plan is a `Bitmap Index Scan on product_template__name_index`;
 // WITHOUT it the plan is a `Seq Scan` even with sequential scans disabled,

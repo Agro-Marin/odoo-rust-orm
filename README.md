@@ -1218,6 +1218,15 @@ one `x2many_ids` per x2many — so the rows and the names rendered for them coul
 come from different instants. The hybrid does NOT take that path: there the
 transaction is Odoo's, opened by `RustConn::ensure_tx`.
 
+A connection whose transaction could not be ENDED is discarded, not pooled.
+A failed `COMMIT`/`ROLLBACK` used to be a `warn!` and the connection went back
+to the pool in a state nobody could name — the next request on it could run
+inside the previous snapshot, or inside an aborted transaction. It now
+surfaces as a typed `TxEndFailed`, the pool marks the connection poisoned, and
+the next `acquire` replaces it. A request that hits `REQUEST_TIMEOUT` poisons
+its connection the same way: the future was dropped mid-statement and the
+transaction is certainly still open.
+
 The per-identity caches are bounded (`MAX_IDENTITIES`), evicting superseded
 watermarks first — those are dead weight, since no request can reach them
 again. Before that, a long-lived process serving many users in many companies

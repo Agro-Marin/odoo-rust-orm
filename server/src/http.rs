@@ -24,6 +24,32 @@ const ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 struct PooledConn {
     client: Client,
     stmts: StmtCache,
+    /// Set when a request left the connection in a transaction state nobody
+    /// can name -- its COMMIT/ROLLBACK failed, or it was abandoned on the
+    /// request timeout with a statement still running. The next `acquire`
+    /// replaces it instead of handing the next request a snapshot, or an
+    /// aborted transaction, that belongs to the previous one.
+    poisoned: std::sync::atomic::AtomicBool,
+}
+
+impl PooledConn {
+    fn fresh(client: Client) -> Self {
+        PooledConn {
+            client,
+            stmts: StmtCache::default(),
+            poisoned: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn poison(&self, why: &str) {
+        tracing::warn!(why, "discarding the pooled connection after this request");
+        self.poisoned
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn is_poisoned(&self) -> bool {
+        self.poisoned.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 struct Pool {
@@ -40,10 +66,7 @@ impl Pool {
             tokio::spawn(async move {
                 let _ = conn.await;
             });
-            free.push(Arc::new(PooledConn {
-                client,
-                stmts: StmtCache::default(),
-            }));
+            free.push(Arc::new(PooledConn::fresh(client)));
         }
         Ok(Pool {
             free: std::sync::Mutex::new(free),
@@ -72,17 +95,17 @@ impl Pool {
             .expect("a permit guarantees a free connection");
         permit.forget();
 
-        if conn.client.is_closed() {
-            tracing::warn!("pooled connection was closed; reconnecting");
+        if conn.client.is_closed() || conn.is_poisoned() {
+            tracing::warn!(
+                poisoned = conn.is_poisoned(),
+                "pooled connection is unusable; reconnecting"
+            );
             match tokio_postgres::connect(&self.dsn, tokio_postgres::NoTls).await {
                 Ok((client, c)) => {
                     tokio::spawn(async move {
                         let _ = c.await;
                     });
-                    conn = Arc::new(PooledConn {
-                        client,
-                        stmts: StmtCache::default(),
-                    });
+                    conn = Arc::new(PooledConn::fresh(client));
                 }
                 Err(e) => tracing::error!(error = %e, "reconnect failed"),
             }
@@ -227,8 +250,20 @@ async fn dispatch_once(state: &AppState, req: &Request) -> Result<String> {
     };
     let orm = Orm::new(&registry, &conn.client, state.caches.clone(), &conn.stmts);
     match tokio::time::timeout(REQUEST_TIMEOUT, orm.dispatch_in_transaction(req)).await {
-        Ok(out) => out,
-        Err(_) => anyhow::bail!("request exceeded {REQUEST_TIMEOUT:?}"),
+        Ok(out) => {
+            if let Err(e) = &out
+                && odoo_kernel::orm::is_tx_end_failure(e)
+            {
+                conn.poison("its COMMIT/ROLLBACK failed");
+            }
+            out
+        }
+        Err(_) => {
+            // The future was dropped mid-statement: the server may still be
+            // running it and the transaction is certainly still open.
+            conn.poison("the request timed out inside its transaction");
+            anyhow::bail!("request exceeded {REQUEST_TIMEOUT:?}")
+        }
     }
 }
 
