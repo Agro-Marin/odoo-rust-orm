@@ -106,6 +106,28 @@ def _ensure_kernel(env):
         try:
             KERNEL = KERNEL_FACTORY(env.registry)
         except Exception:
+            _logger.exception("the rust engine process hook failed")
+    if _kernel_is_ours():
+        return True
+    if KERNEL_FACTORY is None or _KERNEL_TRIED_PID == os.getpid():
+        return False
+    with _KERNEL_LOCK:
+        if _kernel_is_ours():
+            return True
+        if KERNEL is not None:
+            # Inherited across a fork: unusable here, and never to be
+            # released either, since the parent still owns what it points at.
+            _logger.info(
+                "dropping the rust kernel inherited from pid %s; building this "
+                "process's own", _KERNEL_PID,
+            )
+            set_kernel(None)
+        if _KERNEL_TRIED_PID == os.getpid():
+            return False
+        _KERNEL_TRIED_PID = os.getpid()
+        try:
+            set_kernel(KERNEL_FACTORY(env.registry))
+        except Exception:
             _logger.exception(
                 "could not build the rust kernel in this process; "
                 "it will serve from python"
@@ -264,6 +286,9 @@ def _request(model, method, **kw):
         "lang": env.context.get("lang") or None,
         "allowed_company_ids": env.context.get("allowed_company_ids") or None,
         "active_test": bool(env.context.get("active_test", True)),
+        # Read by `_read_group` only, where a datetime granularity under a
+        # non-UTC zone is refused; the other methods accept and ignore it.
+        "tz": env.context.get("tz") or None,
     }
     if kw.get("domain") is not None and not isinstance(kw["domain"], list):
         from odoo.fields import Domain

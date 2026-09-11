@@ -141,6 +141,14 @@ pub struct Request {
 
     #[serde(default)]
     pub active_test: Option<bool>,
+
+    /// The caller's `context['tz']`. Only `_read_group` reads it -- Odoo
+    /// shifts a datetime into that zone before bucketing it by day, month,
+    /// quarter or year -- and this kernel buckets in UTC, so a zone that is
+    /// not UTC makes such a groupby refuse rather than answer with the wrong
+    /// buckets. Accepted on every method so the shim can always send it.
+    #[serde(default)]
+    pub tz: Option<String>,
 }
 
 impl Request {

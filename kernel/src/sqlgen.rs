@@ -1256,6 +1256,33 @@ pub fn agg_expr(func: &str, inner: Expr) -> Result<Expr> {
     })
 }
 
+/// Whether a date(time) groupby with a granularity may be bucketed here at
+/// all. Odoo shifts a DATETIME into the caller's `tz` before `date_trunc`
+/// (`Datetime.property_to_sql(..., "tz", ...)` in `read_group/sql.py`), and
+/// this kernel truncates in UTC: for a caller west of Greenwich the rows
+/// between midnight and the zone's offset land in the previous day, month,
+/// quarter or year. A date has no time and is never shifted. Refusing is the
+/// designed answer -- the shim falls back to Python -- and the shim now sends
+/// `tz` so the refusal can happen.
+pub fn granularity_tz_check(
+    field: &str,
+    gran: Option<&str>,
+    ttype: FieldType,
+    tz: Option<&str>,
+) -> Result<()> {
+    let (Some(gran), Some(tz)) = (gran, tz) else {
+        return Ok(());
+    };
+    if ttype == FieldType::Datetime && tz != "UTC" {
+        bail!(
+            "read_group by {field}:{gran} under tz {tz:?}: Odoo shifts the timestamps \
+             into that zone before bucketing them and this kernel buckets in UTC; \
+             refusing rather than answering with the wrong buckets"
+        );
+    }
+    Ok(())
+}
+
 pub fn granularity_expr(gran: &str, inner: Expr, is_date: bool) -> Result<Expr> {
     if !matches!(gran, "day" | "month" | "quarter" | "year") {
         bail!("unsupported granularity {gran}");

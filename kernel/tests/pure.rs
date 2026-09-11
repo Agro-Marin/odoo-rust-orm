@@ -1513,6 +1513,25 @@ fn an_empty_like_pattern_is_not_a_like_at_all() {
     );
 }
 
+#[test]
+fn a_datetime_granularity_under_a_non_utc_zone_is_refused() {
+    use odoo_kernel::sqlgen::granularity_tz_check;
+    let mx = Some("America/Mexico_City");
+    assert!(granularity_tz_check("create_date", Some("month"), FieldType::Datetime, mx).is_err());
+    assert!(
+        granularity_tz_check("create_date", Some("day"), FieldType::Datetime, Some("UTC")).is_ok()
+    );
+    assert!(granularity_tz_check("create_date", Some("month"), FieldType::Datetime, None).is_ok());
+    assert!(
+        granularity_tz_check("date_order", Some("month"), FieldType::Date, mx).is_ok(),
+        "a date has no time to shift"
+    );
+    assert!(
+        granularity_tz_check("create_date", None, FieldType::Datetime, mx).is_ok(),
+        "no granularity, no bucketing"
+    );
+}
+
 // Measured on the fixture with `SET enable_seqscan = off`: WITH this
 // conjunct the plan is a `Bitmap Index Scan on product_template__name_index`;
 // WITHOUT it the plan is a `Seq Scan` even with sequential scans disabled,

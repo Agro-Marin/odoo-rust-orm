@@ -24,6 +24,7 @@ fn req(model: &str, fields: &[&str], limit: Option<u64>) -> Request {
         allowed_company_ids: None,
         groupby_labels: None,
         active_test: None,
+        tz: None,
     }
 }
 

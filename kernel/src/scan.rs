@@ -512,6 +512,12 @@ impl<'a> Orm<'a> {
         let mut gb_ordinals: Vec<usize> = Vec::new();
         for gb in &gbs {
             let base = ctx.read_expr(model, gb.field, &model.table)?;
+            sqlgen::granularity_tz_check(
+                &gb.field.name,
+                gb.granularity.as_deref(),
+                gb.field.ttype,
+                req.tz.as_deref(),
+            )?;
             let expr = match &gb.granularity {
                 Some(g) => sqlgen::granularity_expr(g, base, gb.field.ttype == FieldType::Date)?,
                 None => {

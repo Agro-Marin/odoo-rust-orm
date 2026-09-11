@@ -1377,6 +1377,13 @@ measurement, and the inequality against an unset value (below).
   `res.company.country_id`). The first two also declare `search=`, so both the
   value and the domain leaf need Python. This is the measured size of the
   business-logic problem, not an estimate.
+- **A datetime granularity under a non-UTC `tz` is refused.** Odoo shifts a
+  datetime into the caller's zone before `date_trunc` (`Datetime.property_to_sql`
+  with `"tz"`, in `read_group/sql.py`); this kernel truncates in UTC, so for a
+  caller in Mexico City the rows between midnight and 06:00 UTC landed in the
+  previous day, month, quarter or year. The shim now sends `context['tz']`,
+  the kernel refuses such a groupby unless the zone is `UTC`, and the shim
+  falls back. A `date` has no time and is never shifted, so it is served.
 - **A field declaring `bypass_search_access` turns the comodel's access OFF
   for a subquery through it, and the kernel used to apply it anyway.** Odoo's
   `_optimize_any_with_rights` rewrites `any` to `any!` exactly when the field

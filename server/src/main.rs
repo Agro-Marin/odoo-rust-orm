@@ -265,6 +265,7 @@ async fn main() -> Result<()> {
                 allowed_company_ids: (!company.is_empty()).then_some(company),
                 groupby_labels: None,
                 active_test: no_active_test.then_some(false),
+                tz: None,
             };
             let raw = orm.dispatch_in_transaction(&req).await?;
             let value: Json = serde_json::from_str(&raw)?;
