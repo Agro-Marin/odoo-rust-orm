@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 mod http;
+mod pool;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
