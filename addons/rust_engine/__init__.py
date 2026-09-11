@@ -270,11 +270,32 @@ def _read_params():
         raise
 
 
+def _set_mode(orm_shim, mode) -> None:
+    """One switch, both layers.
+
+    `mode` decides two things that used to be decided separately. The ORM
+    shim's mode says whether reads are routed to the kernel. The db shim's
+    `ACTIVE` says whether the process's connections are rust ones at all --
+    and until it existed, `db_shim.install()` at post_load replaced the driver
+    for EVERY cursor in the process regardless of the mode, so `off` stopped
+    the routing and left the driver swap in place. That is not what "changes
+    nothing until someone says otherwise" means. `off` now means off for both;
+    `shadow` and `on` both need rust cursors, because the kernel runs inside
+    the caller's transaction.
+
+    Raises `ValueError` on an unknown mode, before touching either layer.
+    """
+    orm_shim.set_mode(mode)
+    shims = _STATE["shims"]
+    if shims is not None:
+        shims[0].set_active(mode != "off")
+
+
 def _apply_params(orm_shim, params) -> None:
     mode = (params.get(PARAM_MODE) or "").strip().lower()
     if mode and mode != orm_shim.MODE:
         try:
-            orm_shim.set_mode(mode)
+            _set_mode(orm_shim, mode)
             _logger.warning(
                 "rust_engine: %s in the database set the routing mode to %r",
                 PARAM_MODE,
@@ -431,14 +452,14 @@ def _arm_registry_hook() -> None:
 def _apply_config(orm_shim, config) -> None:
     mode = str(config.get("rust_engine_mode") or "off").strip().lower()
     try:
-        orm_shim.set_mode(mode)
+        _set_mode(orm_shim, mode)
     except ValueError:
         _logger.error(
             "rust_engine: rust_engine_mode is %r, which is not on|off|shadow; "
             "routing stays off",
             mode,
         )
-        orm_shim.set_mode("off")
+        _set_mode(orm_shim, "off")
     sample = config.get("rust_engine_verify_sample") or 0
     try:
         orm_shim.set_sample(sample)
@@ -587,6 +608,8 @@ def start() -> None:
         orm_shim.DBNAME = db_name
         orm_shim.KERNEL_FACTORY = _build_kernel_for
         orm_shim.PROCESS_HOOK = _report_here
+        # `install()` above only patches; whether a borrow hands out a rust
+        # connection is `ACTIVE`, and that follows the mode from here on.
         _apply_config(orm_shim, config)
         orm_shim.install()
 

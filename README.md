@@ -1208,6 +1208,19 @@ rust_engine_breaker = 3            ; Python serves a model after N kernel errors
 `engine_py.so` has to be importable -- `PYTHONPATH`, or installed into the
 server's environment.
 
+`off` is off for **both** layers. The mode always governed routing; it did not
+govern the connection layer, and `db_shim.install()` at `post_load` rebound the
+pool class for every later borrow whatever the mode said — so with
+`rust_engine_mode = off` no read was routed and every query still ran on
+tokio-postgres. The db shim now has its own `ACTIVE` flag, set through
+`rust_db_shim.set_active` from the same mode by `rust_engine._set_mode` — at
+start (`_apply_config`) and on every kill-switch tick (`_apply_params`): while
+it is off the pool factory builds psycopg pools, while it is on it builds rust
+ones (`on` and `shadow` both need them — the kernel runs inside the caller's
+transaction), and each switch closes the armed database's pools so the next
+borrow goes through the factory again. Connections already checked out keep
+working and are closed on return rather than pooled.
+
 Three things about that shape are worth stating because each of them was a
 defect first:
 
