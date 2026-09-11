@@ -2533,5 +2533,120 @@ def test_search_delegates_once_the_transaction_wrote_security() -> None:
         backend.KERNEL_FOR = None
 
 
+def test_db_shim_kill_switch_follows_active() -> None:
+    # The connection layer's own kill switch. `install()` rebinds the pool
+    # class once; whether the factory builds a rust pool or the psycopg one
+    # Odoo would have built is `ACTIVE`, and every switch closes the armed
+    # database's pools so the next borrow goes through the factory again.
+    # `odoo.db.*` is three fake modules here: a pool class that records
+    # nothing, and a `close_db` that records calls -- so the test says what
+    # the switch does, not what Odoo does with the result.
+    import types
+
+    db_shim, _ = _shims()
+    closed = []
+
+    class FakePsycopgPool:
+        def __init__(self, conninfo="", **kwargs):
+            self.conninfo, self.kwargs = conninfo, kwargs
+
+        @staticmethod
+        def check_connection(_conn):
+            return None
+
+    names = ("odoo", "odoo.db", "odoo.db.pool", "odoo.db.lifecycle", "odoo.db.registry")
+    saved_modules = {n: sys.modules.get(n) for n in names}
+    odoo_mod, db_mod = types.ModuleType("odoo"), types.ModuleType("odoo.db")
+    pool_mod = types.ModuleType("odoo.db.pool")
+    life_mod = types.ModuleType("odoo.db.lifecycle")
+    reg_mod = types.ModuleType("odoo.db.registry")
+    pool_mod._PsycopgPool = life_mod._PsycopgPool = FakePsycopgPool
+    reg_mod.close_db = closed.append
+    odoo_mod.db, db_mod.pool, db_mod.lifecycle, db_mod.registry = (
+        db_mod,
+        pool_mod,
+        life_mod,
+        reg_mod,
+    )
+    saved = (
+        db_shim.ACTIVE,
+        db_shim.CONNINFO,
+        db_shim.PSYCOPG_CONNINFO,
+        dict(db_shim.INSTALLED),
+    )
+    try:
+        sys.modules.update(
+            {
+                "odoo": odoo_mod,
+                "odoo.db": db_mod,
+                "odoo.db.pool": pool_mod,
+                "odoo.db.lifecycle": life_mod,
+                "odoo.db.registry": reg_mod,
+            }
+        )
+        db_shim.ACTIVE = False
+        db_shim.CONNINFO = "host=/tmp user=probe dbname=armed"
+        db_shim.PSYCOPG_CONNINFO = None
+        db_shim.install()
+        check("install closes the armed db's pools once", closed, ["armed"])
+        factory = pool_mod._PsycopgPool
+        check(
+            "both names are rebound to one object",
+            life_mod._PsycopgPool is factory,
+            True,
+        )
+        check(
+            "the factory carries check_connection for the tests that patch it",
+            factory.check_connection is FakePsycopgPool.check_connection,
+            True,
+        )
+
+        inactive_before = db_shim.INSTALLED["inactive"]
+        pool = factory("dbname=armed", kwargs={"dbname": "armed"})
+        check(
+            "off: the psycopg pool, even for the armed db",
+            type(pool).__name__,
+            "FakePsycopgPool",
+        )
+        check(
+            "off: counted as inactive",
+            db_shim.INSTALLED["inactive"],
+            inactive_before + 1,
+        )
+
+        db_shim.set_active(True)
+        check("on: the switch closes the pools again", closed, ["armed", "armed"])
+        pool = factory("dbname=armed", kwargs={"dbname": "armed"})
+        check("on: a rust pool for the armed db", type(pool).__name__, "_RustPool")
+        other = factory("dbname=other", kwargs={"dbname": "other"})
+        check(
+            "on: still psycopg for any other db",
+            type(other).__name__,
+            "FakePsycopgPool",
+        )
+
+        db_shim.set_active(True)
+        check("a switch to the same state closes nothing", len(closed), 2)
+
+        db_shim.set_active(False)
+        check("off again: closed once more", len(closed), 3)
+        check(
+            "off again: psycopg once more",
+            type(factory("dbname=armed", kwargs={"dbname": "armed"})).__name__,
+            "FakePsycopgPool",
+        )
+        check("two real switches counted", db_shim.INSTALLED["switches"], 2)
+        check("the flag is reported", db_shim.pool_stats()["active"], False)
+    finally:
+        db_shim.ACTIVE, db_shim.CONNINFO, db_shim.PSYCOPG_CONNINFO = saved[:3]
+        db_shim.INSTALLED.clear()
+        db_shim.INSTALLED.update(saved[3])
+        for name, mod in saved_modules.items():
+            if mod is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = mod
+
+
 if __name__ == "__main__":
     sys.exit(main())
