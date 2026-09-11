@@ -220,6 +220,40 @@ pub struct Request {
     pub resolved_rules: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
+/// `COMMIT` or `ROLLBACK` itself failed after a dispatch, so the connection it
+/// ran on is in an unknown transaction state. Typed, because the holder of
+/// the connection has to recognise it and discard the connection rather than
+/// pool it: a request that merely errored leaves the connection clean, this
+/// one does not.
+#[derive(Debug)]
+pub struct TxEndFailed {
+    pub end: &'static str,
+    pub error: String,
+    /// What the dispatch itself said, when the failed statement was the
+    /// ROLLBACK after an error rather than the COMMIT after a success.
+    pub original: Option<String>,
+}
+
+impl std::fmt::Display for TxEndFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "could not {} the read transaction: {}; the connection must be discarded",
+            self.end, self.error
+        )?;
+        if let Some(o) = &self.original {
+            write!(f, " (the request itself had failed with: {o})")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for TxEndFailed {}
+
+pub fn is_tx_end_failure(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<TxEndFailed>().is_some()
+}
+
 impl Request {
     /// The groupby names the request carries, as a QUESTION: none is an answer.
     ///
@@ -1339,6 +1373,16 @@ impl<'a> Orm<'a> {
         let end = if out.is_ok() { "COMMIT" } else { "ROLLBACK" };
         if let Err(e) = self.db.client.batch_execute(end).await {
             tracing::warn!(target: "odoo_kernel::sql", error = %e, "could not {end} the read transaction");
+            // A connection whose transaction could not be ended is in a state
+            // nobody can name: the next request on it could run inside this
+            // snapshot, or inside an aborted transaction. The holder must
+            // discard it, and it can only do that if the error says so.
+            return Err(TxEndFailed {
+                end,
+                error: e.to_string(),
+                original: out.err().map(|o| format!("{o:#}")),
+            }
+            .into());
         }
         out
     }

@@ -65,7 +65,7 @@ pub enum ErrorKind {
 impl ErrorKind {
     pub fn of(error: &anyhow::Error) -> Self {
         for cause in error.chain() {
-            if cause.is::<tokio_postgres::Error>() {
+            if cause.is::<tokio_postgres::Error>() || cause.is::<crate::orm::TxEndFailed>() {
                 return Self::Database;
             }
             if cause.is::<RegistryStale>() {
