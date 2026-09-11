@@ -136,3 +136,45 @@ impl Drop for Lease<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dsn() -> String {
+        std::env::var("RUSTORM_TEST_DSN")
+            .expect("RUSTORM_TEST_DSN names a database this test may use")
+    }
+
+    #[tokio::test]
+    #[ignore = "needs RUSTORM_TEST_DSN"]
+    async fn a_poisoned_connection_is_replaced_and_a_healthy_one_is_reused() {
+        let pool = Pool::connect(&dsn(), 1).await.expect("connect");
+
+        let first = pool.acquire().await;
+        let first_ptr = Arc::as_ptr(first.conn.as_ref().unwrap());
+        drop(first);
+        let again = pool.acquire().await;
+        assert_eq!(
+            Arc::as_ptr(again.conn.as_ref().unwrap()),
+            first_ptr,
+            "a healthy connection goes back to the pool and comes out again"
+        );
+
+        again.poison("the test says so");
+        assert!(again.is_poisoned());
+        drop(again);
+        let fresh = pool.acquire().await;
+        assert_ne!(
+            Arc::as_ptr(fresh.conn.as_ref().unwrap()),
+            first_ptr,
+            "a poisoned connection is replaced before it is handed out"
+        );
+        assert!(!fresh.is_poisoned(), "the replacement starts clean");
+        fresh
+            .client
+            .simple_query("SELECT 1")
+            .await
+            .expect("and it works");
+    }
+}
