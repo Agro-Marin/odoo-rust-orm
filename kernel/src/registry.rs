@@ -1559,15 +1559,34 @@ impl Registry {
         {
             rule_groups.entry(row.get(0)).or_default().push(row.get(1));
         }
-        for row in client
-            .query(
-                "SELECT r.id, m.model, r.domain_force, r.composition = 'restrict' \
-                 FROM ir_rule r JOIN ir_model m ON r.model_id = m.id \
-                 WHERE r.active AND r.perm_read ORDER BY r.id",
+        // The fork adds `ir_rule.composition` (grant | restrict); stock Odoo
+        // has no such column and every group rule grants. Asked of the
+        // schema rather than assumed, so one binary serves both -- a stock
+        // database used to fail the whole security load on the missing
+        // column. Asked of THE `ir_rule` the next query will read (`regclass`
+        // resolves it through the search_path) and not of
+        // `information_schema.columns` by name, which answers for any schema
+        // on the server.
+        let has_composition = client
+            .query_opt(
+                "SELECT 1 FROM pg_attribute
+                 WHERE attrelid = 'ir_rule'::regclass
+                   AND attname = 'composition' AND NOT attisdropped",
                 &[],
             )
             .await?
-        {
+            .is_some();
+        let rules_sql = if has_composition {
+            "SELECT r.id, m.model, r.domain_force, \
+                    COALESCE(r.composition = 'restrict', FALSE) \
+             FROM ir_rule r JOIN ir_model m ON r.model_id = m.id \
+             WHERE r.active AND r.perm_read ORDER BY r.id"
+        } else {
+            "SELECT r.id, m.model, r.domain_force, FALSE \
+             FROM ir_rule r JOIN ir_model m ON r.model_id = m.id \
+             WHERE r.active AND r.perm_read ORDER BY r.id"
+        };
+        for row in client.query(rules_sql, &[]).await? {
             let rid: i32 = row.get(0);
             let model: String = row.get(1);
             let domain_force = row
@@ -1591,7 +1610,7 @@ impl Registry {
             });
             security.rules.entry(model).or_default().push(Rule {
                 groups: rule_groups.get(&rid).cloned().unwrap_or_default(),
-                restrict: row.get::<_, Option<bool>>(3).unwrap_or(false),
+                restrict: row.get(3),
                 domain_force,
                 parsed,
             });

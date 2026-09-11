@@ -2338,6 +2338,12 @@ above).
   `ir_model` bootstrap cannot see them, so it is not a safe primary source —
   `serve`, `query`, `run-corpus` and `bench` refuse to start without
   `--export`; `inspect` is the one command that reads the bootstrap.
+- **The fork's `ir.rule.composition` is read where it exists, assumed `grant`
+  where it does not.** The loader asks `pg_attribute` for the column through
+  `'ir_rule'::regclass` before selecting it; a stock Odoo database has no such
+  column, and selecting it unconditionally failed the whole security load
+  there. Tested against a live PostgreSQL with and without the column
+  (`kernel/tests/db_rules.rs`, ignored unless `RUSTORM_TEST_DSN` is set).
 - **25 of 222 ruled models on a real database** cannot have their rules
   compiled and fall back to Python — `account.move`, `account.move.line`,
   `sale.order`, `sale.order.line`, `hr.employee` among them. Every one is now
