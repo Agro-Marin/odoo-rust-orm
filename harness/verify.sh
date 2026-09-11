@@ -517,7 +517,11 @@ else
   # active user that is neither OdooBot nor the administrator
   OTHER_UID="$(pg -tAc "select min(id) from res_users where active and id not in (1, 2)" 2>/dev/null | tr -d '[:space:]')"
   SOAK_TOKEN="$("$PY" -c 'import secrets; print(secrets.token_hex(16))')"
-  RUSTORM_SERVE_TOKEN="$SOAK_TOKEN" "$ROOT/target/release/rustorm" --db "$DB" --export "$OUT/soak_export.json" \
+  # the soak replays the corpus at EVERY identity, superuser cases included,
+  # against a disposable database on the loopback; a token server refuses
+  # `su` by default, so this one is started with the opt-in, on purpose
+  RUSTORM_SERVE_TOKEN="$SOAK_TOKEN" RUSTORM_SERVE_ALLOW_SU=1 \
+      "$ROOT/target/release/rustorm" --db "$DB" --export "$OUT/soak_export.json" \
       serve --port "$SOAK_PORT" > "$OUT/soak_serve.log" 2>&1 &
   soak_pid=$!
   soak_up=0
