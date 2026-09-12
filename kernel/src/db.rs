@@ -40,19 +40,42 @@ impl StmtCache {
                 break;
             };
             inner.map.remove(&oldest);
+            tracing::debug!(
+                target: "odoo_kernel::cache",
+                cache = "stmt",
+                len = inner.map.len(),
+                max = MAX_PREPARED,
+                evicted = %oldest,
+                "evicted the least recently used prepared statement"
+            );
         }
     }
 
     pub fn remove(&self, sql: &str) {
         let mut inner = self.inner.lock().unwrap();
-        inner.map.remove(sql);
+        let present = inner.map.remove(sql).is_some();
         inner.order.retain(|k| k != sql);
+        tracing::debug!(
+            target: "odoo_kernel::cache",
+            cache = "stmt",
+            present,
+            len = inner.map.len(),
+            %sql,
+            "dropped one prepared statement"
+        );
     }
 
     pub fn clear(&self) {
         let mut inner = self.inner.lock().unwrap();
+        let before = inner.map.len();
         inner.map.clear();
         inner.order.clear();
+        if before > 0 {
+            tracing::debug!(
+                target: "odoo_kernel::cache",
+                cache = "stmt", before, "cleared every prepared statement"
+            );
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -95,6 +118,7 @@ impl<'a> Db<'a> {
         sql: &str,
         params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
     ) -> Result<Vec<tokio_postgres::Row>> {
+        let t_prepare = std::time::Instant::now();
         let (stmt, freshly_prepared) = match self.stmts.get(sql) {
             Some(s) => (s, false),
             None => {
@@ -103,6 +127,7 @@ impl<'a> Db<'a> {
                 (s, true)
             }
         };
+        let prepare_ms = t_prepare.elapsed().as_secs_f64() * 1000.0;
         let t0 = std::time::Instant::now();
         let rows = self.client.query(&stmt, params).await;
 
@@ -122,13 +147,21 @@ impl<'a> Db<'a> {
                 rows = r.len(),
                 params = params.len(),
                 freshly_prepared,
+                prepare_ms,
+                cached = self.stmts.len(),
                 ms,
                 %sql,
                 "query"
             ),
             Err(e) => tracing::warn!(
                 target: "odoo_kernel::sql",
-                ms, %sql, error = %e, "query failed"
+                ms,
+                params = params.len(),
+                freshly_prepared,
+                sqlstate = e.code().map(|c| c.code()).unwrap_or("-"),
+                %sql,
+                error = %e,
+                "query failed"
             ),
         }
         Ok(rows?)

@@ -1321,11 +1321,16 @@ impl RustConn {
             return Ok(());
         }
         if !self.in_tx.swap(true, Ordering::SeqCst) {
-            let begin = if self.readonly.load(Ordering::SeqCst) {
+            let readonly = self.readonly.load(Ordering::SeqCst);
+            let begin = if readonly {
                 "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"
             } else {
                 "BEGIN ISOLATION LEVEL REPEATABLE READ"
             };
+            tracing::trace!(
+                target: "odoo_kernel::cursor",
+                readonly, "opened a transaction on the Python cursor's connection"
+            );
             self.block(py, self.client.batch_execute(begin))
                 .map_err(db_err)?;
         }
@@ -1336,7 +1341,12 @@ impl RustConn {
         if stmt == "ROLLBACK" {
             self.clear_prepared();
         }
-        if self.in_tx.swap(false, Ordering::SeqCst) {
+        let was_open = self.in_tx.swap(false, Ordering::SeqCst);
+        tracing::trace!(
+            target: "odoo_kernel::cursor",
+            end = stmt, was_open, "ending the Python cursor's transaction"
+        );
+        if was_open {
             self.block(py, self.client.batch_execute(stmt))
                 .map_err(db_err)?;
         }
@@ -1388,7 +1398,15 @@ impl RustConn {
     }
 
     pub fn kernel_stmts_at(&self, generation: u64) -> Arc<odoo_kernel::orm::StmtCache> {
-        if self.kernel_generation.swap(generation, Ordering::SeqCst) != generation {
+        let previous = self.kernel_generation.swap(generation, Ordering::SeqCst);
+        if previous != generation {
+            // this connection last served a different kernel, whose plans were
+            // prepared against a registry that no longer describes the columns
+            tracing::debug!(
+                target: "odoo_kernel::cursor",
+                previous, generation, dropped = self.kernel_stmts.len(),
+                "the kernel generation changed on this connection; dropping its plans"
+            );
             self.kernel_stmts.clear();
         }
         self.kernel_stmts.clone()
@@ -1535,6 +1553,10 @@ impl RustConn {
             return Err(rerr("connection is closed"));
         }
         self.ensure_tx(py)?;
+        // Every statement Odoo's Python ORM runs comes through here, so this
+        // is the one place the whole server's SQL is observable at once --
+        // the kernel's own queries go through `odoo_kernel::sql` instead.
+        let t0 = std::time::Instant::now();
 
         let unparameterised = match &params {
             None => true,
@@ -1544,6 +1566,13 @@ impl RustConn {
             self.clear_prepared();
         }
         if unparameterised && has_multiple_statements(query) {
+            // several statements in one string cannot be prepared; they go
+            // through the simple protocol, where every value is text
+            tracing::debug!(
+                target: "odoo_kernel::cursor",
+                sql = %query.chars().take(120).collect::<String>(),
+                "multi-statement execute: falling back to the simple query protocol"
+            );
             self.clear_prepared();
             return self.execute_simple(py, query);
         }
@@ -1593,6 +1622,15 @@ impl RustConn {
                             let mut cache = self.stmt_cache.lock().unwrap();
 
                             if cache.len() >= odoo_kernel::db::MAX_PREPARED {
+                                // no LRU on the cursor cache: it is emptied
+                                // wholesale, so a workload above the cap
+                                // re-prepares everything on every pass
+                                tracing::debug!(
+                                    target: "odoo_kernel::cursor",
+                                    len = cache.len(),
+                                    max = odoo_kernel::db::MAX_PREPARED,
+                                    "cursor statement cache full; clearing all of it"
+                                );
                                 cache.clear();
                             }
                             cache.insert(key.clone(), s.clone());
@@ -1666,6 +1704,7 @@ impl RustConn {
                     .map(|r| r.columns().iter().map(|c| c.name().to_string()).collect())
                     .unwrap_or_default(),
             };
+            let query_ms = t0.elapsed().as_secs_f64() * 1000.0;
             let list = PyList::empty(py);
             for row in &rows {
                 let mut cells: Vec<Py<PyAny>> = Vec::with_capacity(row.len());
@@ -1674,6 +1713,20 @@ impl RustConn {
                 }
                 list.append(PyTuple::new(py, cells)?)?;
             }
+            // `decode_ms` is this cursor's own cost: building Python objects
+            // out of the wire rows, which psycopg does in C. A read where it
+            // dominates `query_ms` is a conversion problem, not a SQL one.
+            tracing::debug!(
+                target: "odoo_kernel::cursor",
+                rows = rows.len(),
+                columns = columns.len(),
+                params = refs.len(),
+                prepared = stmt.is_some(),
+                query_ms,
+                decode_ms = t0.elapsed().as_secs_f64() * 1000.0 - query_ms,
+                sql = %sql.chars().take(200).collect::<String>(),
+                "select"
+            );
             Ok(RustResult {
                 rowcount: rows.len() as i64,
                 columns,
@@ -1685,6 +1738,15 @@ impl RustConn {
                 None => self.block(py, self.client.execute(&sql, &refs)),
             }
             .map_err(db_err)? as i64;
+            tracing::debug!(
+                target: "odoo_kernel::cursor",
+                rowcount = n,
+                params = refs.len(),
+                prepared = stmt.is_some(),
+                ms = t0.elapsed().as_secs_f64() * 1000.0,
+                sql = %sql.chars().take(200).collect::<String>(),
+                "statement"
+            );
             Ok(RustResult {
                 rowcount: n,
                 columns: vec![],
@@ -1701,6 +1763,12 @@ impl RustConn {
         let sink = self
             .block(py, self.client.copy_in::<_, bytes::Bytes>(statement))
             .map_err(db_err)?;
+        tracing::debug!(
+            target: "odoo_kernel::copy",
+            binary = statement_is_binary_copy(statement),
+            sql = %statement.chars().take(200).collect::<String>(),
+            "opened a COPY stream"
+        );
         Ok(RustCopy {
             sink: Some(Box::pin(sink)),
             handle: self.handle.clone(),
@@ -1722,7 +1790,18 @@ impl RustConn {
     }
 
     fn clear_prepared(&self) {
-        self.stmt_cache.lock().unwrap().clear();
+        let mut cache = self.stmt_cache.lock().unwrap();
+        let cursor_plans = cache.len();
+        cache.clear();
+        drop(cache);
+        if cursor_plans + self.kernel_stmts.len() > 0 {
+            tracing::debug!(
+                target: "odoo_kernel::cursor",
+                cursor_plans,
+                kernel_plans = self.kernel_stmts.len(),
+                "dropped every prepared statement on this connection"
+            );
+        }
         self.kernel_stmts.clear();
     }
 
@@ -2256,6 +2335,14 @@ impl RustCopy {
     }
 
     fn finish(&mut self, py: Python<'_>) -> PyResult<i64> {
+        tracing::debug!(
+            target: "odoo_kernel::copy",
+            rows = self.rows,
+            binary = self.binary,
+            row_mode = self.row_mode,
+            buffered = self.buf.len(),
+            "finishing a COPY stream"
+        );
         use bytes::BufMut;
         if self.binary {
             if !self.started {
@@ -2387,6 +2474,13 @@ impl RustDb {
     pub fn connect(&self, py: Python<'_>, dsn: Option<String>) -> PyResult<RustConn> {
         let dsn = dsn.unwrap_or_else(|| self.dsn.clone());
         let handle = self.handle()?;
+        tracing::debug!(
+            target: "odoo_kernel::cursor",
+            overridden = dsn != self.dsn,
+            worker_threads = self.worker_threads,
+            pid = std::process::id(),
+            "opening a rust-backed connection for a Python cursor"
+        );
         let for_conn = handle.clone();
         let client = py
             .detach(move || handle.block_on(odoo_kernel::connect::connect(&dsn)))

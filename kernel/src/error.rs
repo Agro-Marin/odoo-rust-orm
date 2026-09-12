@@ -62,10 +62,23 @@ impl ErrorKind {
     }
 }
 
+// Every refusal and denial announces itself with the source location that
+// decided it, so a routing miss is attributable to one site without a
+// bisect. `odoo_kernel::refusal` and `odoo_kernel::access` are the two
+// targets that report which capability the kernel is missing, aggregated
+// over a corpus, and the fields are the input a future session needs to
+// decide whether the site is worth implementing.
 macro_rules! refusal {
-    ($($arg:tt)*) => {
-        anyhow::Error::new($crate::error::Refusal(format!($($arg)*)))
-    };
+    ($($arg:tt)*) => {{
+        let reason = format!($($arg)*);
+        ::tracing::debug!(
+            target: "odoo_kernel::refusal",
+            site = concat!(file!(), ":", line!()),
+            %reason,
+            "refused"
+        );
+        anyhow::Error::new($crate::error::Refusal(reason))
+    }};
 }
 macro_rules! refuse {
     ($($arg:tt)*) => {
@@ -73,9 +86,16 @@ macro_rules! refuse {
     };
 }
 macro_rules! deny_access {
-    ($($arg:tt)*) => {
-        return Err(anyhow::Error::new($crate::error::AccessDenied(format!($($arg)*))))
-    };
+    ($($arg:tt)*) => {{
+        let reason = format!($($arg)*);
+        ::tracing::debug!(
+            target: "odoo_kernel::access",
+            site = concat!(file!(), ":", line!()),
+            %reason,
+            "denied"
+        );
+        return Err(anyhow::Error::new($crate::error::AccessDenied(reason)))
+    }};
 }
 pub(crate) use {deny_access, refusal, refuse};
 

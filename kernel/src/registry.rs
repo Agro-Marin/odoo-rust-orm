@@ -554,6 +554,7 @@ impl Registry {
     }
 
     pub async fn load_group_ids(client: &Client) -> Result<HashMap<String, i32>> {
+        let t0 = std::time::Instant::now();
         let mut out = HashMap::new();
         for row in client
             .query(
@@ -565,6 +566,12 @@ impl Registry {
         {
             out.insert(row.get(0), row.get(1));
         }
+        tracing::debug!(
+            target: "odoo_kernel::registry",
+            groups = out.len(),
+            ms = t0.elapsed().as_secs_f64() * 1000.0,
+            "loaded the xmlid -> res.groups map that field `groups=` specs resolve through"
+        );
         Ok(out)
     }
 
@@ -577,6 +584,7 @@ impl Registry {
     }
 
     pub async fn load_inherits(client: &Client) -> Result<HashMap<String, Vec<(String, String)>>> {
+        let t0 = std::time::Instant::now();
         let mut out: HashMap<String, Vec<(String, String)>> = HashMap::new();
         for row in client
             .query(
@@ -594,6 +602,13 @@ impl Registry {
                 .or_default()
                 .push((row.get(1), row.get(2)));
         }
+        tracing::debug!(
+            target: "odoo_kernel::registry",
+            delegating_models = out.len(),
+            links = out.values().map(Vec::len).sum::<usize>(),
+            ms = t0.elapsed().as_secs_f64() * 1000.0,
+            "loaded the _inherits graph"
+        );
         Ok(out)
     }
 
@@ -616,6 +631,7 @@ impl Registry {
         client: &Client,
         signals: Signals,
     ) -> Result<std::sync::Arc<Dynamic>> {
+        let t0 = std::time::Instant::now();
         let fresh = Dynamic {
             security: Self::load_security(client).await?,
             defaults: Self::load_defaults(client).await?,
@@ -623,6 +639,19 @@ impl Registry {
             week_start: Self::load_week_starts(client).await?,
             signals,
         };
+        // The whole of the runtime-mutable state is rebuilt and published as
+        // one Arc; this line is the only place a request can observe security
+        // changing under it, and its duration is on the request that paid it
+        tracing::info!(
+            target: "odoo_kernel::registry",
+            ruled_models = fresh.security.rules.len(),
+            access_models = fresh.security.access.len(),
+            default_models = fresh.defaults.len(),
+            langs = fresh.langs.len(),
+            signals = ?fresh.signals,
+            ms = t0.elapsed().as_secs_f64() * 1000.0,
+            "refreshed the dynamic snapshot (security, defaults, languages)"
+        );
         let fresh = std::sync::Arc::new(fresh);
         *self.dynamic.write().unwrap() = fresh.clone();
         Ok(fresh)
@@ -643,9 +672,16 @@ impl Registry {
         let fresh = std::sync::Arc::new(fresh);
         // A concurrent security refresh must neither enter this request nor
         // be overwritten by an unrelated cache watermark.
-        if std::sync::Arc::ptr_eq(&guard, checked) {
+        let published = std::sync::Arc::ptr_eq(&guard, checked);
+        if published {
             *guard = fresh.clone();
         }
+        tracing::debug!(
+            target: "odoo_kernel::signal",
+            published,
+            signals = ?fresh.signals,
+            "stamped the watermark onto the snapshot this request read"
+        );
         fresh
     }
 
@@ -674,18 +710,51 @@ impl Registry {
     }
 
     pub async fn load_langs(client: &Client) -> Result<Vec<String>> {
-        Ok(client
+        let langs: Vec<String> = client
             .query("SELECT code FROM res_lang WHERE active", &[])
             .await?
             .iter()
             .map(|r| r.get(0))
-            .collect())
+            .collect();
+        tracing::debug!(
+            target: "odoo_kernel::registry",
+            count = langs.len(),
+            langs = ?langs,
+            "loaded the active languages a request may name"
+        );
+        Ok(langs)
     }
 
     pub fn get(&self, model: &str) -> Result<&Model> {
         self.models
             .get(model)
             .ok_or_else(|| refusal!("unknown or table-less model {model}"))
+    }
+
+    /// Every capability flag the routing decision reads, for one model.
+    ///
+    /// A refused request usually names one of these; printing them together
+    /// says which of the model's read paths are pure and which are not,
+    /// without a second round trip to the export.
+    pub fn log_model_capabilities(&self, model: &Model) {
+        tracing::debug!(
+            target: "odoo_kernel::registry",
+            model = %model.name,
+            table = %model.table,
+            fields = model.fields.len(),
+            order = %model.order,
+            read_path_pure = model.read_path_pure,
+            search_pure = model.search_pure,
+            order_pure = model.order_pure,
+            read_group_pure = model.read_group_pure,
+            display_name_default = model.display_name_default,
+            display_name_access_pure = model.display_name_access_pure,
+            impure_read_methods = ?model.impure_read_methods,
+            rec_name = ?model.rec_name,
+            active_name = ?model.active_name,
+            parent_store = model.parent_store,
+            "model capabilities"
+        );
     }
 
     pub async fn load_has_trigram(client: &Client) -> Result<bool> {
@@ -755,6 +824,7 @@ impl Registry {
     pub async fn load_schema(
         client: &Client,
     ) -> Result<HashMap<String, HashMap<String, (String, bool)>>> {
+        let t0 = std::time::Instant::now();
         let mut schema: HashMap<String, HashMap<String, (String, bool)>> = HashMap::new();
         for row in client
             .query(
@@ -774,13 +844,28 @@ impl Registry {
                 .or_default()
                 .insert(col, (udt, nullable == "NO"));
         }
+        tracing::debug!(
+            target: "odoo_kernel::registry",
+            tables = schema.len(),
+            columns = schema.values().map(HashMap::len).sum::<usize>(),
+            ms = t0.elapsed().as_secs_f64() * 1000.0,
+            "read information_schema; a field with no column here is not stored"
+        );
         Ok(schema)
     }
 
     pub async fn load(client: &Client) -> Result<Registry> {
+        let t0 = std::time::Instant::now();
+        tracing::info!(
+            target: "odoo_kernel::registry",
+            source = "bootstrap",
+            "building the registry from ir_model; no model is marked pure, so \
+             every dispatch will refuse"
+        );
         let schema = Self::load_schema(client).await?;
 
         let mut models: HashMap<String, Model> = HashMap::new();
+        let mut skipped_tableless = 0usize;
         for row in client
             .query("SELECT model, \"order\" FROM ir_model", &[])
             .await?
@@ -790,6 +875,12 @@ impl Registry {
             let table = name.replace('.', "_");
 
             if !schema.contains_key(&table) {
+                tracing::trace!(
+                    target: "odoo_kernel::registry",
+                    model = %name, %table,
+                    "skipped: ir_model names it but no table backs it"
+                );
+                skipped_tableless += 1;
                 continue;
             }
             models.insert(
@@ -882,13 +973,29 @@ impl Registry {
             );
         }
 
+        tracing::debug!(
+            target: "odoo_kernel::registry",
+            models = models.len(),
+            skipped_tableless,
+            fields = models.values().map(|m| m.fields.len()).sum::<usize>(),
+            ms = t0.elapsed().as_secs_f64() * 1000.0,
+            "read ir_model and ir_model_fields"
+        );
         Self::finalize(client, models, Source::Bootstrap).await
     }
 
     pub async fn from_export(client: &Client, export: &serde_json::Value) -> Result<Registry> {
+        let t0 = std::time::Instant::now();
         let expected_sequence = export["registry_sequence"].as_i64().ok_or_else(|| {
             refusal!("export has no registry_sequence; regenerate it from the live Python registry")
         })?;
+        tracing::info!(
+            target: "odoo_kernel::registry",
+            source = "export",
+            expected_sequence,
+            exported_db = export["db"].as_str().unwrap_or("-"),
+            "building the registry from a live-registry export"
+        );
         if let Some(stamped) = export["db"].as_str() {
             let here: String = client
                 .query_one("SELECT current_database()", &[])
@@ -906,9 +1013,17 @@ impl Registry {
         let export_models = export["models"]
             .as_object()
             .ok_or_else(|| refusal!("export missing models"))?;
+        let mut skipped_tableless = 0usize;
+        let mut hooked_total = 0usize;
         for (name, em) in export_models {
             let table = em["table"].as_str().unwrap_or_default().to_string();
             let Some(cols) = schema.get(&table) else {
+                tracing::trace!(
+                    target: "odoo_kernel::registry",
+                    model = %name, %table,
+                    "skipped: the export names it but no table backs it here"
+                );
+                skipped_tableless += 1;
                 continue;
             };
             let mut fields: HashMap<String, Field> = HashMap::new();
@@ -970,7 +1085,17 @@ impl Registry {
             }
             for hooked in em["hooked_fields"].as_array().into_iter().flatten() {
                 if let Some(fname) = hooked.as_str() {
-                    fields.remove(fname);
+                    // a field Python hooks reads through code no column
+                    // expresses; dropping it here is what makes every leaf
+                    // and read that names it refuse rather than answer wrong
+                    if fields.remove(fname).is_some() {
+                        hooked_total += 1;
+                        tracing::trace!(
+                            target: "odoo_kernel::registry",
+                            model = %name, field = %fname,
+                            "dropped a field Python hooks; naming it will refuse"
+                        );
+                    }
                 }
             }
             models.insert(
@@ -1026,6 +1151,16 @@ impl Registry {
                 },
             );
         }
+        tracing::debug!(
+            target: "odoo_kernel::registry",
+            models = models.len(),
+            exported = export_models.len(),
+            skipped_tableless,
+            hooked_fields_dropped = hooked_total,
+            fields = models.values().map(|m| m.fields.len()).sum::<usize>(),
+            ms = t0.elapsed().as_secs_f64() * 1000.0,
+            "decoded the export"
+        );
         Self::check_export_covers_db(client, &models).await?;
         let mut registry = Self::finalize(client, models, Source::Export).await?;
         {
@@ -1036,6 +1171,13 @@ impl Registry {
                 .position(|name| name == "orm_signaling_registry")
                 .and_then(|i| dynamic.signals.get(i).copied().flatten());
             if current != Some(expected_sequence) {
+                tracing::warn!(
+                    target: "odoo_kernel::signal",
+                    expected_sequence,
+                    ?current,
+                    "the export was taken at a different orm_signaling_registry \
+                     watermark than this database is at; refusing it as stale"
+                );
                 return Err(crate::error::RegistryStale.into());
             }
         }
@@ -1045,6 +1187,16 @@ impl Registry {
             .flatten()
             .filter_map(|(k, v)| v.as_str().map(|c| (k.clone(), c.to_string())))
             .collect();
+        tracing::info!(
+            target: "odoo_kernel::registry",
+            models = registry.models.len(),
+            unaccent = registry.has_unaccent,
+            trigram = registry.has_trigram,
+            timezones = registry.timezones.len(),
+            timezone_aliases = registry.timezone_aliases.len(),
+            total_ms = t0.elapsed().as_secs_f64() * 1000.0,
+            "registry ready"
+        );
         Ok(registry)
     }
 
@@ -1068,6 +1220,12 @@ impl Registry {
             .map(|r| r.get::<_, String>(0))
             .filter(|m| !models.contains_key(m))
             .collect();
+        tracing::debug!(
+            target: "odoo_kernel::registry",
+            table_backed = rows.len(),
+            missing = missing.len(),
+            "checked that the export covers every table-backed model in this database"
+        );
         if missing.is_empty() {
             return Ok(());
         }
@@ -1091,6 +1249,7 @@ impl Registry {
         mut models: HashMap<String, Model>,
         source: Source,
     ) -> Result<Registry> {
+        let t_finalize = std::time::Instant::now();
         let text_columns: HashMap<String, std::collections::HashSet<String>> = models
             .iter()
             .map(|(name, m)| {
@@ -1103,9 +1262,17 @@ impl Registry {
                 (name.clone(), cols)
             })
             .collect();
+        let t_normalize = std::time::Instant::now();
         for model in models.values_mut() {
             Self::normalize_model(model, &text_columns);
         }
+        tracing::debug!(
+            target: "odoo_kernel::registry",
+            models = models.len(),
+            renders_display_name = models.values().filter(|m| m.display_name_default).count(),
+            ms = t_normalize.elapsed().as_secs_f64() * 1000.0,
+            "normalised _rec_name, _active_name and the display-name columns"
+        );
 
         let langs = Self::load_langs(client).await?;
 
@@ -1118,6 +1285,12 @@ impl Registry {
             None => Vec::new(),
             Some(sql) => Self::signals_of(&client.query_one(sql.as_str(), &[]).await?),
         };
+        tracing::debug!(
+            target: "odoo_kernel::signal",
+            tables = ?signal_tables,
+            ?signals,
+            "read the signalling watermark this registry is pinned to"
+        );
         let has_unaccent = Self::load_has_unaccent(client).await?;
         let inherits = Self::load_inherits(client).await?;
         let dynamic = Dynamic {
@@ -1139,6 +1312,19 @@ impl Registry {
             .iter()
             .map(|r| r.get(0))
             .collect();
+        // `unaccent` decides whether an ilike compares accent-folded, and
+        // `pg_trgm` whether the trigram conjunct can use an index at all --
+        // both change the SQL, so both belong on the startup line
+        tracing::info!(
+            target: "odoo_kernel::registry",
+            source = ?source,
+            models = registry.models.len(),
+            unaccent = registry.has_unaccent,
+            trigram = registry.has_trigram,
+            signal_tables = registry.signal_tables.len(),
+            ms = t_finalize.elapsed().as_secs_f64() * 1000.0,
+            "finalised the registry"
+        );
         Ok(registry)
     }
 
@@ -1178,6 +1364,15 @@ impl Registry {
             if renderable {
                 model.display_name_default = true;
             } else {
+                // the declared columns cannot all be read from a column, so
+                // the model falls back to _rec_name -- and a display_name
+                // read on it refuses rather than rendering the wrong thing
+                tracing::debug!(
+                    target: "odoo_kernel::registry",
+                    model = %model.name,
+                    columns = ?model.display_name_column,
+                    "_display_name_column is not renderable from the columns; dropping it"
+                );
                 model.display_name_column.clear();
             }
         }
@@ -1189,7 +1384,16 @@ impl Registry {
         };
         match model.active_name.take() {
             Some(declared) if is_bool_column(&declared) => model.active_name = Some(declared),
-            Some(_) => {
+            Some(declared) => {
+                // _active_name names something that is not a stored boolean,
+                // so active_test cannot be reproduced from a column and the
+                // whole search path goes back to Python
+                tracing::debug!(
+                    target: "odoo_kernel::registry",
+                    model = %model.name,
+                    declared = %declared,
+                    "_active_name is not a stored boolean column; refusing _search on this model"
+                );
                 model.active_name = None;
                 model.read_path_pure = false;
                 model.impure_read_methods.push("_search".to_string());
@@ -1217,6 +1421,13 @@ impl Registry {
         if let Some(rn) = &model.rec_name
             && !model.fields.get(rn).is_some_and(Self::renders_display_name)
         {
+            tracing::debug!(
+                target: "odoo_kernel::registry",
+                model = %model.name,
+                rec_name = %rn,
+                was_declared = declared.is_some(),
+                "_rec_name does not render from a column; display_name will refuse"
+            );
             model.rec_name = None;
             if declared.is_some() {
                 model.display_name_default = false;
@@ -1227,6 +1438,7 @@ impl Registry {
     pub async fn load_defaults(
         client: &Client,
     ) -> Result<HashMap<String, HashMap<String, CompanyDefault>>> {
+        let t0 = std::time::Instant::now();
         let mut defaults: HashMap<String, HashMap<String, CompanyDefault>> = HashMap::new();
         for row in client
             .query(
@@ -1252,10 +1464,18 @@ impl Registry {
             let entry = defaults.entry(model).or_default().entry(fname).or_default();
             entry.ordered.push((company, value));
         }
+        tracing::debug!(
+            target: "odoo_kernel::registry",
+            models = defaults.len(),
+            fields = defaults.values().map(HashMap::len).sum::<usize>(),
+            ms = t0.elapsed().as_secs_f64() * 1000.0,
+            "loaded ir.default; these are the fallbacks a company-dependent column coalesces to"
+        );
         Ok(defaults)
     }
 
     pub async fn load_security(client: &Client) -> Result<Security> {
+        let t0 = std::time::Instant::now();
         let mut security = Security::default();
         for row in client
             .query("SELECT gid, hid FROM res_groups_implied_rel", &[])
@@ -1314,7 +1534,13 @@ impl Registry {
                 .get::<_, Option<String>>(2)
                 .filter(|d| !d.trim().is_empty());
             let parsed = domain_force.as_deref().map(|src| {
-                crate::security::parse_py(src).map_err(|e| {
+                crate::security::parse_py(src).inspect(|_| {
+                    tracing::trace!(
+                        target: "odoo_kernel::rules",
+                        rule = rid, model = %model, groups = rule_groups.get(&rid).map_or(0, Vec::len),
+                        "parsed a record rule's domain_force"
+                    );
+                }).map_err(|e| {
                     tracing::warn!(
                         target: "odoo_kernel::rules",
                         rule = rid, model = %model, reason = %format!("{e:#}"),
@@ -1346,6 +1572,24 @@ impl Registry {
                 .or_default()
                 .push(row.get(1));
         }
+        let unparsable = security
+            .rules
+            .values()
+            .flatten()
+            .filter(|r| matches!(r.parsed, Some(Err(_))))
+            .count();
+        tracing::debug!(
+            target: "odoo_kernel::rules",
+            ruled_models = security.rules.len(),
+            rules = security.rules.values().map(Vec::len).sum::<usize>(),
+            unparsable,
+            access_models = security.access.len(),
+            group_implications = security.implied.len(),
+            users_with_groups = security.user_groups.len(),
+            users_with_companies = security.user_companies.len(),
+            ms = t0.elapsed().as_secs_f64() * 1000.0,
+            "loaded ir.rule, ir.model.access and the group/company memberships"
+        );
         Ok(security)
     }
 }

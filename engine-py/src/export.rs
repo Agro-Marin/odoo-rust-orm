@@ -287,15 +287,25 @@ pub fn install_wire_module(py: Python<'_>) -> PyResult<()> {
 }
 
 pub fn boot_registry(py: Python<'_>, config: &str, db: &str) -> PyResult<Py<PyAny>> {
+    let t0 = std::time::Instant::now();
+    tracing::info!(
+        target: "odoo_kernel::export",
+        %db, %config, "booting an embedded Odoo registry"
+    );
     prepare_python(py, config)?;
     let reg = py
         .import("odoo.modules.registry")?
         .getattr("Registry")?
         .call1((db,))?;
+    tracing::info!(
+        target: "odoo_kernel::export",
+        %db, ms = t0.elapsed().as_secs_f64() * 1000.0, "registry booted"
+    );
     Ok(reg.unbind())
 }
 
 pub fn export_registry(py: Python<'_>, reg: &Py<PyAny>) -> PyResult<String> {
+    let t0 = std::time::Instant::now();
     let ns = pyo3::types::PyDict::new(py);
     py.run(
         &std::ffi::CString::new(EXPORT_ALL).unwrap(),
@@ -303,7 +313,17 @@ pub fn export_registry(py: Python<'_>, reg: &Py<PyAny>) -> PyResult<String> {
         Some(&ns),
     )?;
     let func = ns.get_item("export_registry")?.unwrap();
-    func.call1((reg.bind(py),))?.extract()
+    let json: String = func.call1((reg.bind(py),))?.extract()?;
+    // This walk reads every model class in the live registry to decide which
+    // read paths Python overrides; it runs once per worker at registry load,
+    // and its duration is on the first request that pays for it.
+    tracing::info!(
+        target: "odoo_kernel::export",
+        bytes = json.len(),
+        ms = t0.elapsed().as_secs_f64() * 1000.0,
+        "exported the live Python registry"
+    );
+    Ok(json)
 }
 
 pub fn boot_and_export(config: &str, db: &str) -> Result<String> {

@@ -59,6 +59,13 @@ impl PooledConn {
     }
 
     fn poison(&self) {
+        // a connection whose transaction could not be ended holds a lock and
+        // a stale session state; it is replaced rather than reused
+        tracing::warn!(
+            target: "odoo_kernel::pool",
+            prepared = self.stmts.len(),
+            "poisoning a connection; its in-flight query is being cancelled"
+        );
         self.poisoned.store(true, Ordering::SeqCst);
         let token = self.client.cancel_token();
         let dsn = self.dsn.clone();
@@ -78,11 +85,19 @@ struct Pool {
 
 impl Pool {
     async fn connect(dsn: &str, size: usize, acquire_timeout: std::time::Duration) -> Result<Self> {
+        let t0 = std::time::Instant::now();
         let mut free = Vec::with_capacity(size);
         for _ in 0..size {
             let client = odoo_kernel::connect::connect(dsn).await?;
             free.push(PooledConn::new(client, dsn));
         }
+        tracing::info!(
+            target: "odoo_kernel::pool",
+            size,
+            ?acquire_timeout,
+            ms = t0.elapsed().as_secs_f64() * 1000.0,
+            "opened the connection pool; every connection carries its own statement cache"
+        );
         Ok(Pool {
             free: std::sync::Mutex::new(free),
             permits: Semaphore::new(size),
@@ -93,10 +108,25 @@ impl Pool {
     }
 
     async fn try_acquire(&self) -> Result<Lease<'_>> {
+        let t0 = std::time::Instant::now();
         match tokio::time::timeout(self.acquire_timeout, self.acquire()).await {
-            Ok(lease) => lease,
+            Ok(lease) => {
+                tracing::trace!(
+                    target: "odoo_kernel::pool",
+                    waited_ms = t0.elapsed().as_secs_f64() * 1000.0,
+                    free = self.free.lock().unwrap().len(),
+                    size = self.size,
+                    ok = lease.is_ok(),
+                    "acquired a pooled connection"
+                );
+                lease
+            }
             Err(_) => {
-                tracing::warn!("pool saturated for {:?}; shedding", self.acquire_timeout);
+                tracing::warn!(
+                    target: "odoo_kernel::pool",
+                    timeout = ?self.acquire_timeout, size = self.size,
+                    "pool saturated; shedding the request"
+                );
                 anyhow::bail!(
                     "no database connection available within {:?}",
                     self.acquire_timeout
@@ -116,7 +146,11 @@ impl Pool {
         permit.forget();
 
         if conn.is_unusable() {
-            tracing::warn!("pooled connection was closed or poisoned; reconnecting");
+            tracing::warn!(
+                target: "odoo_kernel::pool",
+                closed = conn.client.is_closed(),
+                "pooled connection was closed or poisoned; reconnecting"
+            );
             match odoo_kernel::connect::connect(&self.dsn).await {
                 Ok(client) => {
                     conn = PooledConn::new(client, &self.dsn);
@@ -267,9 +301,12 @@ pub async fn serve(db: &str, port: u16, export: Option<&str>, options: ServeOpti
         build_registry(&conn.client, export).await?
     };
     tracing::info!(
+        target: "odoo_kernel::http",
         models = registry.models.len(),
         unaccent = registry.has_unaccent,
+        trigram = registry.has_trigram,
         source = ?registry.source,
+        export = export.unwrap_or("-"),
         "registry loaded"
     );
 
@@ -289,7 +326,15 @@ pub async fn serve(db: &str, port: u16, export: Option<&str>, options: ServeOpti
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY))
         .with_state(state);
     let addr = format!("127.0.0.1:{port}");
-    tracing::info!(%addr, "listening");
+    tracing::info!(
+        target: "odoo_kernel::http",
+        %addr,
+        pool = options.pool_size,
+        request_timeout = ?options.request_timeout,
+        acquire_timeout = ?options.acquire_timeout,
+        max_body = MAX_BODY,
+        "listening"
+    );
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     axum::serve(listener, app)
@@ -306,7 +351,10 @@ pub async fn serve(db: &str, port: u16, export: Option<&str>, options: ServeOpti
                 _ = tokio::signal::ctrl_c() => {}
                 _ = term.recv() => {}
             }
-            tracing::info!("shutting down; letting in-flight requests finish");
+            tracing::info!(
+                target: "odoo_kernel::http",
+                "shutting down; letting in-flight requests finish"
+            );
         })
         .await?;
     Ok(())
@@ -314,17 +362,39 @@ pub async fn serve(db: &str, port: u16, export: Option<&str>, options: ServeOpti
 
 async fn dispatch_once(state: &AppState, req: &Request) -> Result<String> {
     let registry = state.registry.read().await.clone();
+    let t_acquire = std::time::Instant::now();
     let conn = state.pool.try_acquire().await?;
+    let acquire_ms = t_acquire.elapsed().as_secs_f64() * 1000.0;
     let mut guard = TxGuard {
         conn: &conn,
         finished: false,
     };
     let orm = Orm::new(&registry, &conn.client, state.caches.clone(), &conn.stmts);
+    let t_dispatch = std::time::Instant::now();
     let out =
         match tokio::time::timeout(state.request_timeout, orm.dispatch_in_transaction(req)).await {
             Ok(out) => out,
-            Err(_) => anyhow::bail!("request exceeded {:?}", state.request_timeout),
+            Err(_) => {
+                // the connection is left holding an open transaction, so the
+                // TxGuard poisons it on the way out
+                tracing::warn!(
+                    target: "odoo_kernel::http",
+                    model = %req.model,
+                    method = %req.method,
+                    timeout = ?state.request_timeout,
+                    "request timed out inside the kernel"
+                );
+                anyhow::bail!("request exceeded {:?}", state.request_timeout)
+            }
         };
+    tracing::debug!(
+        target: "odoo_kernel::http",
+        acquire_ms,
+        dispatch_ms = t_dispatch.elapsed().as_secs_f64() * 1000.0,
+        prepared = conn.stmts.len(),
+        ok = out.is_ok(),
+        "served one call on a pooled connection"
+    );
     if out.is_err()
         && let Err(e) = conn.client.batch_execute("ROLLBACK").await
     {
@@ -360,6 +430,10 @@ async fn handle_health(State(state): State<Arc<AppState>>) -> axum::response::Re
         conn.client.simple_query("SELECT 1").await.is_ok()
     };
     let stale = state.stale.load(Ordering::SeqCst);
+    tracing::debug!(
+        target: "odoo_kernel::http",
+        db_ok = ok, stale, models = registry.models.len(), "health"
+    );
     let body = json!({
         "status": if stale { "stale" } else if ok { "ok" } else { "degraded" },
         "models": registry.models.len(),
@@ -377,6 +451,7 @@ async fn handle_health(State(state): State<Arc<AppState>>) -> axum::response::Re
 }
 
 async fn rebuild_registry(state: &AppState) -> Result<usize> {
+    let t0 = std::time::Instant::now();
     let mtime = export_mtime(state.export.as_deref());
     let fresh = {
         let conn = state.pool.try_acquire().await?;
@@ -388,6 +463,12 @@ async fn rebuild_registry(state: &AppState) -> Result<usize> {
     *state.registry.write().await = Arc::new(fresh);
     *state.export_mtime.lock().unwrap() = mtime;
     state.stale.store(false, Ordering::SeqCst);
+    tracing::info!(
+        target: "odoo_kernel::http",
+        models,
+        ms = t0.elapsed().as_secs_f64() * 1000.0,
+        "rebuilt the registry from the export on disk; every identity cache was dropped"
+    );
     Ok(models)
 }
 
@@ -454,6 +535,7 @@ async fn handle_call(
     headers: axum::http::HeaderMap,
     AxJson(req): AxJson<Request>,
 ) -> axum::response::Response {
+    let t0 = std::time::Instant::now();
     let mut req = req;
     match &state.auth {
         Auth::Token(expected) => {
@@ -462,6 +544,12 @@ async fn handle_call(
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or_default();
             if !token_matches(given, expected) {
+                tracing::warn!(
+                    target: "odoo_kernel::http",
+                    model = %req.model,
+                    presented = !given.is_empty(),
+                    "rejected a call: missing or wrong X-Rustorm-Token"
+                );
                 return (
                     StatusCode::UNAUTHORIZED,
                     AxJson(json!({"error": "missing or wrong X-Rustorm-Token"})),
@@ -470,6 +558,13 @@ async fn handle_call(
             }
         }
         Auth::Pinned { uid } => {
+            // the body's own uid/su are DISCARDED here; a caller that thinks
+            // it asked as somebody else got this identity instead
+            tracing::trace!(
+                target: "odoo_kernel::http",
+                pinned = *uid, requested = ?req.uid, requested_su = req.su,
+                "overriding the request identity with the pinned one"
+            );
             req.uid = Some(odoo_kernel::orm::UidSpec::Id(*uid));
             req.su = false;
         }
@@ -509,17 +604,37 @@ async fn handle_call(
         .is_some_and(odoo_kernel::db::is_stale_plan_error)
     {
         tracing::info!("a cached plan went stale under DDL; retrying in a new transaction");
-        result = dispatch_guarded(state.clone(), req).await;
+        result = dispatch_guarded(state.clone(), req.clone()).await;
     }
 
+    let ms = t0.elapsed().as_secs_f64() * 1000.0;
     match result {
-        Ok(raw) => (
-            StatusCode::OK,
-            [(axum::http::header::CONTENT_TYPE, "application/json")],
-            format!(r#"{{"result":{raw}}}"#),
-        )
-            .into_response(),
-        Err(e) => refuse(&e),
+        Ok(raw) => {
+            tracing::debug!(
+                target: "odoo_kernel::http",
+                model = %req.model, method = %req.method, status = 200, bytes = raw.len(), ms,
+                "answered"
+            );
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                format!(r#"{{"result":{raw}}}"#),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::debug!(
+                target: "odoo_kernel::http",
+                model = %req.model,
+                method = %req.method,
+                status = status_of(&e).as_u16(),
+                kind = crate::error_kind(&e),
+                ms,
+                error = %format!("{e:#}"),
+                "refused"
+            );
+            refuse(&e)
+        }
     }
 }
 

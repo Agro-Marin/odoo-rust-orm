@@ -564,6 +564,32 @@ this by accident, because patching `borrow` takes effect on pools that
 already exist; the better design has an ordering dependency, and paying for
 it with a guard is the trade.
 
+## `db_host =` made the engine unable to open a single connection
+
+Measured 2026-09-11 against this workspace's own `p314o19m.conf`, whose
+`db_host` is empty: **every** borrow died with `invalid configuration: invalid
+number of ports` before it opened a socket, so the engine could not arm at all
+and the cursor-parity gate could not produce a leg.
+
+`_dsn_with_kwargs` concatenates the armed dsn with Odoo's own connection
+options, on the stated belief that "anything later in the string wins, as libpq
+resolves it". libpq does. **tokio-postgres does not**: it ACCUMULATES `host` and
+`port` and then requires the two counts to match. Odoo's `connection_info`
+carries a port and, when `db_host` is unset, no host — libpq falls back to
+`PGHOST` and the socket directory, which is exactly why the addon injects a host
+into the armed dsn and Odoo's half has none. One host, two ports, and the
+connector refuses.
+
+With `db_host` set both halves carry both keywords, the counts match by
+accident, and the identical code connects. That is why this survived: the
+defect is invisible on any configuration that names its host.
+
+The composition now resolves the duplicate itself rather than leaving it to a
+connector that resolves it differently, so each keyword reaches the connector
+once and the last value wins as the comment always claimed. Pinned by
+`test_the_composed_dsn_names_every_keyword_once`, which fails against the old
+composition with the two-port dsn in its message.
+
 ## PostGIS, and one class this transport cannot reach at all
 
 The same question asked of the other extension in this workspace's template.
@@ -1477,12 +1503,74 @@ grew without bound, and a database whose watermark never moves grew forever.
 Nothing is on by default. `RUSTORM_LOG` takes a standard `tracing` `EnvFilter`
 string; `POC_TRACE=1` remains an alias for `odoo_kernel::sql=debug`.
 
+```sh
+RUSTORM_LOG=odoo_kernel=debug          # every subsystem, one line per decision
+RUSTORM_LOG=odoo_kernel::scan=debug    # one subsystem
+RUSTORM_LOG=warn,odoo_kernel::refusal=debug,odoo_kernel::dispatch=debug   # why calls fall back
+RUSTORM_LOG=odoo_kernel=debug,odoo_kernel::domain=trace                   # + every leaf rewrite
+```
+
+**This surface is temporary.** It was widened in one pass to carry a code
+quality, performance and lifecycle campaign, and it comes out again when that
+campaign ends — see *Removing the campaign logging* below.
+
 | target | what it reports |
 |---|---|
-| `odoo_kernel::dispatch` | one span per request, then ok/refused with duration — and the **reason**, which is the line that explains a routing miss |
-| `odoo_kernel::sql` | statement, rows, params, whether it had to be prepared, ms |
-| `odoo_kernel::rules` | per-identity compile: models seen, restricted, refused, hierarchy queries, ms |
-| `odoo_kernel::signal` | a security refresh, or a registry bump refused |
+| `odoo_kernel::dispatch` | one span per request, the request shape, then ok/refused with duration — and the **reason**, which is the line that explains a routing miss |
+| `odoo_kernel::refusal` | every `refuse!`, with the **source line** that decided it. Aggregated over a corpus this is the capability backlog |
+| `odoo_kernel::access` | every `deny_access!`, same shape, plus the ACL and field-level grants at `trace` |
+| `odoo_kernel::sql` | statement, rows, params, whether it had to be prepared, prepare and execute ms, cache size |
+| `odoo_kernel::rules` | per-identity compile: models seen, restricted, refused, hierarchy queries, ms; per-model outcome and every rule-domain name hop at `trace` |
+| `odoo_kernel::signal` | a security refresh, a watermark stamp, or a registry bump refused |
+| `odoo_kernel::registry` | load and refresh phases with counts and ms, and the capability line of a model whose read path Python overrides |
+| `odoo_kernel::env` | identity resolution: uid, companies, groups, lang, and the two timezones that decide which day a bare date names |
+| `odoo_kernel::domain` | at `trace`, every leaf rewrite `optimize_leaf` performs — the layer where a wrong answer is decided |
+| `odoo_kernel::compile` | subquery construction, path normalisation, the trigram accelerator, `IN` vs `= ANY`, the company-dependent guard, the ORDER BY join chain |
+| `odoo_kernel::scan` | the column plan, and the per-phase ms of the main query, the many2one labels and each x2many |
+| `odoo_kernel::hierarchy` | `child_of` / `parent_of`: parent_path prefix match or a row-by-row walk, seeds, memo hits |
+| `odoo_kernel::cache` | prepared-statement and per-identity cache evictions |
+| `odoo_kernel::connect` | TLS mode, whether the host is authenticated, connect ms |
+| `odoo_kernel::pool` | (server) pool fill, waits, saturation, poisoning |
+| `odoo_kernel::http` | (server) one line per call with status, kind and ms |
+| `odoo_kernel::cursor` | (hybrid) **every statement Odoo's own Python ORM runs**, with the query/decode split |
+| `odoo_kernel::copy` | (hybrid) COPY streams: binary or text, rows |
+| `odoo_kernel::bridge` | (hybrid) kernel build, generation, staleness, GIL-detached ms per dispatch |
+| `odoo_kernel::export` | (hybrid) the live-registry export walk |
+
+Levels are used consistently: `info` is lifecycle, `debug` is one line per
+operation or decision, `trace` is per-item (per leaf, per name hop, per
+statement). A disabled callsite is an atomic load and a branch, and the field
+expressions are only evaluated once it is enabled — a benchmark with
+`RUSTORM_LOG` unset is indistinguishable from one built without any of it
+(p50 0.130 ms either way over 1,000 calls on base+mail).
+
+### The Python half
+
+`engine-py/python/` and `addons/rust_engine/` log through Odoo's own logger
+rather than `tracing`:
+
+| logger | what it reports |
+|---|---|
+| `odoo.rust_kernel.routing` | mode and sample changes, kernel build, fallbacks |
+| `odoo.rust_kernel.gate` | one line per call the gate turned away, with the reason. `GATE_REASONS` is the same thing aggregated; this says *which call* |
+| `odoo.rust_kernel.call` | one line per routed call: wire sizes, kernel ms, and the flush and cache-warm the shim does around it |
+| `odoo.rust_kernel.pool` | which DSNs are intercepted and which are delegated to psycopg, pool fill, fork handling, drains |
+| `odoo.addons.rust_engine` | arming, the connector DSN it built, the periodic routing report |
+
+### Removing the campaign logging
+
+The campaign surface is mechanically identifiable, which is the point:
+
+```sh
+grep -rn 'target: "odoo_kernel::' kernel/src server/src engine-py/src   # the rust half
+grep -rn '_gate_logger\|_call_logger' engine-py/python                 # the python half
+```
+
+Four of the targets predate the campaign and stay: `dispatch`, `sql`, `rules`,
+`signal`. The rest, and the `trace`-level events under the four, are the
+campaign's and come out with it. `odoo_kernel::refusal` and
+`odoo_kernel::access` are produced by the `refusal!` and `deny_access!` macros
+in `kernel/src/error.rs`, so removing them is two edits and not a sweep.
 
 The whole-registry sweep in `phase2_verify` runs at **every identity it can
 find** — admin, admin-superuser, and any other active user, preferring a share
@@ -1505,6 +1593,30 @@ In the hybrid these go into **Odoo's own logger** under
 logger. `eprintln!` to a worker's stderr reached no logfile and carried no
 level, which is why a refused model — i.e. a silent fallback to Python — used
 to be invisible in a running system.
+
+**Two switches, both have to be open.** `RUSTORM_LOG` decides what the kernel
+emits at all; the Odoo logger decides what is then printed. A kernel line goes
+missing when either is shut, and `RUSTORM_LOG` unset means `warn`:
+
+```sh
+RUSTORM_LOG=odoo_kernel=debug odoo-bin … --log-handler odoo.rust_kernel:DEBUG
+RUSTORM_LOG=odoo_kernel::domain=trace odoo-bin … --log-handler odoo.rust_kernel:TRACE
+```
+
+The bridge carries the **dispatch span** into the message, so an event from the
+compiler or the reader names the request it belongs to:
+
+```
+DEBUG odoo.rust_kernel.scan: [dispatch model=res.partner method=search_read uid=Some(Id(2)) su=false]
+      search_read plan model=res.partner columns=3 x2many=0 … rules_ms=1.455 cond_ms=0.072
+```
+
+`TRACE` is level 5, below Python's DEBUG. `addLevelName` alone does not make it
+selectable — `odoo/logutils.py` resolves a `--log-handler name:LEVEL` with
+`getattr(logging, LEVEL, logging.INFO)`, and it runs before any addon is
+imported, so `:TRACE` read as INFO. `rust_engine` registers the level and
+re-applies the entries that name it when it arms, which is what makes the line
+above work.
 
 ## The cursor's type layer
 

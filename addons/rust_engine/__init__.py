@@ -93,6 +93,11 @@ def _connection_specs(db_name):
     from odoo.db import get_connection_info_for_database
 
     _, info = get_connection_info_for_database(db_name)
+    _logger.debug(
+        "rust_engine: connection options for %s: %s",
+        db_name,
+        sorted(k for k in info if k != "password"),
+    )
     psycopg_info = dict(info)
     info = dict(info, options=_session_options(info))
     if "dsn" in info:
@@ -127,10 +132,35 @@ def _connection_specs(db_name):
             "connections it opens will not carry them",
             ", ".join(sorted(dropped)),
         )
-    return " ".join(parts), psycopg_info
+    dsn = " ".join(parts)
+    _logger.debug(
+        "rust_engine: rust connector dsn carries %s",
+        sorted(p.split("=", 1)[0] for p in parts if not p.startswith("password=")),
+    )
+    return dsn, psycopg_info
 
 
 DEFAULT_TICK = 60
+
+# The kernel logs below DEBUG, where Python has no level. `engine_py` registers
+# the name, but too late to be selected: Odoo resolves a `--log-handler
+# name:LEVEL` with `getattr(logging, LEVEL, logging.INFO)` in `odoo/logutils.py`
+# and runs that before any addon is imported, so `:TRACE` read as INFO and the
+# finest level was unreachable from the command line.
+TRACE_LEVEL = 5
+
+
+def _open_trace_level() -> None:
+    logging.addLevelName(TRACE_LEVEL, "TRACE")
+    logging.TRACE = TRACE_LEVEL
+    from odoo.tools import config
+
+    for item in config.get("log_handler") or ():
+        name, _, level = str(item).strip().partition(":")
+        if level.strip().upper() == "TRACE":
+            logging.getLogger(name).setLevel(TRACE_LEVEL)
+            _logger.debug("rust_engine: opened %r at TRACE", name)
+
 
 PARAM_MODE = "rust_engine.mode"
 # a model that raised this many unexpected kernel errors is served from Python
@@ -160,6 +190,8 @@ def _read_params():
     conn = _switch_connection()
     try:
         with conn.cursor() as cur:
+            # read over a private psycopg connection, never the rust cursor:
+            # the kill switch has to work when the engine itself is the problem
             cur.execute(
                 "SELECT key, value FROM ir_config_parameter WHERE key = ANY(%s)",
                 ([PARAM_MODE, PARAM_SAMPLE],),
@@ -222,13 +254,26 @@ def _report(orm_shim, final=False) -> None:
         snap.get("quarantined") or "-",
         snap.get("registry_stale", 0),
     )
+    # The eight commonest reasons a call was NOT routed. Each distinct reason
+    # is one capability to widen; `odoo.rust_kernel.gate` at DEBUG names the
+    # individual calls behind each count.
     for (model, method, reason), n in snap.get("gate_reasons", ()):
         _logger.info("rust kernel gate: %5d  %s.%s: %s", n, model, method, reason)
+    for model, msg in sorted(snap.get("errors", {}).items()):
+        _logger.debug("rust kernel first error on %s: %s", model, msg)
 
 
 def _start_reporter(orm_shim, seconds) -> None:
     if seconds <= 0:
+        _logger.debug(
+            "rust_engine: rust_engine_report_seconds is %r; no periodic report", seconds
+        )
         return
+    _logger.debug(
+        "rust_engine: reporting routing stats every %d s in pid %d",
+        seconds,
+        os.getpid(),
+    )
 
     def tick() -> None:
         while True:
@@ -253,14 +298,22 @@ def _build_kernel(registry):
     import engine_py
 
     orm_shim = _STATE["shims"][1]
+    started = time.monotonic()
     export = engine_py.export_registry(registry)
+    export_ms = (time.monotonic() - started) * 1000
     kernel = engine_py.RustKernel.build(_STATE["rust_db"], export)
     orm_shim.DBNAME = _STATE["db"]
+    # This runs once per worker, on the first registry load: a slow startup
+    # after arming is one of these two halves, and they have different fixes.
     _logger.info(
-        "rust kernel ready for %s: %d models, routing mode %r",
+        "rust kernel ready for %s: %d models, routing mode %r "
+        "(export %.0f ms, build %.0f ms, pid %d)",
         _STATE["db"],
         kernel.model_count,
         orm_shim.MODE,
+        export_ms,
+        (time.monotonic() - started) * 1000 - export_ms,
+        os.getpid(),
     )
     _report_here()
     return kernel
@@ -353,6 +406,7 @@ def _apply_config(orm_shim, config) -> None:
 def start() -> None:
     from odoo.tools import config
 
+    _open_trace_level()
     db_name = config.get("rust_engine_db")
     if not db_name:
         _logger.info(
@@ -431,4 +485,17 @@ def start() -> None:
             "that database's registry loads",
             db_name,
             orm_shim.MODE,
+        )
+        # What the engine will and will not route, before any call arrives.
+        # `RUSTORM_LOG` is read by the rust side and is independent of Odoo's
+        # own --log-handler: both have to be open for a kernel line to print.
+        _logger.debug(
+            "rust_engine: sample=%s breaker=%s only=%s except=%s capture=%s "
+            "RUSTORM_LOG=%r",
+            orm_shim.SAMPLE,
+            orm_shim.BREAKER,
+            sorted(orm_shim.ONLY) or "-",
+            sorted(orm_shim.EXCEPT) or "-",
+            capture_path or "-",
+            os.environ.get("RUSTORM_LOG", "") or "warn (default)",
         )

@@ -78,6 +78,16 @@ impl Dsn {
     }
 
     pub fn tls(&self) -> Result<Option<tokio_postgres_rustls::MakeRustlsConnect>> {
+        // `require` encrypts without checking who answered; only verify-full
+        // authenticates the server. Which one a connection got is not
+        // recoverable afterwards, so it is logged where it is decided.
+        tracing::debug!(
+            target: "odoo_kernel::connect",
+            mode = ?self.mode,
+            root_cert = self.root_cert.as_deref().unwrap_or("-"),
+            verifies_host = self.mode == SslMode::VerifyFull,
+            "building the TLS connector"
+        );
         if self.mode == SslMode::Disable {
             return Ok(None);
         }
@@ -161,10 +171,24 @@ impl rustls::client::danger::ServerCertVerifier for EncryptOnly {
 }
 
 pub async fn connect(dsn: &str) -> Result<Client> {
+    let t0 = std::time::Instant::now();
     let parsed = Dsn::parse(dsn)?;
-    match parsed.tls()? {
+    let tls = parsed.tls()?;
+    let encrypted = tls.is_some();
+    let opened = |t0: std::time::Instant| {
+        tracing::debug!(
+            target: "odoo_kernel::connect",
+            dbname = parsed.config.get_dbname().unwrap_or("-"),
+            user = parsed.config.get_user().unwrap_or("-"),
+            encrypted,
+            ms = t0.elapsed().as_secs_f64() * 1000.0,
+            "opened a postgres connection"
+        );
+    };
+    match tls {
         None => {
             let (client, conn) = parsed.config.connect(tokio_postgres::NoTls).await?;
+            opened(t0);
             tokio::spawn(async move {
                 if let Err(e) = conn.await {
                     tracing::error!(error = %e, "postgres connection dropped");
@@ -174,6 +198,7 @@ pub async fn connect(dsn: &str) -> Result<Client> {
         }
         Some(tls) => {
             let (client, conn) = parsed.config.connect(tls).await?;
+            opened(t0);
             tokio::spawn(async move {
                 if let Err(e) = conn.await {
                     tracing::error!(error = %e, "postgres connection dropped");
@@ -185,7 +210,19 @@ pub async fn connect(dsn: &str) -> Result<Client> {
 }
 
 pub async fn cancel(token: CancelToken, dsn: &str) {
-    let Ok(parsed) = Dsn::parse(dsn) else { return };
+    // a cancel opens a SECOND connection to ask the server to stop the first;
+    // it is best-effort and its failure is invisible without this line
+    tracing::debug!(
+        target: "odoo_kernel::connect",
+        "cancelling the query on a poisoned connection"
+    );
+    let Ok(parsed) = Dsn::parse(dsn) else {
+        tracing::warn!(
+            target: "odoo_kernel::connect",
+            "cannot cancel: the dsn no longer parses"
+        );
+        return;
+    };
     match parsed.tls() {
         Ok(Some(tls)) => {
             let _ = token.cancel_query(tls).await;

@@ -66,8 +66,25 @@ const MAX_IDENTITIES: usize = 512;
 
 impl Caches {
     pub async fn clear(&self) {
-        self.rule_cache.lock().await.clear();
-        self.env_cache.lock().await.clear();
+        let rules = {
+            let mut guard = self.rule_cache.lock().await;
+            let n = guard.len();
+            guard.clear();
+            n
+        };
+        let envs = {
+            let mut guard = self.env_cache.lock().await;
+            let n = guard.len();
+            guard.clear();
+            n
+        };
+        if rules + envs > 0 {
+            tracing::debug!(
+                target: "odoo_kernel::cache",
+                cache = "identity", rules, envs,
+                "cleared the per-identity rule and environment caches"
+            );
+        }
     }
 
     async fn evict(&self, current: &crate::registry::Signals) {
@@ -85,10 +102,16 @@ impl Caches {
         }
         let mut envs = self.env_cache.lock().await;
         if envs.len() > MAX_IDENTITIES {
+            let before = envs.len();
             envs.retain(|(_, sig), _| sig == current);
             if envs.len() > MAX_IDENTITIES {
                 envs.clear();
             }
+            tracing::info!(
+                target: "odoo_kernel::cache",
+                cache = "env", before, after = envs.len(), max = MAX_IDENTITIES,
+                "evicted cached environments"
+            );
         }
     }
 }
@@ -223,11 +246,20 @@ impl<'a> Orm<'a> {
 
     async fn check_signaling(&self) -> Result<Arc<crate::registry::Dynamic>> {
         let Some(sql) = self.registry.signals_sql() else {
+            tracing::trace!(
+                target: "odoo_kernel::signal",
+                "no signalling tables on this database; the snapshot cannot be checked"
+            );
             return Ok(self.registry.dynamic());
         };
         let rows = self.db.query(sql, &[]).await?;
         let signals = Registry::signals_of(&rows[0]);
         let current = self.registry.dynamic();
+        tracing::trace!(
+            target: "odoo_kernel::signal",
+            db = ?signals, local = ?current.signals,
+            "compared the database watermark with this snapshot's"
+        );
         if self.registry.snapshot_precedes(&signals, &current.signals) {
             refuse!("the request snapshot predates this kernel's registry or security metadata");
         }
@@ -318,6 +350,10 @@ impl<'a> Orm<'a> {
         };
         let env_key = (uid, self.registry.security_signals(&dynamic.signals));
         let cached = { self.caches.env_cache.lock().await.get(&env_key).cloned() };
+        tracing::trace!(
+            target: "odoo_kernel::env",
+            uid, hit = cached.is_some(), "environment cache lookup"
+        );
         let (default_company_id, user_company_ids, groups, user_tz) = match cached {
             Some(v) => v,
             None => {
@@ -361,6 +397,11 @@ impl<'a> Orm<'a> {
                 {
                     deny_access!("access denied: uid {uid} is not allowed in company {bad}");
                 }
+                tracing::trace!(
+                    target: "odoo_kernel::env",
+                    uid, requested = ?allowed, of = ?user_company_ids,
+                    "the request pins allowed_company_ids; the first is the active company"
+                );
                 (allowed[0], allowed.to_vec())
             }
         };
@@ -376,6 +417,26 @@ impl<'a> Orm<'a> {
         let comparand_tz = request_tz
             .or(user_tz.as_deref())
             .and_then(|t| self.registry.resolve_timezone(t));
+        // A bare date in a domain names a day in `comparand_tz` and a
+        // read_group granularity reads the context tz only: the two zones
+        // differ on purpose, and a wrong answer here moves rows between
+        // days rather than erroring, so both are on the line
+        tracing::debug!(
+            target: "odoo_kernel::env",
+            uid,
+            su = req.su,
+            %lang,
+            company_id,
+            companies = ?company_ids,
+            groups = groups.len(),
+            active_test = req.active_test.unwrap_or(true),
+            x2many_active_test = req.x2many_active_test.unwrap_or(true),
+            request_tz = ?request_tz,
+            user_tz = ?user_tz,
+            comparand_tz = ?comparand_tz,
+            week_start = ?week_start,
+            "resolved the request environment"
+        );
         Ok(Env {
             uid,
             su: req.su,
@@ -398,12 +459,21 @@ impl<'a> Orm<'a> {
 
     pub(crate) async fn uid_rules(&self, req: &Request, env: &Env) -> Result<Arc<RuleSet>> {
         if env.su {
+            tracing::trace!(
+                target: "odoo_kernel::rules",
+                uid = env.uid, "superuser: no record rules apply"
+            );
             return Ok(Arc::new(RuleSet::default()));
         }
 
         let mut seeds = self.reachable_seeds(req, env)?;
         seeds.sort();
         seeds.dedup();
+        tracing::trace!(
+            target: "odoo_kernel::rules",
+            uid = env.uid, count = seeds.len(), models = ?seeds,
+            "models the request can reach; each one's rules must be compiled"
+        );
         let security_signals = self.registry.security_signals(&env.dynamic.signals);
         let key = RuleKey {
             uid: env.uid,
@@ -419,9 +489,23 @@ impl<'a> Orm<'a> {
         if seeds.is_empty()
             && let Some(cached) = base
         {
-            tracing::trace!(target: "odoo_kernel::rules", uid = env.uid, "rule cache hit");
+            tracing::trace!(
+                target: "odoo_kernel::rules",
+                uid = env.uid,
+                company_id = env.company_id,
+                compiled = cached.compiled_models().count(),
+                "rule cache hit: every reachable model is already compiled for this identity"
+            );
             return Ok(cached);
         }
+        tracing::debug!(
+            target: "odoo_kernel::rules",
+            uid = env.uid,
+            company_id = env.company_id,
+            reused = base.is_some(),
+            to_compile = seeds.len(),
+            "compiling record rules"
+        );
         let user = UserCtx {
             uid: env.uid,
             company_id: env.company_id,
@@ -470,14 +554,30 @@ impl<'a> Orm<'a> {
                 };
             match built {
                 Ok(Some(node)) => {
-                    for co in self.comodels_of_with(&ctx, model, &node) {
+                    // a rule domain can name a comodel the request never
+                    // mentioned; that comodel's own rules have to be
+                    // compiled too, which is what widens the walk
+                    let reached = self.comodels_of_with(&ctx, model, &node);
+                    tracing::trace!(
+                        target: "odoo_kernel::rules",
+                        uid = env.uid, model = %model_name, comodels = ?reached,
+                        "model is restricted; its rule domain reaches these comodels"
+                    );
+                    for co in reached {
                         if seen.insert(co.clone()) {
                             pending.push(co);
                         }
                     }
                     rules.insert(model_name, node)
                 }
-                Ok(None) => rules.mark_unrestricted(model_name),
+                Ok(None) => {
+                    tracing::trace!(
+                        target: "odoo_kernel::rules",
+                        uid = env.uid, model = %model_name,
+                        "no record rule applies to this identity"
+                    );
+                    rules.mark_unrestricted(model_name)
+                }
                 Err(e) if e.downcast_ref::<tokio_postgres::Error>().is_some() => return Err(e),
                 Err(e) => rules.mark_unevaluated(model_name, format!("{e:#}")),
             }
@@ -511,6 +611,11 @@ impl<'a> Orm<'a> {
     fn reachable_seeds(&self, req: &Request, env: &Env) -> Result<Vec<String>> {
         let mut out = vec![req.model.clone()];
         let Ok(model) = self.registry.get(&req.model) else {
+            tracing::trace!(
+                target: "odoo_kernel::rules",
+                model = %req.model,
+                "not in the registry; the reachability walk stops at the request's own model"
+            );
             return Ok(out);
         };
         let ctx = self.ctx(env);
@@ -536,7 +641,7 @@ impl<'a> Orm<'a> {
             Json::Null => &empty,
             _ => &req.domain,
         };
-        if let Ok(node) = crate::domain::parse(domain) {
+        if let Some(node) = crate::domain::parse_nested(domain) {
             out.extend(self.comodels_of_with(&ctx, model, &node));
         }
         Ok(out)
@@ -568,7 +673,7 @@ impl<'a> Orm<'a> {
             }
 
             if let Some(last) = out.last()
-                && let (Ok(co), Ok(sub)) = (self.registry.get(last), domain::parse(&value))
+                && let (Ok(co), Some(sub)) = (self.registry.get(last), domain::parse_nested(&value))
                 && !matches!(sub, domain::Node::True)
             {
                 out.extend(self.comodels_of_with(ctx, co, &sub));
@@ -641,6 +746,17 @@ impl<'a> Orm<'a> {
             sea_query::PostgresQueryBuilder,
         );
         let rows = self.db.query(&sql, &values.as_params()).await?;
+        // a hierarchy seeded by NAME resolves to ids first; how many it found
+        // decides the size of the membership the caller then compiles
+        tracing::debug!(
+            target: "odoo_kernel::hierarchy",
+            target = %target.name,
+            names = names.len(),
+            id_seeds = id_seeds.len(),
+            active_filter,
+            found = rows.len(),
+            "resolved hierarchy seeds by display name"
+        );
         Ok(rows.iter().map(|r| r.get::<_, i32>(0)).collect())
     }
 
@@ -760,8 +876,26 @@ impl<'a> Orm<'a> {
                         down,
                         seeds.clone(),
                     );
+                    tracing::debug!(
+                        target: "odoo_kernel::hierarchy",
+                        %op,
+                        field = %fname,
+                        target = %target_model.name,
+                        link = %parent_link,
+                        seeds = seeds.len(),
+                        seeded_by_name = !names.is_empty(),
+                        key_field = %key_field,
+                        "resolving a hierarchy leaf"
+                    );
                     let terms = match memo.get(&key) {
-                        Some(hit) => hit.clone(),
+                        Some(hit) => {
+                            tracing::trace!(
+                                target: "odoo_kernel::hierarchy",
+                                %op, target = %target_model.name,
+                                "memo hit: the same hierarchy was already walked for this request"
+                            );
+                            hit.clone()
+                        }
                         None => {
                             let terms =
                                 if down && self.can_use_parent_path(target_model, &parent_link) {
@@ -769,6 +903,13 @@ impl<'a> Orm<'a> {
                                     // the query rather than materialising every descendant
                                     let prefixes =
                                         self.parent_path_prefixes(target_model, &seeds).await?;
+                                    tracing::debug!(
+                                        target: "odoo_kernel::hierarchy",
+                                        target = %target_model.name,
+                                        prefixes = prefixes.len(),
+                                        "using parent_path: the descendants stay a prefix match \
+                                         in the query instead of being materialised"
+                                    );
                                     let leaves: Vec<Json> = prefixes
                                         .iter()
                                         .map(|p| json!(["parent_path", "=like", p]))
@@ -785,6 +926,16 @@ impl<'a> Orm<'a> {
                                     } else {
                                         self.ancestors(target_model, &parent_link, &seeds).await?
                                     };
+                                    // no parent_path to prefix-match, so the
+                                    // whole closure is materialised as an id
+                                    // list -- the row count here is the cost
+                                    tracing::debug!(
+                                        target: "odoo_kernel::hierarchy",
+                                        target = %target_model.name,
+                                        direction = if down { "descendants" } else { "ancestors" },
+                                        resolved = ids.len(),
+                                        "walked the hierarchy row by row"
+                                    );
                                     vec![json!([key_field, "in", ids])]
                                 };
                             memo.insert(key, terms.clone());
@@ -858,7 +1009,9 @@ impl<'a> Orm<'a> {
 
         let mut all: BTreeSet<i32> = seeds.iter().copied().collect();
         let mut frontier: Vec<i32> = seeds.to_vec();
+        let mut rounds = 0usize;
         while !frontier.is_empty() {
+            rounds += 1;
             let rows = self
                 .db
                 .query(
@@ -876,6 +1029,14 @@ impl<'a> Orm<'a> {
                 .filter(|id| all.insert(*id))
                 .collect();
         }
+        // one query per level of the tree: a deep hierarchy is round trips,
+        // which is the argument for parent_store on the model
+        tracing::debug!(
+            target: "odoo_kernel::hierarchy",
+            model = %model.name, link = %parent_link,
+            seeds = seeds.len(), total = all.len(), rounds,
+            "materialised the descendants one level at a time"
+        );
         Ok(all.into_iter().map(|i| i as i64).collect())
     }
 
@@ -904,6 +1065,11 @@ impl<'a> Orm<'a> {
                     }
                 }
             }
+            tracing::debug!(
+                target: "odoo_kernel::hierarchy",
+                model = %model.name, seeds = seeds.len(), total = ids.len(),
+                "read the ancestors out of parent_path in one query"
+            );
             return Ok(ids.into_iter().collect());
         }
         let mut all: BTreeSet<i32> = seeds.iter().copied().collect();
@@ -932,22 +1098,55 @@ impl<'a> Orm<'a> {
     pub async fn dispatch(&self, req: &Request) -> Result<String> {
         let span = tracing::info_span!(
             "dispatch",
+            id = req.id.as_deref().unwrap_or("-"),
             model = %req.model,
             method = %req.method,
             uid = ?req.uid,
             su = req.su,
         );
+        {
+            let _guard = span.enter();
+            tracing::debug!(
+                target: "odoo_kernel::dispatch",
+                domain = %req.domain,
+                fields = ?req.fields,
+                groupby = %req.groupby,
+                aggregates = ?req.aggregates,
+                limit = ?req.limit,
+                offset = ?req.offset,
+                order = ?req.order,
+                lang = ?req.lang,
+                companies = ?req.allowed_company_ids,
+                active_test = ?req.active_test,
+                tz = ?req.tz,
+                "request"
+            );
+        }
         let t0 = std::time::Instant::now();
         let out = self.dispatch_inner(req).instrument(span.clone()).await;
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         let _guard = span.enter();
         match &out {
             Ok(raw) => {
-                tracing::debug!(target: "odoo_kernel::dispatch", ms, bytes = raw.len(), "ok")
+                tracing::debug!(
+                    target: "odoo_kernel::dispatch",
+                    ms,
+                    bytes = raw.len(),
+                    prepared = self.db.stmts.len(),
+                    "ok"
+                )
             }
 
+            // The reason a routed call fell back to Python. Aggregated over a
+            // corpus this is the backlog: each distinct reason is one
+            // capability the kernel does not have, and `odoo_kernel::refusal`
+            // carries the source line that produced it.
             Err(e) => tracing::info!(
-                target: "odoo_kernel::dispatch", ms, reason = %format!("{e:#}"), "refused"
+                target: "odoo_kernel::dispatch",
+                ms,
+                kind = ?crate::error::ErrorKind::of(e),
+                reason = %format!("{e:#}"),
+                "refused"
             ),
         }
         out
@@ -958,6 +1157,10 @@ impl<'a> Orm<'a> {
             .client
             .batch_execute("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .await?;
+        tracing::trace!(
+            target: "odoo_kernel::sql",
+            "opened a REPEATABLE READ READ ONLY transaction for this dispatch"
+        );
         let out = self.dispatch(req).await;
 
         let end = if out.is_ok() { "COMMIT" } else { "ROLLBACK" };
@@ -969,15 +1172,29 @@ impl<'a> Orm<'a> {
 
     async fn dispatch_inner(&self, req: &Request) -> Result<String> {
         Self::validate_shape(req)?;
+        let t_signal = std::time::Instant::now();
         let dynamic = self.check_signaling().await?;
+        let signal_ms = t_signal.elapsed().as_secs_f64() * 1000.0;
+        let t_env = std::time::Instant::now();
         let env = self.build_env(req, dynamic).await?;
+        tracing::trace!(
+            target: "odoo_kernel::dispatch",
+            signal_ms,
+            env_ms = t_env.elapsed().as_secs_f64() * 1000.0,
+            "preamble"
+        );
 
         // `_search` checks the ACL before anything else, so a denial on a model
         // the kernel cannot serve is still reported as the denial Python gives
         if !env.su {
             security::check_read_access(&env.dynamic, &req.model, env.uid, &env.groups)?;
         }
-        if let Some(over) = self.registry.get(&req.model)?.overridden_for(&req.method) {
+        let model = self.registry.get(&req.model)?;
+        if let Some(over) = model.overridden_for(&req.method) {
+            // the one refusal worth the model's whole capability line: which
+            // of its read paths are pure decides what a future session has to
+            // reimplement to route it
+            self.registry.log_model_capabilities(model);
             refuse!(
                 "{} overrides the read path in Python ({over}); the kernel cannot \
                  reproduce it from the columns",
@@ -993,6 +1210,10 @@ impl<'a> Orm<'a> {
     }
 
     fn validate_shape(req: &Request) -> Result<()> {
+        tracing::trace!(
+            target: "odoo_kernel::dispatch",
+            method = %req.method, "validating the request shape"
+        );
         let unsupported = |name: &str| -> Result<()> {
             refuse!(
                 "{} does not support `{name}`; refusing rather than ignoring it",
@@ -1101,30 +1322,49 @@ impl<'a> Orm<'a> {
 
         let mut memo: HierMemo = HashMap::new();
         let ctx = self.ctx(env);
+        let t0 = std::time::Instant::now();
         domain::reject_internal_operators(&domain::parse(domain_json)?)?;
         let resolved = self
             .resolve_hierarchy(&ctx, model, domain_json, &mut memo, Some((rules, env.su)))
             .await?;
+        let hierarchy_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let node = domain::parse(&resolved)?;
 
+        let t_compile = std::time::Instant::now();
         let compiler = Compiler::root(&ctx, model, rules, env.su);
         let mut cond = Cond::all().add(compiler.compile(&node)?);
 
+        let mut implicit_active = false;
         if let Some(active_name) = model.active_name.as_deref()
             && env.active_test
         {
             let mut referenced = Vec::new();
             domain::referenced_fields(&node, &mut referenced);
+            // Odoo adds the active clause only when the domain does not name
+            // the field itself; a domain that does opts out of active_test
             if !referenced.iter().any(|f| f == active_name) {
+                implicit_active = true;
                 cond = cond.add(col(&model.table, active_name).is_in([true]));
             }
         }
+        let mut rule_applied = false;
         if !env.su {
             rules.ensure_evaluated(&model.name)?;
             if let Some(rule_node) = rules.get(&model.name) {
+                rule_applied = true;
                 cond = cond.add(compiler.compile_rules(rule_node)?);
             }
         }
+        tracing::debug!(
+            target: "odoo_kernel::compile",
+            model = %model.name,
+            hierarchy_ms,
+            hierarchy_queries = memo.len(),
+            compile_ms = t_compile.elapsed().as_secs_f64() * 1000.0,
+            implicit_active,
+            rule_applied,
+            "built the WHERE condition"
+        );
         Ok(cond)
     }
 }

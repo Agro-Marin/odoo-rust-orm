@@ -227,6 +227,13 @@ impl<'a> Orm<'a> {
 
     fn check_field_access(&self, field: &Field, env: &Env) -> Result<()> {
         if env.su || self.registry.field_readable(field, &env.groups) {
+            tracing::trace!(
+                target: "odoo_kernel::access",
+                uid = env.uid,
+                field = %field.name,
+                groups = field.groups.as_deref().unwrap_or("-"),
+                "field is readable by this identity"
+            );
             return Ok(());
         }
         deny_access!(
@@ -242,10 +249,14 @@ impl<'a> Orm<'a> {
         let (model_name, domain_json, fields) = (&req.model, &req.domain, &req.fields[..]);
         let (offset, limit, order) = (req.offset.unwrap_or(0), req.limit, req.order.as_deref());
         let model = self.registry.get(model_name)?;
+        let t_rules = std::time::Instant::now();
         let rules = self.uid_rules(req, env).await?;
+        let rules_ms = t_rules.elapsed().as_secs_f64() * 1000.0;
+        let t_cond = std::time::Instant::now();
         let cond = self
             .build_condition(model, domain_json, env, &rules)
             .await?;
+        let cond_ms = t_cond.elapsed().as_secs_f64() * 1000.0;
         let ctx = self.ctx(env);
 
         let mut sel_fields: Vec<&Field> = Vec::new();
@@ -318,8 +329,28 @@ impl<'a> Orm<'a> {
             select.offset(offset);
         }
 
+        // The column plan: how many columns come out of the main SELECT, and
+        // how many fields need a round trip of their own afterwards. An x2many
+        // is one extra query each and a many2one label one per comodel, so
+        // this is the shape a slow search_read is explained by.
+        tracing::debug!(
+            target: "odoo_kernel::scan",
+            model = %model_name,
+            columns = kinds.len(),
+            x2many = x2many.len(),
+            display_name = display_name_from.is_some(),
+            translation_guard = guard_col.is_some(),
+            ?limit,
+            offset,
+            order = order.unwrap_or(&model.order),
+            rules_ms,
+            cond_ms,
+            "search_read plan"
+        );
+        let t_main = std::time::Instant::now();
         let (sql, values) = select.build_postgres(PostgresQueryBuilder);
         let rows = self.db.query(&sql, &values.as_params()).await?;
+        let main_ms = t_main.elapsed().as_secs_f64() * 1000.0;
 
         let mut cells: Vec<Vec<Json>> = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -353,11 +384,20 @@ impl<'a> Orm<'a> {
                 m2o_columns.entry(comodel.clone()).or_default().push(fi + 1);
             }
         }
+        let t_labels = std::time::Instant::now();
+        let comodels_labelled = m2o_columns.len();
         for (comodel, columns) in m2o_columns {
             let ids: BTreeSet<i64> = cells
                 .iter()
                 .flat_map(|r| columns.iter().filter_map(|ci| r[*ci].as_i64()))
                 .collect();
+            // one query per comodel, not per row: the distinct-id count is
+            // what the label query actually costs
+            tracing::trace!(
+                target: "odoo_kernel::scan",
+                %comodel, columns = columns.len(), distinct_ids = ids.len(),
+                "resolving many2one labels"
+            );
             let names = self.display_names(&comodel, &ids, env, &rules).await?;
             for rec in &mut cells {
                 for ci in &columns {
@@ -371,6 +411,9 @@ impl<'a> Orm<'a> {
             }
         }
 
+        let labels_ms = t_labels.elapsed().as_secs_f64() * 1000.0;
+
+        let t_x2many = std::time::Instant::now();
         let parent_ids: Vec<i64> = cells.iter().filter_map(|r| r[0].as_i64()).collect();
         for f in &x2many {
             let by_parent = self.x2many_ids(model, f, &parent_ids, env, &rules).await?;
@@ -380,11 +423,24 @@ impl<'a> Orm<'a> {
             }
         }
 
+        let x2many_ms = t_x2many.elapsed().as_secs_f64() * 1000.0;
+
         let names: Vec<&str> = kinds
             .iter()
             .map(|k| k.0.as_str())
             .chain(x2many.iter().map(|f| f.name.as_str()))
             .collect();
+        tracing::debug!(
+            target: "odoo_kernel::scan",
+            model = %model_name,
+            rows = cells.len(),
+            main_ms,
+            labels_ms,
+            comodels_labelled,
+            x2many_ms,
+            x2many_queries = x2many.len(),
+            "search_read read"
+        );
         records_to_json(&names, &cells)
     }
 
@@ -400,6 +456,15 @@ impl<'a> Orm<'a> {
             return Ok(out);
         }
         let comodel = self.registry.get(comodel_name)?;
+        tracing::trace!(
+            target: "odoo_kernel::scan",
+            comodel = %comodel_name,
+            ids = ids.len(),
+            access_pure = comodel.display_name_access_pure,
+            rec_name = ?comodel.rec_name,
+            columns = ?comodel.display_name_column,
+            "rendering display names"
+        );
         if !comodel.display_name_default {
             refuse!(
                 "{comodel_name} computes display_name in Python; the kernel \
@@ -477,6 +542,13 @@ impl<'a> Orm<'a> {
         if !env.su && !comodel.display_name_access_pure && out.len() < ids.len() {
             return Err(widened());
         }
+        // fewer names than ids means the record rules hid some corecords;
+        // whether Odoo would still show their names is what display_name_access_pure records
+        tracing::trace!(
+            target: "odoo_kernel::scan",
+            comodel = %comodel_name, asked = ids.len(), rendered = out.len(),
+            "display names read"
+        );
         Ok(out)
     }
 
@@ -568,13 +640,27 @@ impl<'a> Orm<'a> {
             _ => unreachable!(),
         }
         let (sql, values) = select.build_postgres(PostgresQueryBuilder);
+        let mut members = 0usize;
         for row in self.db.query(&sql, &values.as_params()).await? {
             let parent: Option<i32> = row.get(0);
             let id: i32 = row.get(1);
             if let Some(p) = parent {
                 out.entry(p as i64).or_default().push(id as i64);
+                members += 1;
             }
         }
+        // one query for every parent at once, ordered by the comodel's _order:
+        // the member count is what the field costs to answer
+        tracing::debug!(
+            target: "odoo_kernel::scan",
+            model = %owner.name,
+            field = %field.name,
+            kind = ?field.ttype,
+            comodel = %comodel.name,
+            parents = parent_ids.len(),
+            members,
+            "read an x2many through its relation"
+        );
         Ok(out)
     }
 
@@ -585,6 +671,13 @@ impl<'a> Orm<'a> {
         let cond = self
             .build_condition(model, domain_json, env, &rules)
             .await?;
+        // a limited count is COUNT(*) over a capped subquery, which stops the
+        // scan early; an unlimited one counts every matching row
+        tracing::debug!(
+            target: "odoo_kernel::scan",
+            model = %model_name, ?limit, capped = limit.is_some(),
+            "search_count plan"
+        );
         let mut select = Query::select();
         select.from(Alias::new(&model.table)).cond_where(cond);
         match limit {
@@ -625,6 +718,17 @@ impl<'a> Orm<'a> {
             .build_condition(model, domain_json, env, &rules)
             .await?;
         let ctx = self.ctx(env);
+        tracing::debug!(
+            target: "odoo_kernel::scan",
+            model = %model_name,
+            groupby = ?groupby,
+            aggregates = ?aggregates,
+            labels,
+            ?limit,
+            offset,
+            order = ?req.order,
+            "read_group plan"
+        );
 
         struct GbSpec<'f> {
             field: &'f Field,
@@ -820,6 +924,15 @@ impl<'a> Orm<'a> {
                     .and_then(|c| self.registry.get(c).ok())
                     .is_some_and(|c| c.order.trim() != "id");
             if traverse_many2one && gb.granularity.is_none() && comodel_ordered {
+                // ordering a many2one group by the COMODEL's _order rather
+                // than by its id: the join it needs is wrapped in ANY_VALUE
+                // so it survives the GROUP BY
+                tracing::debug!(
+                    target: "odoo_kernel::scan",
+                    model = %model_name,
+                    field = %gb.field.name,
+                    "ordering a many2one groupby through its comodel's own order"
+                );
                 let mut term = gb.field.name.clone();
                 if desc {
                     term.push_str(" desc");
@@ -872,8 +985,22 @@ impl<'a> Orm<'a> {
             select.offset(offset);
         }
 
+        let t_main = std::time::Instant::now();
         let (sql, values) = select.build_postgres(PostgresQueryBuilder);
         let rows = self.db.query(&sql, &values.as_params()).await?;
+        // `hidden_columns` are the ones only the ORDER BY needs -- a __count
+        // nobody asked for, a day_of_week rotation -- and they are grouped by
+        // as well, which is what keeps the group set the same as Odoo's
+        tracing::debug!(
+            target: "odoo_kernel::scan",
+            model = %model_name,
+            groups = rows.len(),
+            group_columns = gbs.len(),
+            aggregate_columns = agg_kinds.len(),
+            hidden_columns,
+            ms = t_main.elapsed().as_secs_f64() * 1000.0,
+            "read_group aggregated"
+        );
 
         let mut result: Vec<Vec<Json>> = Vec::new();
         for row in &rows {
@@ -933,10 +1060,13 @@ impl<'a> Orm<'a> {
         }
 
         if labels {
+            let t_labels = std::time::Instant::now();
+            let mut labelled = 0usize;
             for (i, gb) in gbs.iter().enumerate() {
                 if gb.field.ttype != FieldType::Many2one || !gb.field.has_column {
                     continue;
                 }
+                labelled += 1;
                 let comodel = gb.field.comodel()?;
                 let pure = self
                     .registry
@@ -965,6 +1095,15 @@ impl<'a> Orm<'a> {
                     };
                     r[i] = json!([id, name]);
                 }
+            }
+            if labelled > 0 {
+                tracing::debug!(
+                    target: "odoo_kernel::scan",
+                    model = %model_name,
+                    many2one_groupbys = labelled,
+                    ms = t_labels.elapsed().as_secs_f64() * 1000.0,
+                    "rendered the display name of each many2one group key"
+                );
             }
         }
 

@@ -194,13 +194,25 @@ fn init_logging() {
     } else {
         "warn"
     };
+    let requested = std::env::var("RUSTORM_LOG").ok().filter(|v| !v.is_empty());
     let filter = tracing_subscriber::EnvFilter::try_from_env("RUSTORM_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default));
+    let effective = filter.to_string();
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .with_target(true)
         .try_init();
+    // `RUSTORM_LOG=odoo_kernel=debug` turns on every kernel target at once;
+    // one target at a time is `odoo_kernel::scan=debug`. Saying which filter
+    // is live is what stops a session concluding "nothing happened" from a
+    // filter that was never in effect.
+    tracing::debug!(
+        target: "odoo_kernel::http",
+        filter = %effective,
+        from_env = requested.is_some(),
+        "logging initialised"
+    );
 }
 
 #[tokio::main]

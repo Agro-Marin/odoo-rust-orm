@@ -23,6 +23,12 @@ pub fn parse(domain: &Json) -> Result<Node> {
     let Json::Array(items) = domain else {
         refuse!("domain must be a JSON array, got {domain}");
     };
+    tracing::trace!(
+        target: "odoo_kernel::domain",
+        terms = items.len(),
+        domain = %domain,
+        "parsing a prefix-notation domain"
+    );
     let mut stack: Vec<Node> = Vec::new();
 
     for item in items.iter().rev() {
@@ -53,11 +59,22 @@ pub fn parse(domain: &Json) -> Result<Node> {
     }
 
     stack.reverse();
-    Ok(match stack.len() {
+    let node = match stack.len() {
         0 => Node::True,
         1 => stack.pop().unwrap(),
-        _ => Node::And(stack),
-    })
+        // an implicit conjunction: Odoo ANDs the terms a prefix domain left
+        // on the stack, and a domain that relies on it reads differently
+        // from one that spells `&` out
+        n => {
+            tracing::trace!(
+                target: "odoo_kernel::domain",
+                members = n,
+                "the domain left several terms on the stack; ANDing them implicitly"
+            );
+            Node::And(stack)
+        }
+    };
+    Ok(node)
 }
 
 fn parse_leaf(leaf: &[Json]) -> Result<Node> {
@@ -68,10 +85,18 @@ fn parse_leaf(leaf: &[Json]) -> Result<Node> {
 
     if let Some(n) = leaf[0].as_i64() {
         let v = leaf[2].as_i64().unwrap_or(-1);
-        return Ok(match (n == v, op.as_str()) {
+        let constant = match (n == v, op.as_str()) {
             (true, "=") | (false, "!=") => Node::True,
             _ => Node::False,
-        });
+        };
+        // `[0, '=', 1]` and its siblings are Odoo's spelling of a constant;
+        // they carry no field and collapse before any column is consulted
+        tracing::trace!(
+            target: "odoo_kernel::domain",
+            left = n, right = v, %op, folded = ?constant,
+            "folded a constant leaf"
+        );
+        return Ok(constant);
     }
     let field = leaf[0]
         .as_str()
@@ -82,6 +107,30 @@ fn parse_leaf(leaf: &[Json]) -> Result<Node> {
         op,
         value: leaf[2].clone(),
     }))
+}
+
+/// A value that MAY be a nested domain, as `Option` rather than `Result`.
+///
+/// Three callers ask "is this leaf value itself a domain?" and walk into it
+/// when it is: the reachability seeds, the comodel walk, and the internal
+/// operator check. A `no` from them is an answer, not a refusal -- and routing
+/// it through `parse` files one `odoo_kernel::refusal` line per scalar leaf in
+/// every domain the kernel sees, which buries the refusals that are real.
+///
+/// The filter is exactly `parse`'s own item-level grammar, so anything it
+/// accepts `parse` accepts: this decides nothing `parse` would decide
+/// differently.
+pub fn parse_nested(value: &Json) -> Option<Node> {
+    let items = value.as_array()?;
+    let looks_like_a_domain = items.iter().all(|item| match item {
+        Json::String(s) => matches!(s.as_str(), "&" | "|" | "!"),
+        Json::Array(leaf) => leaf.len() == 3,
+        _ => false,
+    });
+    if !looks_like_a_domain {
+        return None;
+    }
+    parse(value).ok()
 }
 
 pub fn referenced_fields(node: &Node, out: &mut Vec<String>) {
@@ -105,12 +154,55 @@ pub fn reject_internal_operators(node: &Node) -> Result<()> {
                 );
             }
             if matches!(l.op.as_str(), "any" | "not any")
-                && let Ok(sub) = parse(&l.value)
+                && let Some(sub) = parse_nested(&l.value)
             {
                 reject_internal_operators(&sub)?;
             }
             Ok(())
         }
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // Every shape a leaf value can take, against both readers. `parse_nested`
+    // exists only to keep a "no" out of the refusal log, so it must answer
+    // exactly what `parse` answers -- a divergence here would silently change
+    // which comodels the reachability walk reaches.
+    #[test]
+    fn the_quiet_reader_accepts_exactly_what_parse_accepts() {
+        let values = [
+            json!([]),
+            json!([["a", "=", 1]]),
+            json!(["|", ["a", "=", 1], ["b", "=", 2]]),
+            json!(["!", ["a", "=", 1]]),
+            json!(["private"]),
+            json!([1, 2, 3]),
+            json!("private"),
+            json!(false),
+            json!(3),
+            json!({"a": 1}),
+            json!([["a", "="]]),
+            json!([["a", "=", 1], "unknown"]),
+        ];
+        for value in values {
+            assert_eq!(
+                parse_nested(&value).is_some(),
+                parse(&value).is_ok(),
+                "the two readers disagree on {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_quiet_no_is_not_an_empty_domain() {
+        // `parse` reads an absent domain as TRUE; `parse_nested` must not,
+        // or a scalar leaf value would look like "match everything"
+        assert!(matches!(parse(&json!([])).unwrap(), Node::True));
+        assert!(parse_nested(&json!("private")).is_none());
     }
 }

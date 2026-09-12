@@ -6,12 +6,20 @@ import logging
 import os
 import random
 import threading
+import time
 import weakref
 from typing import Never
 
 from rust_engine_errors import KernelRefused, KernelRegistryStale
 
 _logger = logging.getLogger("odoo.rust_kernel.routing")
+# Every call the gate turns away, one line each, with the reason. `STATS` and
+# `GATE_REASONS` are the same information aggregated; this logger is what says
+# WHICH call, which is what a session widening the routed share needs.
+_gate_logger = logging.getLogger("odoo.rust_kernel.gate")
+# One line per call that reached the kernel, with the wire sizes and the split
+# between the kernel's own time and the revive/warm work this shim does after.
+_call_logger = logging.getLogger("odoo.rust_kernel.call")
 
 KERNEL = None
 DBNAME = None
@@ -107,7 +115,12 @@ def _ensure_kernel(env):
             _logger.exception("the rust engine process hook failed")
     if KERNEL is not None:
         return True
-    if KERNEL_FACTORY is None or os.getpid() == _KERNEL_TRIED_PID:
+    if KERNEL_FACTORY is None:
+        _logger.debug("no kernel factory yet; the addon has not armed this process")
+        return False
+    if os.getpid() == _KERNEL_TRIED_PID:
+        # one attempt per process: a worker that could not build the kernel
+        # serves from Python for its whole life rather than retrying per call
         return False
     with _KERNEL_LOCK:
         if KERNEL is not None:
@@ -115,9 +128,15 @@ def _ensure_kernel(env):
         if os.getpid() == _KERNEL_TRIED_PID:
             return False
         _KERNEL_TRIED_PID = os.getpid()
+        started = time.monotonic()
         try:
             KERNEL = KERNEL_FACTORY(env.registry)
             forget_gates()
+            _logger.info(
+                "built the rust kernel in pid %d in %.1f ms",
+                os.getpid(),
+                (time.monotonic() - started) * 1000,
+            )
         except Exception:
             _logger.exception(
                 "could not build the rust kernel in this process; "
@@ -143,14 +162,18 @@ def _baseline(fn, *args, **kwargs):
 
 
 def _policy_allows(name) -> bool:
-    if MODE == "off" or _in_baseline():
-        return False
+    if MODE == "off":
+        return _refuse("routing mode is off")
+    if _in_baseline():
+        # the shadow comparison is running Python's own answer; routing it
+        # again would compare the kernel with itself
+        return _refuse("inside the shadow baseline")
     if ONLY and name not in ONLY:
-        return False
+        return _refuse("not in RUSTORM_ROUTE_ONLY")
     if name in EXCEPT:
-        return False
+        return _refuse("in RUSTORM_ROUTE_EXCEPT")
     if name in STATS["quarantined"]:
-        return False
+        return _refuse("quarantined after a shadow divergence")
     if BREAKER and STATS["errors_by_model"].get(name, 0) >= BREAKER:
         if name not in STATS["tripped"]:
             STATS["tripped"].append(name)
@@ -161,7 +184,7 @@ def _policy_allows(name) -> bool:
                 BREAKER,
                 name,
             )
-        return False
+        return _refuse("breaker tripped after %d errors" % BREAKER)
     return True
 
 
@@ -172,6 +195,7 @@ def _verify_this_one():
 def _shadow(model, method, kernel_result, python_result) -> None:
     if kernel_result == python_result:
         STATS["shadow_ok"] += 1
+        _call_logger.debug("%s.%s verified against python", model._name, method)
         return
     _quarantine(model, method, kernel_result, python_result)
 
@@ -317,11 +341,13 @@ def _gated(model, method) -> None:
     reason = getattr(_GATE_TL, "reason", None) or "call shape"
     _GATE_TL.reason = None
     GATE_REASONS[(model._name, method, reason)] += 1
+    _gate_logger.debug("%s.%s not routed: %s", model._name, method, reason)
 
 
 def _gate(model, fields=None, order=None, domain=None, labels=True, method=None):  # noqa: ARG001  order and domain are the routed call shape, kept for the reasons log
     if not _policy_allows(model._name):
-        return _refuse("policy excludes the model")
+        # _policy_allows has already recorded which policy it was
+        return False
     if not _bound_db(model.env):
         return _refuse("another database")
     if not _ensure_kernel(model.env):
@@ -464,15 +490,31 @@ def _read_dependencies(model, domain, order, fields):
 def _flush_if_needed(env, model, domain=None, order=None, fields=None) -> bool | None:
     if not _needs_flush(env):
         return True
+    # The kernel reads the database, so anything this transaction has computed
+    # but not written has to land first. Flushing more than the read needs is
+    # correct but costs; `deps` is the narrow set, and falling back to
+    # `flush_all` is the wide one.
+    started = time.monotonic()
     try:
         try:
             deps = _read_dependencies(model, domain, order, fields)
         except Exception as e:
             _logger.debug("flushing everything: %s", e)
             env.flush_all()
+            _call_logger.debug(
+                "%s: flushed everything in %.1f ms before routing",
+                model._name,
+                (time.monotonic() - started) * 1000,
+            )
             return True
         for mname, fnames in deps.items():
             env[mname].flush_model(fnames)
+        _call_logger.debug(
+            "%s: flushed %d model(s) in %.1f ms before routing",
+            model._name,
+            len(deps),
+            (time.monotonic() - started) * 1000,
+        )
         return True
     except Exception as e:
         STATS["fallback_flush"] += 1
@@ -570,8 +612,22 @@ def _request(model, method, **kw):
 
 
 def _dispatch(model, method, **kw):
+    # The savepoint is what keeps a refusal from aborting the caller's
+    # transaction: the kernel runs its statements inside it and a failure rolls
+    # back to here, leaving Python free to answer the same call itself.
+    request = _request(model, method, **kw)
+    started = time.monotonic()
     with model.env.cr.savepoint(flush=False):
-        raw = KERNEL.dispatch(_rust_conn(model.env), _request(model, method, **kw))
+        raw = KERNEL.dispatch(_rust_conn(model.env), request)
+    kernel_ms = (time.monotonic() - started) * 1000
+    _call_logger.debug(
+        "%s.%s routed: %d request bytes, %d answer bytes, %.2f ms in the kernel",
+        model._name,
+        method,
+        len(request),
+        len(raw),
+        kernel_ms,
+    )
     return json.loads(raw)
 
 
@@ -640,6 +696,10 @@ def _revive_records(model, records):
 def _warm_cache(model, records) -> None:
     if not records:
         return
+    # A routed read bypasses the ORM cache, so the records it answered with are
+    # written back into it; skipping this makes the NEXT access re-query, which
+    # is how a routed read can look fast and still lose overall.
+    started = time.monotonic()
     try:
         recs = model.browse([r["id"] for r in records])
         # one recordset walk for every field, not one per field
@@ -674,6 +734,12 @@ def _warm_cache(model, records) -> None:
                     for r, rec in zip(records, singles, strict=False)
                 ]
                 cache.update(recs, f, values)
+        _call_logger.debug(
+            "%s: warmed %d record(s) into the ORM cache in %.1f ms",
+            model._name,
+            len(records),
+            (time.monotonic() - started) * 1000,
+        )
     except Exception as e:
         _logger.debug("not warming the cache after a routed read: %s", e)
 

@@ -245,6 +245,14 @@ impl RuleSet {
     }
 
     pub fn ensure_evaluated(&self, model: &str) -> Result<()> {
+        tracing::trace!(
+            target: "odoo_kernel::rules",
+            %model,
+            restricted = self.domains.contains_key(model),
+            compiled = self.compiled.contains(model),
+            ruled = self.ruled.contains(model),
+            "checking that this model's rules were compiled for the request"
+        );
         if let Some(reason) = self.unevaluated.get(model) {
             refuse!(
                 "record rules on {model} could not be evaluated ({reason}); \
@@ -319,6 +327,14 @@ async fn resolve_name(
     db: &Db<'_>,
     user: &UserCtx,
 ) -> Result<Json> {
+    // Every hop here is one query, run while a request waits: a rule domain
+    // reading `user.partner_id.country_id.code` costs three. They are cached
+    // per identity afterwards, so this line fires on a cold cache only.
+    tracing::trace!(
+        target: "odoo_kernel::rules",
+        uid = user.uid, name = ?chain,
+        "resolving a name chain in a rule domain"
+    );
     let (mut model_name, mut current_ids, rest): (String, Vec<i32>, &[String]) =
         match chain[0].as_str() {
             "user" => ("res.users".into(), vec![user.uid], &chain[1..]),
@@ -358,6 +374,7 @@ async fn resolve_name(
     }
     let mut i = 0usize;
     let mut guard = 0;
+    let mut hops = 0usize;
     while i < path.len() {
         guard += 1;
         if guard > 32 {
@@ -412,6 +429,11 @@ async fn resolve_name(
             .ok_or_else(|| refusal!("unknown attr {model_name}.{attr}"))?;
         if let Some(related) = &field.related {
             let expansion: Vec<String> = related.split('.').map(str::to_string).collect();
+            tracing::trace!(
+                target: "odoo_kernel::rules",
+                model = %model_name, attr = %attr, %related,
+                "expanded a related field in place; the path grows rather than hopping"
+            );
             path.splice(i..=i, expansion);
             continue;
         }
@@ -456,6 +478,12 @@ async fn resolve_name(
                     .iter()
                     .map(|r| r.try_get::<_, i32>(0))
                     .collect::<std::result::Result<_, _>>()?;
+                hops += 1;
+                tracing::trace!(
+                    target: "odoo_kernel::rules",
+                    attr = %attr, kind = "one2many", to = %model_name, ids = current_ids.len(),
+                    "hopped"
+                );
                 i += 1;
             }
             FieldType::Many2many if field.stored => {
@@ -476,6 +504,12 @@ async fn resolve_name(
                     .iter()
                     .map(|r| r.try_get::<_, i32>(0))
                     .collect::<std::result::Result<_, _>>()?;
+                hops += 1;
+                tracing::trace!(
+                    target: "odoo_kernel::rules",
+                    attr = %attr, kind = "many2many", to = %model_name, ids = current_ids.len(),
+                    "hopped"
+                );
                 i += 1;
             }
             _ if !field.has_column => {
@@ -494,6 +528,12 @@ async fn resolve_name(
                     .map(|r| r.try_get::<_, Option<i32>>(0))
                     .filter_map(|r| r.transpose())
                     .collect::<std::result::Result<_, _>>()?;
+                hops += 1;
+                tracing::trace!(
+                    target: "odoo_kernel::rules",
+                    attr = %attr, kind = "many2one", to = %model_name, ids = current_ids.len(),
+                    "hopped"
+                );
                 i += 1;
             }
             _ => {
@@ -546,6 +586,11 @@ async fn resolve_name(
         }
     }
 
+    tracing::trace!(
+        target: "odoo_kernel::rules",
+        uid = user.uid, name = ?chain, hops, resolved = current_ids.len(),
+        "name chain resolved to a recordset"
+    );
     match path.last().map(String::as_str) {
         Some("ids") => Ok(json!(current_ids)),
         _ => match current_ids[..] {
@@ -669,9 +714,11 @@ async fn rules_domain_inner(
     let mut global_domains: Vec<Json> = Vec::new();
     let mut group_domains: Vec<Json> = Vec::new();
     let mut any_applied = false;
+    let mut skipped = 0usize;
     for rule in rules {
         let is_group = !rule.groups.is_empty();
         if is_group && !rule.groups.iter().any(|g| user_groups.contains(g)) {
+            skipped += 1;
             continue;
         }
         any_applied = true;
@@ -687,12 +734,32 @@ async fn rules_domain_inner(
         }
     }
     if !any_applied {
+        // every rule on the model is a group rule this identity is outside
+        // of, so the model reads unrestricted -- which is Odoo's own answer
+        tracing::trace!(
+            target: "odoo_kernel::rules",
+            %model, uid = user.uid, rules = rules.len(),
+            "no rule applies to this identity's groups"
+        );
         return Ok(if inherited.is_empty() {
             None
         } else {
             Some(Json::Array(inherited))
         });
     }
+    // global rules AND together and group rules OR: the composition is what
+    // decides whether a second group widens the answer or narrows it
+    tracing::debug!(
+        target: "odoo_kernel::rules",
+        %model,
+        uid = user.uid,
+        depth,
+        global = global_domains.len(),
+        group = group_domains.len(),
+        skipped,
+        inherited = inherited.len(),
+        "combining the record rules that apply"
+    );
 
     let mut combined: Vec<Json> = inherited;
     for d in global_domains {
@@ -722,6 +789,10 @@ pub fn check_read_access(
         .iter()
         .any(|g| g.is_none_or(|gid| groups.contains(&gid)))
     {
+        tracing::trace!(
+            target: "odoo_kernel::access",
+            %model, uid, entries = rows.len(), "ir.model.access grants read"
+        );
         Ok(())
     } else {
         deny_access!("access denied on {model} for uid {uid}")

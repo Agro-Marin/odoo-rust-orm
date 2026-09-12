@@ -119,6 +119,18 @@ impl<'a> ExprCtx<'a> {
             let ty = pg_cast_type(f.ttype);
 
             let fallback = self.cd_fallback_for(model, f);
+            // a company-dependent column is a jsonb keyed by company; the
+            // fallback is what an unset company key reads as, and getting it
+            // wrong changes rows rather than erroring
+            tracing::trace!(
+                target: "odoo_kernel::compile",
+                model = %model.name,
+                field = %f.name,
+                company_id = self.company_id,
+                cast = ty,
+                fallback = ?fallback,
+                "reading a company-dependent column out of its jsonb"
+            );
             let coalesced = match fallback {
                 Some(v) => {
                     let param = to_value(f, &v)?;
@@ -227,6 +239,11 @@ impl<'a> ExprCtx<'a> {
             if !field.has_column {
                 if let Some(rel) = &field.related {
                     let expansion: Vec<String> = rel.split('.').map(str::to_string).collect();
+                    tracing::trace!(
+                        target: "odoo_kernel::compile",
+                        model = %model_name, field = %out[i], related = %rel,
+                        "expanded a related field into its path"
+                    );
                     out.splice(i..=i, expansion);
                     continue;
                 }
@@ -377,6 +394,16 @@ pub fn id_membership(sql_field: Expr, ids: impl IntoIterator<Item = i32>) -> Exp
 }
 
 fn in_or_any(sql_field: Expr, op: &str, vals: Vec<Value>) -> Expr {
+    // Past IN_TO_ANY_THRESHOLD the membership becomes one array parameter
+    // instead of N placeholders, which is what keeps the statement text -- and
+    // therefore the prepared-statement cache entry -- stable across calls.
+    tracing::trace!(
+        target: "odoo_kernel::compile",
+        %op,
+        values = vals.len(),
+        shape = if vals.len() <= IN_TO_ANY_THRESHOLD { "IN (...)" } else { "= ANY($n)" },
+        "compiled a membership"
+    );
     if vals.len() <= IN_TO_ANY_THRESHOLD {
         return if op == "in" {
             sql_field.is_in(vals)
@@ -513,6 +540,12 @@ impl<'a> Compiler<'a> {
     const MAX_DEPTH: usize = 32;
 
     pub fn compile(&self, node: &Node) -> Result<Condition> {
+        tracing::trace!(
+            target: "odoo_kernel::compile",
+            model = %self.model.name, alias = %self.alias, depth = self.depth,
+            node = ?std::mem::discriminant(node),
+            "compiling a domain node"
+        );
         if self.depth > Self::MAX_DEPTH {
             refuse!(
                 "domain nesting exceeded {} levels at {}; refusing rather than \
@@ -661,6 +694,11 @@ impl<'a> Compiler<'a> {
         if !values.iter().any(|x| bare_date(x).is_some()) {
             return Ok(None);
         }
+        tracing::trace!(
+            target: "odoo_kernel::domain",
+            field = %fname, %op, value = %v, tz = ?self.ctx.tz,
+            "a bare date comparand names a whole day in the request's timezone"
+        );
         let tz: Option<chrono_tz::Tz> = match self.ctx.tz.as_deref() {
             None | Some("UTC") => None,
             Some(name) => Some(name.parse().map_err(|_| {
@@ -724,7 +762,28 @@ impl<'a> Compiler<'a> {
         }))
     }
 
+    // Odoo optimises a domain leaf before compiling it, and the rewrites are
+    // where the semantics live: `=` becomes `in`, a bare date names a whole
+    // local day, a string among a relational membership becomes a display-name
+    // lookup. Every past wrong answer in this kernel was a rewrite that did
+    // not happen or happened differently, so each one announces itself.
     fn optimize_leaf(&self, l: &Leaf) -> Result<Option<Node>> {
+        let out = self.optimize_leaf_inner(l)?;
+        if let Some(rewritten) = &out {
+            tracing::trace!(
+                target: "odoo_kernel::domain",
+                model = %self.model.name,
+                field = %l.field,
+                op = %l.op,
+                value = %l.value,
+                into = ?rewritten,
+                "rewrote a leaf"
+            );
+        }
+        Ok(out)
+    }
+
+    fn optimize_leaf_inner(&self, l: &Leaf) -> Result<Option<Node>> {
         let head = l.field.split('.').next().unwrap_or(&l.field);
         let dotted = head != l.field;
         let field = self.model.fields.get(head);
@@ -1162,6 +1221,19 @@ impl<'a> Compiler<'a> {
             }
             _ => true,
         };
+        // Odoo evaluates the condition against a record holding the live
+        // fallback; when that record would NOT satisfy it, rows with no
+        // company key must be excluded, and the IS NOT NULL guard is how
+        tracing::trace!(
+            target: "odoo_kernel::compile",
+            model = %self.model.name,
+            field = %field.name,
+            %op,
+            fallback = %fallback,
+            satisfied,
+            guarded = !satisfied,
+            "guarded a company-dependent condition against its fallback"
+        );
         if satisfied {
             cond
         } else {
@@ -1262,8 +1334,17 @@ impl<'a> Compiler<'a> {
             crate::domain::referenced_fields(&crate::domain::parse(dom)?, &mut referenced);
         }
         if referenced.iter().any(|f| f == active_name) {
+            tracing::trace!(
+                target: "odoo_kernel::compile",
+                comodel = %co.name, %active_name,
+                "the sub-domain names the active field itself, so no implicit filter is added"
+            );
             return Ok(Cond::all());
         }
+        tracing::trace!(
+            target: "odoo_kernel::compile",
+            comodel = %co.name, %active_name, "added the implicit active filter to the subquery"
+        );
         Ok(Cond::all().add(col(&self.alias, active_name).is_in([true])))
     }
 
@@ -1279,6 +1360,11 @@ impl<'a> Compiler<'a> {
             );
         }
         if self.su || bypass_access == Some(true) {
+            tracing::trace!(
+                target: "odoo_kernel::rules",
+                comodel = %co.name, su = self.su, ?bypass_access,
+                "the subquery bypasses the comodel's record rules, as Odoo does"
+            );
             return Ok(None);
         }
 
@@ -1297,6 +1383,11 @@ impl<'a> Compiler<'a> {
         self.rules.ensure_evaluated(&co.name)?;
 
         let rules = self.rules.get(&co.name);
+        tracing::trace!(
+            target: "odoo_kernel::rules",
+            comodel = %co.name, restricted = rules.is_some(), ?bypass_access,
+            "the subquery applies the comodel's record rules"
+        );
         if bypass_access.is_none() && rules.is_some() {
             refuse!(
                 "whether {} bypasses {}'s record rules is not recorded in \
@@ -1447,6 +1538,16 @@ impl<'a> Compiler<'a> {
     ) -> Result<Expr> {
         let co = self.ctx.registry.get(field.comodel()?)?;
         let sub_alias = format!("s{}_{}", self.depth, co.table);
+        tracing::debug!(
+            target: "odoo_kernel::compile",
+            model = %self.model.name,
+            field = %field.name,
+            comodel = %co.name,
+            alias = %sub_alias,
+            positive,
+            depth = self.depth,
+            "traversing a many2one as an id subquery"
+        );
         let sub_compiler = self.sub_compiler(co, sub_alias.clone());
         let mut cond = Cond::all().add(sub_compiler.compile(sub_node)?);
         if let Some(rules) = self.comodel_rules(co, bypass_access)? {
@@ -1536,6 +1637,19 @@ impl<'a> Compiler<'a> {
     ) -> Result<Expr> {
         let co = self.ctx.registry.get(field.comodel()?)?;
         let sub_alias = format!("s{}_{}", self.depth, co.table);
+        tracing::debug!(
+            target: "odoo_kernel::compile",
+            model = %self.model.name,
+            field = %field.name,
+            kind = ?field.ttype,
+            comodel = %co.name,
+            alias = %sub_alias,
+            positive,
+            apply_active,
+            sudo,
+            depth = self.depth,
+            "traversing an x2many as a parent-id subquery"
+        );
         let mut sub_compiler = self.sub_compiler(co, sub_alias.clone());
         if sudo {
             sub_compiler = sub_compiler.as_sudo();
@@ -1615,6 +1729,21 @@ impl<'a> Compiler<'a> {
             }
         }
 
+        // Odoo reads NULL and the field's falsy value as one unset value, so a
+        // membership that contains either widens to `IS NULL` as well; this is
+        // the line that says whether a row with no value answers the leaf
+        tracing::trace!(
+            target: "odoo_kernel::compile",
+            model = %self.model.name,
+            field = %field.name,
+            %op,
+            given = values.len(),
+            bound = params.len(),
+            null_in_condition,
+            can_be_null,
+            falsy = ?field.falsy_json(),
+            "compiled a membership on a column"
+        );
         let sql = if params.is_empty() {
             None
         } else {
@@ -1686,6 +1815,19 @@ impl<'a> Compiler<'a> {
             return None;
         }
         let pattern = crate::trigram::pattern_to_pattern(raw);
+        // Without a conjunct the LIKE is a sequential scan on a large table,
+        // which is the one shape where this kernel was slower than the Python
+        // it replaces; `%` means the pattern has no run long enough to
+        // constrain a trigram index, so no conjunct is implied.
+        tracing::debug!(
+            target: "odoo_kernel::compile",
+            model = %self.model.name,
+            field = %field.name,
+            %op,
+            accelerated = pattern != "%",
+            %pattern,
+            "trigram accelerator for a like on a translated indexed field"
+        );
         if pattern == "%" {
             return None;
         }
@@ -1703,6 +1845,14 @@ impl<'a> Compiler<'a> {
             return None;
         };
         let pattern = crate::trigram::value_to_pattern(one);
+        tracing::debug!(
+            target: "odoo_kernel::compile",
+            model = %self.model.name,
+            field = %field.name,
+            accelerated = pattern != "%",
+            %pattern,
+            "trigram accelerator for a single-valued equality on a translated indexed field"
+        );
         if pattern == "%" {
             return None;
         }
@@ -1734,6 +1884,19 @@ impl<'a> Compiler<'a> {
         };
         let insensitive = op.ends_with("ilike");
         let negative = op.starts_with("not ");
+        // unaccent() on both sides is what Odoo emits when the function
+        // exists; without it an ilike compares accented text literally, so
+        // the same domain answers differently on a database that lacks it
+        tracing::trace!(
+            target: "odoo_kernel::compile",
+            model = %self.model.name,
+            field = %field.name,
+            %op,
+            unaccent = insensitive && self.ctx.registry.has_unaccent,
+            wildcarded = need_wildcard,
+            can_be_null,
+            "compiled a like"
+        );
 
         let mut sql = if insensitive && self.ctx.registry.has_unaccent {
             let keyword = if negative { "NOT ILIKE" } else { "ILIKE" };
@@ -1869,6 +2032,18 @@ pub fn granularity_expr(
     tz: Option<&str>,
     week_start: Option<i32>,
 ) -> Result<Expr> {
+    // A datetime groupby buckets in the CONTEXT timezone, not the user's, and
+    // a week bucket starts on the language's first weekday: both move rows
+    // between groups rather than erroring when they are wrong.
+    tracing::debug!(
+        target: "odoo_kernel::compile",
+        granularity = gran,
+        is_date,
+        ?tz,
+        ?week_start,
+        numeric = is_number_granularity(gran),
+        "compiling a read_group granularity"
+    );
     let inner = match (is_date, tz) {
         (false, Some(tz)) => Expr::cust_with_exprs(
             "timezone($2::text, timezone('UTC', $1))",
@@ -1945,6 +2120,14 @@ pub fn parse_order(
     let mut out = Vec::new();
     let mut seen = Vec::new();
     order_terms(ctx, model, alias, order, false, &mut seen, &[], &mut out)?;
+    tracing::debug!(
+        target: "odoo_kernel::compile",
+        model = %model.name,
+        %order,
+        items = out.len(),
+        joins = out.iter().map(|i| i.joins.len()).max().unwrap_or(0),
+        "parsed the ORDER BY"
+    );
     Ok(out)
 }
 
@@ -2098,6 +2281,18 @@ fn order_terms(
         // __m2o_order_seen is scoped to the recursion path: the same field
         // reached through two chains sorts once per chain
         seen.push(key);
+        // ordering by a many2one whose comodel is not ordered by id means a
+        // LEFT JOIN per hop, and the comodel's own _order recurses -- this is
+        // where an order clause stops being free
+        tracing::debug!(
+            target: "odoo_kernel::compile",
+            model = %model.name,
+            field = %fname,
+            comodel = %comodel.name,
+            comodel_order = %comodel.order,
+            depth = joins.len(),
+            "ordering through a many2one; joining the comodel"
+        );
         // Postgres truncates identifiers at 63 bytes, where two long chains
         // would collide; a long alias keeps its field and hashes its parent
         let join_alias = {

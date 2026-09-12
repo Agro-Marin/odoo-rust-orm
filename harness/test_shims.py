@@ -119,6 +119,45 @@ def test_dbname_uri_specs() -> None:
     )
 
 
+def test_the_composed_dsn_names_every_keyword_once() -> None:
+    # tokio-postgres ACCUMULATES `host` and `port` where libpq lets the last
+    # occurrence win, and then requires the two counts to match. Odoo's own
+    # connection_info carries a port and, with `db_host =` unset, no host at
+    # all -- so concatenating it onto the armed dsn gave one host and two
+    # ports and every borrow died with `invalid number of ports` before it
+    # opened a socket. Measured on this workspace's p314o19m.conf: the engine
+    # could not arm at all.
+    db_shim = _shims()[0]
+    saved = db_shim.CONNINFO
+    try:
+        db_shim.CONNINFO = (
+            "port='5432' user='marin' sslmode='prefer' host='/var/run/postgresql'"
+        )
+        dsn = db_shim._dsn_with_kwargs(
+            "", {"dbname": "mydb", "port": 5432, "user": "marin", "sslmode": "prefer"}
+        )
+        for key in ("host", "port", "user", "dbname", "sslmode"):
+            check(
+                "%s appears once in %r" % (key, dsn),
+                dsn.count("%s=" % key),
+                1,
+            )
+        check("the host survives", "host='/var/run/postgresql'" in dsn, True)
+        check("the later value wins", "dbname='mydb'" in dsn, True)
+
+        # a quoted value carrying spaces is one keyword, not several
+        db_shim.CONNINFO = "host='/tmp' options='-c jit=off -c work_mem=16MB'"
+        dsn = db_shim._dsn_with_kwargs("", {"dbname": "mydb"})
+        check(
+            "options keeps its spaces",
+            "options='-c jit=off -c work_mem=16MB'" in dsn,
+            True,
+        )
+        check("options is one keyword", dsn.count("options="), 1)
+    finally:
+        db_shim.CONNINFO = saved
+
+
 def test_borrow_refuses_readonly_pools_and_foreign_keys() -> None:
     db_shim = _shims()[0]
 

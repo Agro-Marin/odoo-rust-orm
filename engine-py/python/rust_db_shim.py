@@ -1,4 +1,5 @@
 import contextlib
+import logging
 import os
 import threading
 import typing
@@ -7,6 +8,12 @@ from time import monotonic
 from typing import Never
 
 import psycopg
+
+# The pool the rust cursor plugs into, and the decision of whether a given DSN
+# is intercepted at all. A process holding pools for several databases keeps
+# psycopg for the others, and telling the two apart is the first thing to check
+# when a comparison reports the two cursors agreeing perfectly.
+_logger = logging.getLogger("odoo.rust_kernel.pool")
 
 RESET_SESSION_STATE_SQL = (
     "RESET ALL;"
@@ -99,6 +106,9 @@ def _error_class_with_diag(cls):
 def _raise_pg(exc) -> Never:
     msg = str(exc)
     if not msg.startswith("SQLSTATE:"):
+        # no SQLSTATE means the failure was in the transport, not the server;
+        # psycopg would have raised OperationalError for the same thing
+        _logger.debug("rust cursor error with no SQLSTATE: %.200s", msg)
         raise psycopg.OperationalError(msg) from None
     body = msg[len("SQLSTATE:") :]
     parts = body.split("\x1f")
@@ -108,6 +118,7 @@ def _raise_pg(exc) -> Never:
         key, _, value = chunk.partition("\x1e")
         fields[key] = value
     cls = psycopg.errors.lookup(code) if code else psycopg.OperationalError
+    _logger.debug("server error %s (%s): %.200s", code, cls.__name__, detail)
     err = _error_class_with_diag(cls)(detail)
     err._rust_diag = _Diag(fields)
     raise err from None
@@ -516,11 +527,19 @@ def _identity(dsn, key=None):
 
 
 def _intercepts(pool, dsn, key=None):
+    # The engine is armed for ONE database and ONE identity. Getting this
+    # wrong in either direction is silent: too narrow and the rust cursor is
+    # never used, too wide and another database's connections are rebuilt on
+    # a connector that was not configured for it.
     if getattr(pool, "readonly", False):
+        _logger.debug("not intercepting a readonly pool")
         return False
     if not CONNINFO or not dsn:
         return True
     if _dbname(dsn) != _dbname(CONNINFO):
+        _logger.debug(
+            "not intercepting %r: armed for %r", _dbname(dsn), _dbname(CONNINFO)
+        )
         return False
     if PSYCOPG_CONNINFO is None:
         return True
@@ -528,7 +547,13 @@ def _intercepts(pool, dsn, key=None):
     theirs = _identity(dsn, key)
     if ours is None or theirs is None:
         return True
-    return ours == theirs
+    if ours != theirs:
+        _logger.debug(
+            "not intercepting %r: the connection identity differs from the armed one",
+            _dbname(dsn),
+        )
+        return False
+    return True
 
 
 def _parse_conninfo(text):
@@ -657,14 +682,28 @@ def _dsn_with_kwargs(conninfo, kwargs):
     # user but often no host at all, because libpq falls back to PGHOST and
     # the default socket directory. tokio-postgres does not -- it refuses with
     # `both host and hostaddr are missing` -- so the armed dsn supplies the
-    # host and anything later in the string wins, as libpq resolves it.
-    parts = [p for p in (CONNINFO if isinstance(CONNINFO, str) else "", conninfo) if p]
+    # host and anything later wins, as libpq resolves a repeated keyword.
+    #
+    # The last part is resolved HERE rather than left to the connector,
+    # because tokio-postgres does not resolve it the way libpq does: it
+    # ACCUMULATES `host` and `port` and then requires the two counts to match.
+    # A string naming the host once and the port twice -- which is what
+    # `db_host =` produces, since only the armed dsn then carries a host --
+    # dies with `invalid configuration: invalid number of ports` before it
+    # opens a socket. With `db_host` set both halves carry both keys, the
+    # counts match by accident, and the same string connects.
+    resolved = {}
+    for text in (CONNINFO if isinstance(CONNINFO, str) else "", conninfo):
+        if text:
+            resolved.update(_parse_conninfo(text))
     for key, value in (kwargs or {}).items():
         if key not in _DSN_KEYS or value is None or value == "":
             continue
-        escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
-        parts.append("%s='%s'" % (key, escaped))
-    return " ".join(parts)
+        resolved[key] = str(value)
+    return " ".join(
+        "%s='%s'" % (key, value.replace("\\", "\\\\").replace("'", "\\'"))
+        for key, value in resolved.items()
+    )
 
 
 class _RustPool:
@@ -706,6 +745,7 @@ class _RustPool:
         self._pid = os.getpid()
 
     def _forget_inherited_after_fork(self):
+        # NOTE the caller holds `self._cond`; nothing here may block on it.
         # Caller holds the lock. A forked child inherits the parent's idle
         # connections, and two processes writing one socket is a hang, not an
         # error -- the load probe's child died on its alarm rather than
@@ -713,6 +753,12 @@ class _RustPool:
         # terminate message down a socket the parent still owns.
         pid = os.getpid()
         if pid != self._pid:
+            _logger.debug(
+                "forked from pid %d: dropping %d inherited idle connection(s) "
+                "without closing them",
+                self._pid,
+                len(self._idle),
+            )
             self._idle.clear()
             self._out = 0
             self._pid = pid
@@ -737,10 +783,19 @@ class _RustPool:
 
     def _new_connection(self):
         INSTALLED["connects"] += 1
+        started = monotonic()
         conn = FakeConnection(RUST_DB.connect(self._dsn))
         conn._dsn = self._dsn
         if self._configure is not None:
             self._configure(conn)
+        _logger.debug(
+            "opened rust connection %d in %.1f ms (%d out, %d idle, max %d)",
+            INSTALLED["connects"],
+            (monotonic() - started) * 1000,
+            self._out,
+            len(self._idle),
+            self._max_size,
+        )
         return conn
 
     def getconn(self, timeout=None):
@@ -828,11 +883,19 @@ class _RustPool:
         # registry drains on reload. Bumping the generation is what makes a
         # connection that is currently OUT get closed on return instead of
         # pooled with its stale plans.
+        _logger.debug(
+            "draining the pool: %d idle, %d out, generation %d -> %d",
+            len(self._idle),
+            self._out,
+            self._generation,
+            self._generation + 1,
+        )
         with self._cond:
             self._generation += 1
         self._evict_idle()
 
     def close(self):
+        _logger.debug("closing the pool: %d idle, %d out", len(self._idle), self._out)
         with self._cond:
             self._closed = True
         self._evict_idle()
@@ -879,7 +942,11 @@ def install():
         # keeps psycopg for the others.
         if not _pool_intercepts(conninfo, kwargs.get("kwargs")):
             INSTALLED["delegated"] += 1
+            _logger.debug(
+                "delegating a pool to psycopg (%d so far)", INSTALLED["delegated"]
+            )
             return psycopg_pool_class(conninfo, **kwargs)
+        _logger.debug("building a rust-backed pool for the armed database")
         return _RustPool(conninfo, **kwargs)
 
     # `odoo.db.pool._PsycopgPool` and `odoo.db.lifecycle._PsycopgPool` are two
@@ -900,6 +967,10 @@ def install():
     # makes the rebind take effect, and without it a gate comparing the two
     # cursors compares psycopg with psycopg and reports perfect agreement.
     dbname = _dbname(CONNINFO)
+    _logger.info(
+        "rust cursor installed for %s; pools built before this point are being closed",
+        dbname or "<unknown database>",
+    )
     if dbname:
         from odoo.db import registry as db_registry
 
