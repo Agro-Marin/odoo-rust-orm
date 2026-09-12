@@ -1872,7 +1872,7 @@ impl RustConn {
         self.end_tx(py, "ROLLBACK")
     }
 
-    fn clear_prepared(&self) {
+    pub(crate) fn clear_prepared(&self) {
         let mut cache = self.stmt_cache.lock().unwrap();
         let cursor_plans = cache.len();
         cache.clear();

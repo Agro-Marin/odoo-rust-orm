@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use futures_util::FutureExt;
 use pyo3::prelude::*;
 
 use odoo_kernel::orm::{Caches, Orm, Request};
@@ -10,6 +11,14 @@ use crate::cursor::{RustConn, RustDb};
 use crate::errors::{KernelRefused, KernelRegistryStale, from_kernel};
 
 static REGISTRY_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// The savepoint every dispatch reads inside. One name serves every dispatch
+/// on a connection: they do not nest, and each releases or rolls back its own
+/// before returning.
+const SAVEPOINT_OPEN: &str = "SAVEPOINT rust_kernel_dispatch";
+const SAVEPOINT_RELEASE: &str = "RELEASE SAVEPOINT rust_kernel_dispatch";
+const SAVEPOINT_UNDO: &str =
+    "ROLLBACK TO SAVEPOINT rust_kernel_dispatch; RELEASE SAVEPOINT rust_kernel_dispatch";
 
 #[pyclass]
 pub struct RustKernel {
@@ -276,8 +285,34 @@ impl RustKernel {
         // kernel's own dispatch time is what another Python thread got back.
         let t0 = std::time::Instant::now();
         let out = py.detach(|| {
+            // A failed statement must not abort the caller's transaction, or
+            // Python could not answer the call the kernel gave up on, so the
+            // dispatch runs inside a savepoint. SAVEPOINT and, on success,
+            // RELEASE are only enqueued: tokio-postgres writes requests in the
+            // order they are queued and pages past the replies of a dropped
+            // future, so the kernel's first query goes out without waiting on
+            // SAVEPOINT and Python's next statement queues behind RELEASE.
+            // Python's own `cr.savepoint()` waited on both, two round trips of
+            // a routed call whose query is one.
+            let _ = client.batch_execute(SAVEPOINT_OPEN).now_or_never();
             let orm = Orm::new(&self.registry, &client, self.caches.clone(), &stmts);
             let result = handle.block_on(orm.dispatch_with(&req, checked.clone()));
+            if result.is_ok() {
+                let _ = client.batch_execute(SAVEPOINT_RELEASE).now_or_never();
+            } else {
+                // waited on: the caller's next statement needs the
+                // transaction usable again
+                let undone = handle.block_on(client.batch_execute(SAVEPOINT_UNDO));
+                conn.clear_prepared();
+                if let Err(e) = undone {
+                    tracing::warn!(
+                        target: "odoo_kernel::bridge",
+                        error = %e,
+                        "could not roll back the kernel's savepoint; the caller's \
+                         transaction may be aborted"
+                    );
+                }
+            }
             if result
                 .as_ref()
                 .err()

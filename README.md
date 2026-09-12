@@ -2882,6 +2882,53 @@ A runtime contract reads Belgium's currency, which a committed
 rule hides, through `web_search_read` plain and named and `read(load=None)`.
 The contract fails on the previous build.
 
+## A routed call no longer waits on its savepoint
+
+A routed call ran the kernel inside `env.cr.savepoint(flush=False)`, so a
+statement the kernel sent that failed would not abort the caller's
+transaction. That is three round trips where Python's own call is one:
+`SAVEPOINT`, the kernel's query, `RELEASE`, each waiting on the reply before
+the next goes out. For `search_count`, whose query is as cheap as either of the
+others, that was the whole of its slowness.
+
+`RustKernel.dispatch` now opens the savepoint itself, and only enqueues
+`SAVEPOINT` and, when the dispatch succeeds, `RELEASE`. tokio-postgres writes
+requests in the order they are queued and pages past the replies of a request
+whose future was dropped, so the kernel's first query leaves without waiting
+on `SAVEPOINT`, and the caller's next statement queues behind `RELEASE`. A
+dispatch that fails waits on `ROLLBACK TO SAVEPOINT; RELEASE SAVEPOINT` in one
+round trip and drops the connection's prepared plans, as Python's own rollback
+to a savepoint did.
+
+Recorded traffic, the savepoint build against the one before, alternating
+builds, best of three rounds each:
+
+```
+routed calls        before          kernel savepoint
+web_search_read     0.55x  0.56x    0.41x  0.37x
+search_read         0.53x  0.52x    0.39x  0.36x
+name_search         0.72x  0.76x    0.52x  0.50x
+search_count        1.08x  1.07x    0.70x  0.63x
+web_read_group      0.98x  1.04x    0.99x  0.88x
+```
+
+`web_read_group` and `web_read` stay near parity, between 0.88x and 0.99x;
+where their time goes has not been measured.
+
+A runtime contract dispatches a call that answers, one the kernel refuses and
+one that reads a row, and after each runs a statement and requires the
+kernel's savepoint to be gone. Releasing a leaked one would succeed and take
+the Python savepoint above it along, so only an error naming
+`rust_kernel_dispatch` passes. A build that sends no `RELEASE` fails it: `a
+kernel savepoint was left open after search_count`. The existing contract that
+times a dispatch out on a locked table still requires the transaction usable
+afterwards.
+
+**The fork's persistence protocol gained a member.** `StorageBackend` now
+declares `sequences`, the sequence store that became a port beside the row
+port. The shim conformance test read it from the fork and failed; `RustBackend`
+mirrors its delegate's store as it mirrors the support flags.
+
 ## A write to `res.users` taints a cursor only through Odoo's own invalidation fields
 
 "Cursor wrote a security model" is the most frequent reason a browser-tour

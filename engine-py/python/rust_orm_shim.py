@@ -659,13 +659,11 @@ def _request(model, method, **kw):
 
 
 def _dispatch(model, method, **kw):
-    # The savepoint is what keeps a refusal from aborting the caller's
-    # transaction: the kernel runs its statements inside it and a failure rolls
-    # back to here, leaving Python free to answer the same call itself.
+    # RustKernel.dispatch reads inside a savepoint of its own, so a refusal
+    # leaves the caller's transaction usable for Python to answer the call.
     request = _request(model, method, **kw)
     started = time.monotonic()
-    with model.env.cr.savepoint(flush=False):
-        raw = KERNEL.dispatch(_rust_conn(model.env), request)
+    raw = KERNEL.dispatch(_rust_conn(model.env), request)
     kernel_ms = (time.monotonic() - started) * 1000
     _call_logger.debug(
         "%s.%s routed: %d request bytes, %d answer bytes, %.2f ms in the kernel",

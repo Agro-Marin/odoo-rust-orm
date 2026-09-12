@@ -35,6 +35,7 @@ _port_logger = logging.getLogger("odoo.rust_kernel.port")
 #: of the fork's own protocol and fails when the two disagree, so a method
 #: added upstream cannot reach a `RustBackend` that silently lacks it.
 PROTOCOL_FLAGS = (
+    "sequences",
     "supports_parent_store",
     "supports_record_rules",
     "supports_joined_m2m_read",
@@ -130,6 +131,12 @@ class RustBackend:
     # the delegate's. Answering differently here would change ORM behaviour
     # (`supports_parent_store` gates whether `parent_path` is maintained at
     # all) for a reason that has nothing to do with who computes the SQL.
+    # Sequence storage is a port of its own beside this one, and the port a
+    # transaction uses is the one its row storage lives in.
+    @property
+    def sequences(self):
+        return self._delegate.sequences
+
     @property
     def supports_parent_store(self) -> bool:
         return self._delegate.supports_parent_store

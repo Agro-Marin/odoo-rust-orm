@@ -161,6 +161,53 @@ assert not shim._policy_allows("res.country")
 shim.reset_breaker()
 print("CONTRACT SQL failures typed, transaction usable, breaker trips", flush=True)
 
+# The dispatch savepoint is released without waiting on it. Whatever the call
+# ended in -- rows, a refusal before any statement, a refusal after one -- the
+# next statement must run, and must find no kernel savepoint left open: a
+# leaked one per routed call would pile subtransactions onto a long request.
+shim.MODE = "on"
+with env_for(uid) as e:
+    conn = e.cr._cnx._rust
+    outcomes = []
+    for request in (
+        {"model": "res.country", "method": "search_count", "uid": uid},
+        {"model": "res.country", "method": "no_such_method", "uid": uid},
+        {
+            "model": "res.country",
+            "method": "search_read",
+            "uid": uid,
+            "fields": ["x_runtime_contract"],
+            "domain": [["id", "=", cid]],
+        },
+    ):
+        request |= {"registry_sequence": reg.registry_sequence}
+        try:
+            shim.KERNEL.dispatch(conn, json.dumps(request))
+            outcomes.append("answered")
+        except engine.KernelRefused as exc:
+            outcomes.append(type(exc).__name__)
+        e.cr.execute("SELECT 42")
+        assert e.cr.fetchone()[0] == 42, "the statement after a dispatch misread"
+        # A leaked kernel savepoint lies below this one, so releasing it
+        # succeeds and takes this one with it; only an error naming the
+        # kernel's savepoint says there was none.
+        try:
+            with e.cr.savepoint(flush=False):
+                e.cr.execute("RELEASE SAVEPOINT rust_kernel_dispatch")
+        except Exception as exc:
+            closed = 'savepoint "rust_kernel_dispatch" does not exist' in str(exc)
+        else:
+            closed = False
+        assert closed, "a kernel savepoint was left open after %s" % request["method"]
+    assert outcomes[0] == "answered" and outcomes[1] != "answered", outcomes
+    e.cr.rollback()
+shim.MODE = "off"
+print(
+    "CONTRACT every dispatch closes its savepoint and the next statement runs (%s)"
+    % ", ".join(outcomes),
+    flush=True,
+)
+
 
 # Exercise quarantine through the real wrapper, not just its counter helper.
 class WrongCount:
