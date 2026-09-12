@@ -194,7 +194,7 @@ superseded them; `git log` has them, pyo3 0.29 against the venv's Python 3.14.4)
 ## Phase 1 — DONE (2026-07-05)
 
 1. **Workspace restructure** ✅ — `kernel/` (registry, domain, sqlgen,
-   security, orm), `server/` (odoo-poc CLI + axum), `engine-py/` (PyO3
+   security, orm), `server/` (rustorm CLI + axum), `engine-py/` (PyO3
    boundary: export, cursor, bins). Harness still 78/78.
 2. **Shared caches** ✅ — `orm::Caches` (rule + env) shared via Arc across
    Orm instances; statement cache stays per-connection.
@@ -202,7 +202,7 @@ superseded them; `git log` has them, pyo3 0.29 against the venv's Python 3.14.4)
    Python registry (320 models — 15 more than the ir_model bootstrap could
    see, e.g. custom `_table` models) via an env-bound model walk;
    `Registry::from_export` merges it with information_schema.
-   `odoo-poc --export FILE run-corpus`: **78/78** — the live registry is
+   `rustorm --export FILE run-corpus`: **78/78** — the live registry is
    the verified primary metamodel source now. (Gotcha: export must walk
    `env[name]`, not registry classes — `_order`/`_rec_name` are properties
    on the class.)

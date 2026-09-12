@@ -1,15 +1,27 @@
-# odoo-rust-orm — Rust Odoo ORM kernel, read path
+# odoo-rust-orm — the Rust ORM that replaces Odoo's Python one
 
-Proof of concept for reimplementing the Odoo ORM kernel in Rust, targeting
-**exact behavioral compatibility** with Odoo 19 and **performance**. Differential
-checks against Python validate the exercised read shapes; they do not establish
-full ORM replacement readiness. During coexistence Python remains authoritative
-for registry metadata, extension hooks, cache/compute state and write orchestration.
-Rust executes eligible reads on the caller's transaction and refuses unsupported
-shapes back to Python. Runtime contracts additionally check effects that response
-JSON comparisons cannot see.
+**The goal is replacement.** This kernel is built to take over Odoo's ORM
+outright: `odoo/odoo/orm/` is what it supersedes, not what it defers to.
+`M3-PLAN.md` holds the target architecture — the Rust binary is the server, and
+it embeds CPython for one job only, running addon business logic on the Rust
+engine underneath.
 
-## Scope (M0 + M1)
+Two requirements are non-negotiable the whole way there: **exact behavioral
+compatibility** with Odoo 19 and **performance**. Differential checks against
+Python are how both are held — every read shape the kernel serves is diffed
+against Python's answer, and runtime contracts check the effects a response-JSON
+comparison cannot see.
+
+The read path is the stage that is built, measured and serving. **Coexistence is
+the migration mechanism, not the destination**: while it lasts Python stays
+authoritative for registry metadata, extension hooks, cache/compute state and
+write orchestration, Rust executes eligible reads on the caller's transaction,
+and any shape it cannot answer exactly refuses back to Python. Those checks
+establish the shapes they exercise and no more — the routed share and every
+remaining refusal are measured below, with a reason attached, because the
+refusal list is the replacement backlog.
+
+## Built and measured today (M0 + M1): the read path
 
 - **Registry bootstrap from the database itself**: models, fields, `_order`,
   relational metadata, related-field paths, `ir.default` fallbacks, security
@@ -333,7 +345,7 @@ depends on. `harness/sweep_corpus.py` seeds them — see the battery below.
 routed-Python against original-Python, so every comparison it makes travels
 through `rust_orm_shim` — which sends `groupby_labels=False`, gates out every
 model whose read path is Python, and refuses several parameter shapes. It is
-evidence about the HYBRID and says nothing about `odoo-poc query`,
+evidence about the HYBRID and says nothing about `rustorm query`,
 `run-corpus` or `serve`. The shadow corpus IS kernel-direct, and is 275
 hand-written cases over 16 models. The kernel sweep is the third thing —
 kernel-direct and broad, at admin and at a seeded non-admin identity — and it
@@ -431,7 +443,7 @@ The individual pieces still work on their own:
 ```sh
 echo "import runpy; runpy.run_path('harness/gen_expected.py', init_globals={'env': env})" | \
   .../odoo-bin shell -c "$RUSTORM_ODOO_CONF" -d "$RUSTORM_DB" --no-http
-./target/release/odoo-poc run-corpus --file harness/corpus.json > actual.json
+./target/release/rustorm run-corpus --file harness/corpus.json > actual.json
 python3 harness/diff.py expected.json actual.json --json diff.json
 ```
 
@@ -1138,7 +1150,7 @@ kernel/src/scan.rs       the reader: search_read/search_count/read_group,
                          Condition -- scan.rs decides nothing about access,
                          orm.rs decides nothing about wire format
 kernel/tests/            DB-free compilation tests + statement-cache benchmark
-server/src/              odoo-poc CLI + axum; connection-owned StmtCache
+server/src/              rustorm CLI + axum; connection-owned StmtCache
 engine-py/src/           PyO3 boundary: cursor (psycopg3 seam), registry
                          export, kernel bridge
 engine-py/python/        the cr facade and the ORM routing shim
@@ -1525,9 +1537,11 @@ until the file's mtime changes — or, with `RUSTORM_EXPORT_CMD` set to a
 command that regenerates it, runs that command and rebuilds in place, then
 retries the request.
 
-This is a PoC transport, not a session layer: it authenticates the *caller*, not
-a user, and there is no login, no cookie and no CSRF story. It is enough that
-the demo cannot be pointed at anything and asked for superuser.
+This transport is not the session layer and does not yet try to be: it
+authenticates the *caller*, not a user, and there is no login, no cookie and no
+CSRF story. Sessions arrive with M3, where the Rust binary is the server. Until
+then the bar this has to clear is narrower — it cannot be pointed at an
+arbitrary database and asked for superuser.
 
 Each request runs in one read-only `REPEATABLE READ` transaction
 (`dispatch_in_transaction`); `bench` takes the same path, so its numbers
@@ -1688,7 +1702,7 @@ rather than a set of hand-written regexes:
 
 ```sh
 RUSTORM_LOG=odoo_kernel::refusal=debug,odoo_kernel::access=debug \
-  ./target/release/odoo-poc --db <db> --export <export.json> \
+  ./target/release/rustorm --db <db> --export <export.json> \
   run-corpus --file <sweep_corpus.json> 2> census.log
 ```
 
@@ -1949,6 +1963,12 @@ Against a measured ~8% end-to-end gain, widening coverage buys a fraction of
 correctness argument would rest on imitating an interpreter rather than on a
 proof, which is the opposite of this kernel's posture. `res.company` is the one
 case where a proof is available, and it is one model.
+
+**Declined here does not mean conceded.** Replacement does not need SQL that
+imitates CPython's `str()`; it needs that Python to run on this engine, which is
+exactly what M3 embeds an interpreter to do. So this gap closes by moving the
+boundary rather than by widening the compiler, and the refusal census above is
+the list of what moving it has to cover.
 
 ## Corrected 2026-09-09: five wrong answers no corpus had asked about
 
@@ -2565,9 +2585,19 @@ above).
   `res.users` -- and it is the same set the shim already declines to route in
   production.
 
-## Next steps (M2 candidates)
+## The road to replacement (M2, then M3)
+
+`M3-PLAN.md` is the plan of record for the end state: the Rust binary as the
+server, with embedded CPython running addon logic on this engine. What stands
+between here and there, in the order the evidence says to take it:
 
 1. `web_search_read` + session auth → point the stock web client at it.
 2. Replay-based shadow testing: capture real `call_kw` traffic, diff at scale.
 3. The business-logic wall: PyO3-embedded Python for model overrides, with
-   the Rust kernel as the data engine underneath.
+   the Rust kernel as the data engine underneath. This is the step that turns
+   the refusal backlog from a permanent boundary into a temporary one — every
+   refusal above whose cause is "Python computes it" is answered by running
+   that Python *on* the kernel instead of beside it.
+4. The write path, flush and the dependency graph — the remaining half of the
+   ORM, and the one that makes Python's copy removable rather than merely
+   bypassed.

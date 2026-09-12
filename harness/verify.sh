@@ -204,7 +204,7 @@ elif [ "$SWEEP_CORPUS_OK" = 1 ]; then
   RUSTORM_CORPUS="$OUT/sweep_corpus.json" RUSTORM_EXPECTED="$OUT/sweep_expected.json" \
     shell_script "$ROOT/harness/gen_expected.py" > "$OUT/sweep_exp.log" 2>&1 \
     || echo "gen_expected exited $?" >> "$OUT/sweep_exp.log"
-  "${T[@]}" "$ROOT/target/release/odoo-poc" --db "$DB" --export "$OUT/export.json" \
+  "${T[@]}" "$ROOT/target/release/rustorm" --db "$DB" --export "$OUT/export.json" \
       run-corpus --file "$OUT/sweep_corpus.json" > "$OUT/sweep_actual.json" 2> "$OUT/sweep_run.log" \
     || echo "run-corpus exited $?" >> "$OUT/sweep_run.log"
   diff_stage "kernel sweep" "$OUT/sweep_expected.json" "$OUT/sweep_actual.json" \
@@ -214,7 +214,7 @@ else
 
 RUSTORM_EXPECTED="$OUT/expected.json" shell_script "$ROOT/harness/gen_expected.py" > "$OUT/gen.log" 2>&1; rc=$?
 if [ "$rc" = 0 ]; then
-  "${T[@]}" "$ROOT/target/release/odoo-poc" --db "$DB" --export "$OUT/export.json" \
+  "${T[@]}" "$ROOT/target/release/rustorm" --db "$DB" --export "$OUT/export.json" \
       run-corpus --file "$ROOT/harness/corpus.json" > "$OUT/actual.json" 2> "$OUT/corpus.log"
   diff_stage "shadow corpus" "$OUT/expected.json" "$OUT/actual.json" \
     "${RUSTORM_MIN_COMPARED_CORPUS:-150}" "$OUT/corpus_diff.json"
@@ -240,7 +240,7 @@ else
     RUSTORM_CORPUS="$OUT/fuzz_$seed.json" RUSTORM_EXPECTED="$OUT/fuzz_exp_$seed.json" \
       shell_script "$ROOT/harness/gen_expected.py" > "$OUT/fuzz_expgen_$seed.log" 2>&1 \
       || { fuzz_fail=1; fuzz_note="$fuzz_note seed$seed:EXPFAIL"; continue; }
-    "${T[@]}" "$ROOT/target/release/odoo-poc" --db "$DB" --export "$OUT/export.json" \
+    "${T[@]}" "$ROOT/target/release/rustorm" --db "$DB" --export "$OUT/export.json" \
         run-corpus --file "$OUT/fuzz_$seed.json" > "$OUT/fuzz_act_$seed.json" 2> "$OUT/fuzz_run_$seed.log" \
       || { fuzz_fail=1; fuzz_note="$fuzz_note seed$seed:RUNFAIL"; continue; }
     line=$("$PY" "$ROOT/harness/diff.py" "$OUT/fuzz_exp_$seed.json" "$OUT/fuzz_act_$seed.json" \
@@ -417,7 +417,7 @@ else
   # active user that is neither OdooBot nor the administrator
   OTHER_UID="$(pg -tAc "select min(id) from res_users where active and id not in (1, 2)" 2>/dev/null | tr -d '[:space:]')"
   SOAK_TOKEN="$("$PY" -c 'import secrets; print(secrets.token_hex(16))')"
-  RUSTORM_SERVE_TOKEN="$SOAK_TOKEN" "$ROOT/target/release/odoo-poc" --db "$DB" --export "$OUT/soak_export.json" \
+  RUSTORM_SERVE_TOKEN="$SOAK_TOKEN" "$ROOT/target/release/rustorm" --db "$DB" --export "$OUT/soak_export.json" \
       serve --port "$SOAK_PORT" > "$OUT/soak_serve.log" 2>&1 &
   soak_pid=$!
   soak_up=0

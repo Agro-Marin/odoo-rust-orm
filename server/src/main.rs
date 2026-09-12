@@ -10,7 +10,7 @@ use odoo_kernel::orm::{Orm, Request, StmtCache};
 use odoo_kernel::registry::Registry;
 
 #[derive(Parser)]
-#[command(name = "odoo-poc", about = "Rust Odoo kernel PoC (read path)")]
+#[command(name = "rustorm", about = "Odoo ORM engine in Rust (read path)")]
 struct Cli {
     #[arg(
         long,

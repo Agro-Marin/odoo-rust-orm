@@ -286,7 +286,8 @@ pub async fn serve(db: &str, port: u16, export: Option<&str>, options: ServeOpti
                 tracing::warn!(
                     uid,
                     "the pinned identity is OdooBot or the administrator, which \
-                     passes every access rule; pin a real user for anything but a demo"
+                     passes every access rule; pin a real user for anything but \
+                     a local harness run"
                 );
             }
             Auth::Pinned { uid }
