@@ -531,6 +531,51 @@ print(
     flush=True,
 )
 
+# web_search_read resolves a many2one with rules of its own. read() redacts a
+# target the user cannot read to False; web_read keeps its id, and {"id": id}
+# when a name was asked for. The routed call used the kernel's label, which is
+# read()'s answer: 124 of 1,018 routed web_search_read calls across the sweep
+# users disagreed with Python. The committed rule above hides Belgium's
+# currency from every user.
+shim.reset_breaker()
+previous_mode, previous_sample = shim.MODE, shim.SAMPLE
+shim.MODE, shim.SAMPLE = "on", 0.0
+try:
+    with env_for(uid) as e:
+        countries = e["res.country"]
+        for spec in (
+            {"currency_id": {}},
+            {"currency_id": {"fields": {"display_name": {}}}},
+        ):
+            routed = shim.STATS["kernel"]
+            answer = countries.web_search_read([("id", "=", cid)], spec)
+            assert shim.STATS["kernel"] > routed, "web_search_read did not route"
+            shim.MODE = "off"
+            python = countries.web_search_read([("id", "=", cid)], spec)
+            shim.MODE = "on"
+            assert python["records"][0]["currency_id"], (
+                "the contract expects Python to keep the hidden currency's id"
+            )
+            assert answer["records"] == python["records"], "routed %r != python %r" % (
+                answer["records"],
+                python["records"],
+            )
+        # web_read's own call, which a web_search_read the gate refuses makes
+        routed = shim.STATS["kernel"]
+        answer = countries.browse(cid).read(["currency_id"], load=None)
+        assert shim.STATS["kernel"] > routed, "read(load=None) did not route"
+        shim.MODE = "off"
+        python = countries.browse(cid).read(["currency_id"], load=None)
+        shim.MODE = "on"
+        assert answer == python, "routed %r != python %r" % (answer, python)
+        e.cr.rollback()
+finally:
+    shim.MODE, shim.SAMPLE = previous_mode, previous_sample
+print(
+    "CONTRACT routed web_search_read keeps an unreadable many2one target as web_read does",
+    flush=True,
+)
+
 # Release committed rule/field policy changes before the rest of the corpus.
 with env_for() as e:
     e["ir.rule"].browse(rule_id).unlink()

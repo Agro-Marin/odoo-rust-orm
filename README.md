@@ -421,6 +421,7 @@ rest of the battery does it now too.
 | concurrency | several identities interleaved across threads, no cache cross-talk |
 | replay | the web tours' own traffic (captured by `rust_engine_capture` during that stage; `RUSTORM_REPLAY` names another file) fed back through the shim in shadow mode: routed share and divergences per (model, method); SKIP only when the tours did not run, FAIL when nothing was compared or an unexpected native/shim error occurred; rolled-back tour identities are reported separately and are not counted as replayed |
 | runtime contracts | real native connections check cache fidelity, SQL-failure recovery and breaker classification, stale exports, and the registry reload hook; required even under `--quick` |
+| many2one access (web) | every user reads stored many2ones through `web_search_read`, `search_read` and `read(load=None)` routed and not; an unreadable target must keep Python's value |
 | web tours (shadow) | the mail, web and base tours run by `odoo-bin` carrying `rust_engine` in shadow mode against the database: FAIL on a failed tour or a live divergence; reports the routed share and the gate count; SKIP under `--quick` or without `mail` installed (`RUSTORM_TOUR_TAGS` picks another set) |
 | soak | sustained load against `serve` behind a per-run token: the shadow corpus's baseline (`expected.json`) re-asked at every identity it names, plus self-consistency probes at the seeded `other` identity; RSS growth after a warm-up bounded (`RUSTORM_SOAK_RSS_GROWTH`, default 20 %), still healthy after. `--uids` is refused against a server that pins its identity, because the uids would be silently ignored |
 
@@ -2811,6 +2812,62 @@ Two shim tests pin it. One requires the extension under test to carry the
 checkout's checksum, so the battery's first stage fails by name when
 `target/release` is older than the tree. The other copies the inputs, edits an
 embedded module and requires the build to be refused.
+
+## Routed `web_search_read` redacted many2one targets `web_read` keeps
+
+`read()` and `web_read` answer a many2one whose target the user may not read
+differently. `read()` goes through `Many2one.convert_to_read_multi`, which
+redacts that target to `False`. `web_read` reads with `load=None`, keeping the
+raw foreign key, then `_web_read_resolve_many2one` returns the id for a plain
+spec, and `{"id": id}` when a name was asked for, adding the name only where
+`_filtered_display_name_access` allows it.
+
+The routed `web_search_read` built its many2ones from the kernel's label,
+which is `read()`'s answer, and the routed `read(load=None)` took the id out
+of the same redacted label. Every user of the probe database read every
+table-backed model's first four stored many2ones, routing on and off:
+
+```
+                                    routed calls   disagreeing
+web_search_read, plain and named          1,018            124
+search_read and read()                      760              0
+```
+
+`res.users.company_id`, `res.country.currency_id`, `ir.actions.report.binding_model_id`
+and `create_uid`/`write_uid` on half the base models were `False` routed and
+an id in Python. No stage saw it, because every corpus reads as users who can
+see those targets. With `rust_engine_verify_sample` above zero such a call
+would also have quarantined the model.
+
+The kernel's `search_read` takes two new lists. Fields in `raw_many2one` come
+back as the bare foreign key with no label query. Fields in
+`unredacted_many2one` keep their label, but a target the label query hid comes
+back as its id instead of `False`. The shim chooses per column:
+
+- **A plain many2one** is the raw id, which is what `web_read` returns.
+- **A named many2one to a comodel the kernel can name** keeps the label when
+  the target is visible, which is `web_read`'s answer too. Only the rows whose
+  target was hidden go to web's own `_web_read_resolve_many2one`.
+- **A named many2one to a comodel whose name Python computes** goes to web's
+  resolver whole. Those calls used to fall back, so 16 more calls of the
+  recorded traffic route.
+- **`read(load=None)`** asks for every many2one raw.
+
+Handing every many2one to web's resolver was correct and cost the speed:
+routed `web_search_read` went from 0.56x to 1.06x Python. Keeping visible
+labels brings it back to 0.56x.
+
+`harness/web_many2one.py` runs the probe as the battery stage "many2one
+access (web)", `read(load=None)` included. It takes about 22 seconds:
+
+```
+this build        compared 1,966 over 9 users   0 mismatching
+previous build    compared 1,778 over 9 users   fails: res.users at uid 9, res.country at uid 4, ...
+```
+
+A runtime contract reads Belgium's currency, which a committed
+rule hides, through `web_search_read` plain and named and `read(load=None)`.
+The contract fails on the previous build.
 
 ## A write to `res.users` taints a cursor only through Odoo's own invalidation fields
 

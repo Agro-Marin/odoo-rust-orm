@@ -2838,6 +2838,8 @@ fn a_request_naming_no_groupby_is_answered_not_refused() {
         lang: None,
         allowed_company_ids: None,
         groupby_labels: None,
+        raw_many2one: Vec::new(),
+        unredacted_many2one: Vec::new(),
         active_test: None,
         x2many_active_test: None,
         tz: None,

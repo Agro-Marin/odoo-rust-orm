@@ -420,6 +420,21 @@ else
   stage "search (port)" SKIP "needs libengine_py.so and the sweep corpus"
 fi
 
+# Many2one values of routed reads at every user of the database. read()
+# redacts a target the user cannot read; web_read keeps its id. The corpora
+# above read as users who see their targets, so only this stage asks.
+if [ -f "$PYMOD/engine_py.so" ]; then
+  PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/web_many2one.py" > "$OUT/web_many2one.log" 2>&1; rc=$?
+  if [ "$rc" = 0 ]; then
+    stage "many2one access (web)" OK "$(grep -a '^WEB M2O compared' "$OUT/web_many2one.log" | cut -c9-60)"
+  elif timed_out "$rc"; then stage "many2one access (web)" FAIL "$expired"
+  else
+    stage "many2one access (web)" FAIL "$(grep -aE '^WEB M2O (FAILED|MISMATCH)' "$OUT/web_many2one.log" | head -2 | tr '\n' ' ' | cut -c1-90)"
+  fi
+else
+  stage "many2one access (web)" SKIP "needs libengine_py.so"
+fi
+
 # The statement the port composes, against the statement the FORK composes,
 # with no database involved: `test_shims.py` and `kernel/tests/pure.rs` each
 # derive the contract file independently, and this is the half that asks Odoo.

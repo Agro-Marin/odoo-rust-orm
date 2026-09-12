@@ -393,7 +393,14 @@ impl<'a> Orm<'a> {
 
         let mut m2o_columns: std::collections::BTreeMap<String, Vec<usize>> =
             std::collections::BTreeMap::new();
-        for (fi, _f) in sel_fields.iter().enumerate() {
+        let mut keep_hidden_ids: BTreeSet<usize> = BTreeSet::new();
+        for (fi, f) in sel_fields.iter().enumerate() {
+            if req.raw_many2one.iter().any(|raw| *raw == f.name) {
+                continue;
+            }
+            if req.unredacted_many2one.iter().any(|name| *name == f.name) {
+                keep_hidden_ids.insert(fi + 1);
+            }
             if let ColKind::M2o { comodel } = &kinds[fi + 1].1 {
                 m2o_columns.entry(comodel.clone()).or_default().push(fi + 1);
             }
@@ -418,6 +425,7 @@ impl<'a> Orm<'a> {
                     if let Some(id) = rec[*ci].as_i64() {
                         rec[*ci] = match names.get(&id) {
                             Some(name) => json!([id, name]),
+                            None if keep_hidden_ids.contains(ci) => json!(id),
                             None => json!(false),
                         };
                     }

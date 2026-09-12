@@ -172,6 +172,21 @@ pub struct Request {
     #[serde(default)]
     pub groupby_labels: Option<bool>,
 
+    /// Many2one fields `search_read` returns as the bare foreign key, with no
+    /// label query. `web_search_read` resolves a many2one with rules of its
+    /// own -- an unreadable target is still its id, not `False` -- and the
+    /// shim hands the raw ids to web's resolver instead of a label that
+    /// already redacted them.
+    #[serde(default)]
+    pub raw_many2one: Vec<String>,
+
+    /// Many2one fields whose label `search_read` still renders, but whose
+    /// target the label query hid comes back as the bare id instead of
+    /// `False`. A visible target's label is web_read's answer too; only a
+    /// hidden one needs web's resolver, and this is how the shim finds it.
+    #[serde(default)]
+    pub unredacted_many2one: Vec<String>,
+
     #[serde(default)]
     pub active_test: Option<bool>,
 

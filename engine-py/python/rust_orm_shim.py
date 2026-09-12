@@ -855,7 +855,7 @@ def _web_clean(model):
 
 
 def _web_spec_plan(model, specification):
-    fields, named, plain = [], set(), set()
+    fields, many2ones = [], []
     for name, spec in specification.items():
         f = model._fields.get(name)
         if f is None:
@@ -871,29 +871,51 @@ def _web_spec_plan(model, specification):
             if "context" in spec:
                 return None
             sub = spec.get("fields")
-            if sub is None:
-                plain.add(name)
-            elif isinstance(sub, dict) and set(sub) == {"display_name"}:
-                named.add(name)
-            else:
+            if sub is not None and not (
+                isinstance(sub, dict) and set(sub) == {"display_name"}
+            ):
                 return None
+            many2ones.append(name)
         elif f.type in ("one2many", "many2many"):
             if spec:
                 return None
         fields.append(name)
-    return fields, named, plain
+    return fields, many2ones
 
 
-def _web_records(records, named, plain):
-    for rec in records:
-        for name in named:
-            val = rec.get(name)
-            if isinstance(val, list):
+def _web_split_many2ones(model, specification, many2ones):
+    # A plain many2one is web_read's raw foreign key and needs no label. A
+    # named one keeps the kernel's label when the user may see the target;
+    # a target the label query hid comes back as its bare id for web's own
+    # resolver, and a comodel whose name Python computes goes there whole.
+    raw, unredacted = [], []
+    for name in many2ones:
+        named = "fields" in (specification[name] or {})
+        comodel = model.env[model._fields[name].comodel_name]
+        (unredacted if named and _display_ok(comodel) else raw).append(name)
+    return raw, unredacted
+
+
+def _web_resolve_many2ones(model, records, specification, raw, unredacted):
+    # web_read decides a many2one's value with rules of its own: an unreadable
+    # target is still its id, or {"id": id} when a name was asked for, where
+    # read() redacts it to False.
+    for name in raw:
+        spec = specification[name] or {}
+        if "fields" in spec:
+            model._web_read_resolve_many2one(records, model._fields[name], name, spec)
+    for name in unredacted:
+        hidden = []
+        for rec in records:
+            val = rec[name]
+            if isinstance(val, tuple):
                 rec[name] = {"id": val[0], "display_name": val[1]}
-        for name in plain:
-            val = rec.get(name)
-            if isinstance(val, list):
-                rec[name] = val[0]
+            elif val:
+                hidden.append(rec)
+        if hidden:
+            model._web_read_resolve_many2one(
+                hidden, model._fields[name], name, specification[name]
+            )
     return records
 
 
@@ -1342,10 +1364,16 @@ def install():
                 plan
                 and plan[0]
                 and _gate(
-                    self, plan[0], order=order, domain=domain, method="web_search_read"
+                    self,
+                    plan[0],
+                    order=order,
+                    domain=domain,
+                    labels=False,
+                    method="web_search_read",
                 )
             ):
-                fields, named, plain = plan
+                fields, many2ones = plan
+                raw, unredacted = _web_split_many2ones(self, specification, many2ones)
                 try:
                     if not _flush_if_needed(self.env, self, domain, order, fields):
                         raise KernelRefused("flush failed; not routing")
@@ -1360,6 +1388,8 @@ def install():
                         x2many_active_test=bool(
                             self.env.context.get("active_test", True)
                         ),
+                        raw_many2one=raw,
+                        unredacted_many2one=unredacted,
                     )
                     STATS["kernel"] += 1
 
@@ -1380,8 +1410,12 @@ def install():
                     )
                     result = {
                         "length": length,
-                        "records": _revive_records(
-                            self, _web_records(recs, named, plain)
+                        "records": _web_resolve_many2ones(
+                            self,
+                            _revive_records(self, recs),
+                            specification,
+                            raw,
+                            unredacted,
                         ),
                     }
                     result["__version"] = _canonical_digest(result)
@@ -1439,7 +1473,11 @@ def install():
         elif not _read_fields_ok(self, fields):
             routable = False
         else:
-            routable = _gate(self, list(fields), method="read")
+            # read(load=None) is web_read's call: its many2ones are the raw
+            # foreign keys, an unreadable target included, so the kernel
+            # returns them unlabelled rather than redacted
+            labels = load == "_classic_read"
+            routable = _gate(self, list(fields), labels=labels, method="read")
         if routable:
             try:
                 if not _flush_if_needed(
@@ -1455,6 +1493,13 @@ def install():
                     limit=None,
                     order="id",
                     x2many_active_test=bool(self.env.context.get("active_test", True)),
+                    raw_many2one=[]
+                    if labels
+                    else [
+                        f
+                        for f in fields
+                        if getattr(self._fields.get(f), "type", None) == "many2one"
+                    ],
                 )
                 STATS["kernel"] += 1
                 ordered = _read_reorder(ids, _revive_records(self, recs), load)

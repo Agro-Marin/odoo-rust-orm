@@ -671,17 +671,58 @@ def test_config_scopes_routing_and_arms_the_breaker() -> None:
         ) = saved
 
 
-def test_web_records_and_length() -> None:
+def test_web_many2ones_resolve_through_web_read() -> None:
+    # web_read keeps an unreadable many2one target as its id, where read()
+    # redacts it to False. A visible target's kernel label is also web_read's
+    # answer; a hidden one, and a comodel whose name Python computes, go to
+    # web's own resolver, and only those rows do.
     orm_shim = _shims()[1]
+    calls = []
+
+    class M:
+        _fields = {
+            "partner_id": F("many2one"),
+            "user_id": F("many2one"),
+            "group_id": F("many2one"),
+        }
+
+        def _web_read_resolve_many2one(self, values_list, field, name, spec) -> None:
+            calls.append((name, field.type, bool(spec), [v["id"] for v in values_list]))
+            for vals in values_list:
+                vals[name] = {"id": vals[name]}
+
     recs = [
-        {"id": 1, "partner_id": [7, "Seven"], "user_id": [2, "Admin"], "name": "a"},
-        {"id": 2, "partner_id": False, "user_id": [3, "Bob"], "name": "b"},
+        {"id": 1, "partner_id": (7, "Seven"), "user_id": 2, "group_id": 5},
+        {"id": 2, "partner_id": 8, "user_id": False, "group_id": False},
+        {"id": 3, "partner_id": False, "user_id": 3, "group_id": 6},
     ]
-    out = orm_shim._web_records(recs, named={"partner_id"}, plain={"user_id"})
-    check("m2o named", out[0]["partner_id"], {"id": 7, "display_name": "Seven"})
-    check("m2o plain", out[0]["user_id"], 2)
-    check("m2o empty stays False", out[1]["partner_id"], False)
-    check("untouched field", out[1]["name"], "b")
+    named = {"fields": {"display_name": {}}}
+    spec = {"partner_id": named, "user_id": None, "group_id": named}
+    out = orm_shim._web_resolve_many2ones(
+        M(), recs, spec, raw=["user_id", "group_id"], unredacted=["partner_id"]
+    )
+    check(
+        "the resolver sees a named raw column whole and only hidden labelled rows",
+        calls,
+        [
+            ("group_id", "many2one", True, [1, 2, 3]),
+            ("partner_id", "many2one", True, [2]),
+        ],
+    )
+    check(
+        "a visible label is web_read's value",
+        out[0]["partner_id"],
+        {"id": 7, "display_name": "Seven"},
+    )
+    check("a hidden target is resolved by web", out[1]["partner_id"], {"id": 8})
+    check("an empty many2one stays False", out[2]["partner_id"], False)
+    check(
+        "a plain many2one keeps the raw id", [r["user_id"] for r in out], [2, False, 3]
+    )
+
+
+def test_web_length() -> None:
+    orm_shim = _shims()[1]
 
     calls = []
 
@@ -727,7 +768,7 @@ def test_web_spec_plan() -> None:
                 "tag_ids": {},
             },
         ),
-        (["name", "partner_id", "user_id", "tag_ids"], {"partner_id"}, {"user_id"}),
+        (["name", "partner_id", "user_id", "tag_ids"], ["partner_id", "user_id"]),
     )
     check("unknown field refuses", plan(M(), {"nope": {}}), None)
     check(
@@ -760,7 +801,7 @@ def test_web_spec_plan() -> None:
     check(
         "a related non-stored field maps",
         plan(M(), {"cur": {}}),
-        (["cur"], set(), {"cur"}),
+        (["cur"], ["cur"]),
     )
     orm_shim._GATE_CACHE.update({"k": True})
     orm_shim.forget_gates()
