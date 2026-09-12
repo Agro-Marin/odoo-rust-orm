@@ -1644,8 +1644,7 @@ whoever reads only one half. All four are negative-controlled.
 ### The refusal census, and what it took to make it mean something
 
 `odoo_kernel::refusal` carries the source line, so the backlog is a group-by
-rather than a set of hand-written regexes. Over the 8,254-case sweep on
-base+mail:
+rather than a set of hand-written regexes:
 
 ```sh
 RUSTORM_LOG=odoo_kernel::refusal=debug,odoo_kernel::access=debug \
@@ -1653,37 +1652,68 @@ RUSTORM_LOG=odoo_kernel::refusal=debug,odoo_kernel::access=debug \
   run-corpus --file <sweep_corpus.json> 2> census.log
 ```
 
+Over the 24,199-case sweep on a 162-module fixture (account, sale, stock,
+project, hr, purchase, crm, mail — 557 models):
+
 ```
-  refusal=1241  access=3464  over 17 sites
-   368  kernel/src/orm.rs      <model> overrides the read path in Python (_search)
-   314  kernel/src/sqlgen.rs   <model> lets an exact match take precedence over display_name
-   176  kernel/src/sqlgen.rs   cannot traverse non-stored <field>
-   138  kernel/src/sqlgen.rs   <model> defines its display name in Python
-    62  kernel/src/sqlgen.rs   the subquery traverses <model>, which defines `_search` in Python
+  refusal=4221  access=10110  over 27 sites
+  1128  orm.rs:1215       <model> overrides the read path in Python (_field_to_sql)
+   815  sqlgen.rs:1483    res.users lets an exact match on login take precedence over display_name
+   450  sqlgen.rs:1049    <field> defines a custom search method
+   372  sqlgen.rs:1469    <model> defines its display name in Python
+   357  sqlgen.rs:281     cannot traverse non-stored <field>
+   316  sqlgen.rs:1389    the subquery traverses <model>, which defines `_search` in Python
+   283  security.rs:257   record rules on <model> could not be evaluated
+   143  scan.rs:1119      grouping by a comodel row this identity may not read
     …
 ```
 
-**The first census read 5,726 refusals and 4,700 of them were not refusals.**
-The reachability walk asks *"does this request name groupby fields?"* and
-*"does this leaf path resolve?"* by calling the demanding form and discarding
-the error — so a plain `search_read` filed one refusal for having no groupby
-(62% of the census) and every `display_name` leaf filed one for not being a
-registry field (19%). The two loudest rows of the work list were the engine
-asking itself questions.
+**STATE THE FIXTURE, because a census does not scale — a small one hides whole
+classes.** The same corpus generator on base+mail (33 modules, 8,254 cases)
+gives 1,241 refusals over 13 sites, and the difference is not a factor:
+
+| | base+mail | 162 modules |
+|---|---|---|
+| refusals | 1,241 | 4,221 |
+| distinct sites | 13 | 23 |
+| sites the smaller fixture never reached | — | **13** |
+
+Two of the top eight at scale are **absent** from the small fixture entirely —
+`record rules could not be evaluated` (283) and `grouping by a comodel row this
+identity may not read` (143) — and `defines a custom search method` moves from
+21 hits at rank 8 to 450 at rank 3. A backlog built on base+mail would have put
+effort into the wrong three things and never seen the record-rule class at all.
+The tail is where it shows worst: an unparsable `domain_force`, an `_inherits`
+field missing from the registry, a one2many whose inverse has no column — each
+a handful of hits, none reachable without the modules that declare them.
+
+**The first census, on base+mail, read 5,726 refusals and 4,700 of them were
+not refusals.** The reachability walk asks *"does this request name groupby
+fields?"* and *"does this leaf path resolve?"* by calling the demanding form and
+discarding the error — so a plain `search_read` filed one refusal for having no
+groupby (62% of the census) and every `display_name` leaf filed one for not
+being a registry field (19%). The two loudest rows of the work list were the
+engine asking itself questions.
 
 A question gets its own form next to the demand, and neither refuses: `lookup`
 beside `get`, `groupby_names_seen` beside `groupby_names`, `normalize_path_seen`
-beside `normalize_path`, `parse_nested` beside `parse`. 1,241 then, against the
-**1,233** the harness counts through a completely separate path — that agreement
-is what makes the number worth acting on.
+beside `normalize_path`, `parse_nested` beside `parse`. The same corpus then
+read **1,241** against the **1,233** refused cases `harness/verify.sh` counts
+through a completely separate path — and that agreement, not the number itself,
+is what made it worth acting on. Cross-check a census against something that
+was not derived from it before believing any of it.
 
-Three rules fall out of it, and they are the ones to keep. **A census needs
+Four rules fall out of it, and they are the ones to keep. **A census needs
 both of the first two and neither implies the other** — a count can be inflated
 by questions nobody asked, or deflated by sites that refuse and never report,
 and each failure looks fine from the other axis:
 
 - **Null control: a corpus that is fully handled must log zero refusals.** That
   is what finds a speculative caller. This census failed it.
+- **Scale: a census is a property of its fixture, not of the engine.** Thirteen
+  of the twenty-three sites above are unreachable on base+mail, so a backlog
+  built there is confidently wrong about its own top three. Say which fixture a
+  census came from, and re-measure before acting on a ranking.
 - **Completeness: every path that can fail must report somewhere.** `refuse!` /
   `refusal!` / `deny_access!` cover their sites by construction, so what matters
   is the paths that BYPASS them — a bare `bail!` or `anyhow!` is invisible to
@@ -1698,6 +1728,39 @@ and each failure looks fine from the other axis:
   refusal (`refusal_at!`). Wrapping it in one `map_err` collapses every cause
   the helper has onto one row and the census silently loses resolution.
 
+## Ordering by a company-dependent many2one asked PostgreSQL for `jsonb = integer`
+
+Found 2026-09-11 by the fuzz stage on a 162-module fixture, one case in 1,500,
+and it predates this branch — the base commit fails identically:
+
+```
+ERROR: operator does not exist: jsonb = integer
+HINT: No operator matches the given name and argument types.
+```
+
+A company-dependent field stores its value in a `jsonb` keyed by company, so a
+company-dependent **many2one** keeps its id inside that jsonb. `order_terms`
+took the FK as the raw column (`col(alias, &field.name)`) and `OrderJoin`
+carried a column NAME, so the LEFT JOIN onto the comodel compared the jsonb to
+`id`. The statement dies before it runs — an internal error, not a refusal, so
+the caller's transaction aborts rather than falling back to Python.
+
+The groupby itself was always right: `read_group` reads its group expression
+through `ctx.read_expr`, which handles company-dependent. **Only the ORDER BY
+was wrong, which is why it needs an order term to reproduce** — and it hit
+`search_read` just as hard as `read_group`, on any order naming such a field.
+
+`OrderJoin` carries an `Expr` now instead of a column name, and the FK comes
+from `order_expr`, which is what every other reader of the field already used.
+Pinned by `ordering_by_a_company_dependent_many2one_reads_it_out_of_its_jsonb`,
+which also asserts a plain many2one still joins on its own column, and which
+fails against the old FK.
+
+**base+mail could not reach this.** It has no company-dependent many2one whose
+comodel is ordered by something other than `id`, so all three fuzz seeds passed
+there. The same seeds on 162 modules found it on the second. That is the same
+lesson as the census: a fixture decides what a gate can see.
+
 ### Removing the campaign logging
 
 The campaign surface is mechanically identifiable, which is the point:
@@ -1706,6 +1769,14 @@ The campaign surface is mechanically identifiable, which is the point:
 grep -rn 'target: "odoo_kernel::' kernel/src server/src engine-py/src   # the rust half
 grep -rn '_gate_logger\|_call_logger' engine-py/python                 # the python half
 ```
+
+**What the campaign FOUND does not come out with it.** The removal is of
+scaffolding, not of fixes: the dsn de-duplication, the `jsonb = integer` join,
+the question/demand pairs and their tests, the battery's derived conf and the
+parity gate's named baseline are all permanent, and so are the two `error`
+lines on the internal invariants — those are not campaign logging, they are the
+only report those paths have. A session deleting the targets must not delete
+them with it.
 
 Four of the targets predate the campaign and stay: `dispatch`, `sql`, `rules`,
 `signal`. The rest, and the `trace`-level events under the four, are the

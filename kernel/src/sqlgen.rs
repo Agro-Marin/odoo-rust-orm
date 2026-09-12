@@ -2149,8 +2149,14 @@ fn order_expr(ctx: &ExprCtx, model: &Model, f: &Field, alias: &str) -> Result<Ex
 pub struct OrderJoin {
     pub table: String,
     pub alias: String,
-    pub from_alias: String,
-    pub from_col: String,
+    /// The left side of the join, as an EXPRESSION rather than a column name.
+    ///
+    /// A column name cannot express a company-dependent many2one: the column is
+    /// a `jsonb` keyed by company and the id lives inside it, so joining the
+    /// comodel on the raw column asks PostgreSQL for `jsonb = integer` and the
+    /// statement dies before it runs. `ExprCtx::field_expr` is what every other
+    /// reader of that field already uses.
+    pub from: Expr,
 }
 
 pub struct OrderItem {
@@ -2300,7 +2306,10 @@ fn order_terms(
             continue;
         }
         let comodel = ctx.registry.get(field.comodel()?)?;
-        let fk = col(alias, &field.name);
+        // NOT the raw column: a company-dependent many2one keeps its id inside
+        // a jsonb, and both the ORDER BY term and the join below have to read
+        // it the way the rest of the compiler does
+        let fk = order_expr(ctx, model, field, alias)?;
 
         if comodel.order.trim() == "id" {
             out.push(OrderItem {
@@ -2363,8 +2372,7 @@ fn order_terms(
         chain.push(OrderJoin {
             table: comodel.table.clone(),
             alias: join_alias.clone(),
-            from_alias: alias.to_string(),
-            from_col: field.name.clone(),
+            from: fk.clone(),
         });
         order_terms(
             ctx,

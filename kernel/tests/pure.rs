@@ -742,7 +742,8 @@ fn order_sql(reg: &Registry, model: &str, order: &str) -> anyhow::Result<String>
                     sea_query::JoinType::LeftJoin,
                     Alias::new(j.table.as_str()),
                     Alias::new(j.alias.as_str()),
-                    odoo_kernel::sqlgen::col(&j.from_alias, &j.from_col)
+                    j.from
+                        .clone()
                         .equals((Alias::new(j.alias.as_str()), Alias::new("id"))),
                 );
             }
@@ -2850,4 +2851,68 @@ fn a_request_naming_no_groupby_is_answered_not_refused() {
             "the two readers disagree on {groupby}"
         );
     }
+}
+
+// A company-dependent many2one keeps its id inside a `jsonb` keyed by company.
+// Ordering by one used to join the comodel on the RAW column, which asks
+// PostgreSQL for `jsonb = integer` and kills the statement before it runs:
+//
+//   ERROR: operator does not exist: jsonb = integer
+//
+// Found by the fuzz stage on a 162-module fixture (base+mail has no such field
+// on a model whose comodel is ordered by something other than id), and it hit
+// `search_read` as well as `read_group` -- any order term naming the field.
+#[test]
+fn ordering_by_a_company_dependent_many2one_reads_it_out_of_its_jsonb() {
+    let mut currency = model("res.currency", "name", vec![field("name", FieldType::Char)]);
+    currency.rec_name = Some("name".into());
+
+    let mut partner = model(
+        "res.partner",
+        "id",
+        vec![
+            field("name", FieldType::Char),
+            field("property_purchase_currency_id", FieldType::Many2one),
+        ],
+    );
+    let f = partner
+        .fields
+        .get_mut("property_purchase_currency_id")
+        .unwrap();
+    f.relation = Some("res.currency".into());
+    f.company_dependent = true;
+    f.pg_type = "jsonb".into();
+
+    let reg = registry(vec![partner, currency]);
+    let sql = order_sql(&reg, "res.partner", "property_purchase_currency_id").unwrap();
+
+    // the join reads the id out of the jsonb, never the column itself
+    assert!(
+        sql.contains("->"),
+        "the join must extract from the jsonb, got: {sql}"
+    );
+    assert!(
+        !sql.contains(r#""res_partner"."property_purchase_currency_id" = "#),
+        "the raw jsonb column is being compared to an id: {sql}"
+    );
+
+    // and a plain many2one still joins on its column, unchanged
+    let mut plain = model(
+        "res.partner",
+        "id",
+        vec![
+            field("name", FieldType::Char),
+            field("parent_id", FieldType::Many2one),
+        ],
+    );
+    plain.fields.get_mut("parent_id").unwrap().relation = Some("res.currency".into());
+    let reg = registry(vec![
+        plain,
+        model("res.currency", "name", vec![field("name", FieldType::Char)]),
+    ]);
+    let sql = order_sql(&reg, "res.partner", "parent_id").unwrap();
+    assert!(
+        sql.contains(r#""res_partner"."parent_id" = "#),
+        "a plain many2one must still join on its own column, got: {sql}"
+    );
 }

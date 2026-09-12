@@ -224,7 +224,8 @@ impl<'a> Orm<'a> {
                         JoinType::LeftJoin,
                         Alias::new(j.table.as_str()),
                         Alias::new(j.alias.as_str()),
-                        col(&j.from_alias, &j.from_col)
+                        j.from
+                            .clone()
                             .equals((Alias::new(j.alias.as_str()), Alias::new("id"))),
                     );
                 }
