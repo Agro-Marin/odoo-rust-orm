@@ -373,6 +373,7 @@ print("PROBE copyabort rows_landed=%d  (psycopg3 aborts the COPY -> expected 0)"
 "#;
 
 fn main() -> Result<()> {
+    engine_py::logbridge::install_stderr();
     let which = std::env::args().nth(1).unwrap_or_else(|| "all".into());
     let db = odoo_kernel::config::db();
     let dsn = odoo_kernel::config::dsn_for(Some(&db));

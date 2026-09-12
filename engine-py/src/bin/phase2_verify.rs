@@ -362,6 +362,7 @@ def run(reg, orm_shim, originals):
 "#;
 
 fn main() -> Result<()> {
+    engine_py::logbridge::install_stderr();
     // SAFETY: main has spawned no thread yet, so no other thread can be reading
     // the environment concurrently.
     unsafe {

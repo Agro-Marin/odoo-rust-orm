@@ -157,6 +157,10 @@ fn skip_opaque(bytes: &[u8], i: usize) -> Option<usize> {
     }
 }
 
+/// psycopg's `%s` / `%(name)s` to postgres' `$1`. The statement the server
+/// and the prepared-statement cache both see is the OUTPUT of this, so a
+/// mistranslation is a cache key that never hits and a query that never matches
+/// what the caller wrote.
 fn translate_placeholders(sql: &str) -> (String, Vec<String>) {
     let bytes = sql.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(sql.len() + 8);
@@ -509,6 +513,13 @@ fn py_to_sql(
                 });
             }
 
+            // Nothing above recognised this pair, so the value is STRINGIFIED
+            // and the server is asked to cast it. That is psycopg's behaviour
+            // for an unregistered adapter and it is usually right -- but it is
+            // also the shape that produced this transport's worst defects,
+            // where a value the converter did not know became a plausible
+            // string instead of an error. Once per (python type, pg type).
+            warn_generic_param(v, ty);
             let s: String = v.str()?.extract()?;
             if textual {
                 Box::new(s)
@@ -517,6 +528,28 @@ fn py_to_sql(
             }
         }
     })
+}
+
+fn warn_generic_param(v: &Bound<'_, PyAny>, ty: &Type) {
+    use std::sync::Mutex;
+    static SEEN: Mutex<Option<std::collections::HashSet<(String, String)>>> = Mutex::new(None);
+    let python_type = v
+        .get_type()
+        .name()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|_| "?".to_string());
+    let key = (python_type.clone(), ty.name().to_string());
+    let mut guard = SEEN.lock().unwrap();
+    let seen = guard.get_or_insert_with(std::collections::HashSet::new);
+    if seen.insert(key) {
+        tracing::debug!(
+            target: "odoo_kernel::cursor",
+            python_type = %python_type,
+            pg_type = ty.name(),
+            "no encoder for this parameter; stringifying it and letting the \
+             server cast, as psycopg does for an unregistered adapter"
+        );
+    }
 }
 
 fn parse_tstz(s: &str) -> PyResult<chrono::DateTime<chrono::Utc>> {
@@ -542,6 +575,12 @@ fn parse_tstz(s: &str) -> PyResult<chrono::DateTime<chrono::Utc>> {
         }
     }
     if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        // a bare date for a timestamptz column is read as UTC midnight, which
+        // is a CHOICE: the server would apply its own TimeZone setting
+        tracing::debug!(
+            target: "odoo_kernel::cursor",
+            value = %s, "a bare date bound to a timestamptz; reading it as UTC midnight"
+        );
         return Ok(Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap()));
     }
     Err(rerr(format!("cannot parse {s:?} as a timestamptz")))

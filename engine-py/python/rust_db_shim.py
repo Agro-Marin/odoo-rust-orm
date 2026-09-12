@@ -414,8 +414,6 @@ class FakeConnection:
         return cur
 
     def pipeline(self):
-        import contextlib
-
         return contextlib.nullcontext()
 
 
@@ -425,6 +423,17 @@ _IDLE = []
 _IDLE_LOCK = threading.Lock()
 _IDLE_PID = os.getpid()
 MAX_IDLE = 8
+
+
+def _close_quietly(conn, why) -> None:
+    # A close is best-effort everywhere it appears below: a pool that fails to
+    # return a connection must not fail the caller. But a close that RAISES has
+    # left a backend on the server, and suppressing it without a word is how a
+    # connection leak reaches production looking like nothing at all.
+    try:
+        conn.close()
+    except Exception as exc:
+        _logger.debug("closing a connection (%s) raised %s; dropping it", why, exc)
 
 
 def _discard_on_return():
@@ -814,8 +823,7 @@ class _RustPool:
                     if gen == generation and not candidate.closed:
                         conn = candidate
                         break
-                    with contextlib.suppress(Exception):
-                        candidate.close()
+                    _close_quietly(candidate, "stale generation or already closed")
                 if conn is None and self._out >= self._max_size:
                     remaining = deadline - monotonic()
                     if remaining <= 0:
@@ -843,9 +851,8 @@ class _RustPool:
                 with self._cond:
                     self._out -= 1
                     self._cond.notify()
-                with contextlib.suppress(Exception):
-                    if conn is not None:
-                        conn.close()
+                if conn is not None:
+                    _close_quietly(conn, "checkout failed")
                 raise
             return conn
 
@@ -866,16 +873,14 @@ class _RustPool:
                 conn = None
             self._cond.notify()
         if conn is not None:
-            with contextlib.suppress(Exception):
-                conn.close()
+            _close_quietly(conn, "not returned to the pool")
 
     def _evict_idle(self):
         with self._cond:
             idle, self._idle = self._idle, []
             self._cond.notify_all()
         for conn, _gen in idle:
-            with contextlib.suppress(Exception):
-                conn.close()
+            _close_quietly(conn, "pool evicted or closed")
 
     def drain(self):
         # A committed DDL invalidates every prepared plan a sibling
@@ -974,5 +979,15 @@ def install():
     if dbname:
         from odoo.db import registry as db_registry
 
-        with contextlib.suppress(Exception):
+        try:
             db_registry.close_db(dbname)
+        except Exception as exc:
+            # the rebind only reaches pools built AFTER it, so a failure here
+            # leaves every existing borrow on psycopg while the shim reports
+            # itself installed -- the exact shape of a vacuous comparison
+            _logger.warning(
+                "could not close the existing pools for %s (%s); borrows made "
+                "through them stay on psycopg",
+                dbname,
+                exc,
+            )

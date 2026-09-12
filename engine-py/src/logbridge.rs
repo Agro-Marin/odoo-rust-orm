@@ -133,6 +133,25 @@ fn logger_for(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
     Ok(logger)
 }
 
+/// The subscriber a COMMAND-LINE tool wants: the same `RUSTORM_LOG` filter,
+/// written to stderr.
+///
+/// The harness binaries embed Python but are not imported as a module, so
+/// nothing calls [`install`] on their path until `RustKernel::build` does --
+/// by which time the registry export has already run and logged into a
+/// subscriber that does not exist. Calling this first also WINS over
+/// [`install`], whose `try_init` is a no-op once a subscriber is set, which is
+/// the precedence a CLI wants: its own stderr, not Odoo's logger.
+pub fn install_stderr() {
+    let filter = tracing_subscriber::EnvFilter::try_from_env("RUSTORM_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_target(true)
+        .try_init();
+}
+
 pub fn install() {
     use tracing_subscriber::prelude::*;
     // `RUSTORM_LOG` is a standard `tracing` EnvFilter string. Per subsystem:

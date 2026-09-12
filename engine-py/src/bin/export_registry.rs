@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 fn main() -> anyhow::Result<()> {
+    engine_py::logbridge::install_stderr();
     let out = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "harness/registry_export.json".to_string());

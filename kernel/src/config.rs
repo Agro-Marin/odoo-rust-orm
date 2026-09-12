@@ -1,40 +1,92 @@
 use std::path::PathBuf;
 
+/// Every setting here has a silent fallback, and a wrong one is not an error:
+/// it connects to the wrong database, reads the wrong conf, or imports another
+/// environment's packages and reports success. `odoo_kernel::config` says which
+/// value was used and whether the environment chose it or the default did.
 fn var(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|v| !v.is_empty())
+    let value = std::env::var(name).ok().filter(|v| !v.is_empty());
+    tracing::trace!(
+        target: "odoo_kernel::config",
+        name, set = value.is_some(), "read an environment override"
+    );
+    value
+}
+
+fn resolved<T: std::fmt::Debug>(setting: &str, value: T, from_env: bool) -> T {
+    tracing::debug!(
+        target: "odoo_kernel::config",
+        setting, ?value, from_env, "resolved"
+    );
+    value
 }
 
 pub fn workspace() -> PathBuf {
-    var("RUSTORM_WORKSPACE")
-        .unwrap_or_else(|| "/home/marin/Odoo".to_string())
-        .into()
+    let given = var("RUSTORM_WORKSPACE");
+    // the default is one developer's layout; anywhere else this MUST be set,
+    // and a wrong workspace resolves a conf and a venv that both exist
+    resolved(
+        "workspace",
+        given
+            .clone()
+            .unwrap_or_else(|| "/home/marin/Odoo".to_string())
+            .into(),
+        given.is_some(),
+    )
 }
 
 pub fn db() -> String {
-    var("RUSTORM_DB").unwrap_or_else(|| "rustorm_probe".to_string())
+    let given = var("RUSTORM_DB");
+    resolved(
+        "db",
+        given.clone().unwrap_or_else(|| "rustorm_probe".to_string()),
+        given.is_some(),
+    )
 }
 
 pub fn pg_host() -> String {
-    var("RUSTORM_PGHOST").unwrap_or_else(|| "/var/run/postgresql".to_string())
+    let given = var("RUSTORM_PGHOST");
+    resolved(
+        "pg_host",
+        given
+            .clone()
+            .unwrap_or_else(|| "/var/run/postgresql".to_string()),
+        given.is_some(),
+    )
 }
 
 pub fn pg_user() -> String {
-    var("RUSTORM_PGUSER")
-        .or_else(|| var("USER"))
-        .unwrap_or_else(|| "marin".to_string())
+    let given = var("RUSTORM_PGUSER").or_else(|| var("USER"));
+    resolved(
+        "pg_user",
+        given.clone().unwrap_or_else(|| "marin".to_string()),
+        given.is_some(),
+    )
 }
 
 pub fn dsn_for(db_name: Option<&str>) -> String {
-    match (var("RUSTORM_DSN"), db_name) {
-        (Some(dsn), None) => dsn,
-        (Some(dsn), Some(name)) => with_dbname(&dsn, name),
-        (None, name) => format!(
-            "host={} user={} dbname={}",
-            pg_host(),
-            pg_user(),
-            name.map(str::to_string).unwrap_or_else(db)
+    let (dsn, from_env) = match (var("RUSTORM_DSN"), db_name) {
+        (Some(dsn), None) => (dsn, true),
+        (Some(dsn), Some(name)) => (with_dbname(&dsn, name), true),
+        (None, name) => (
+            format!(
+                "host={} user={} dbname={}",
+                pg_host(),
+                pg_user(),
+                name.map(str::to_string).unwrap_or_else(db)
+            ),
+            false,
         ),
-    }
+    };
+    // the dsn carries a password when RUSTORM_DSN does, so only the database
+    // it names is logged -- which is the part that is ever wrong
+    tracing::debug!(
+        target: "odoo_kernel::config",
+        dbname = ?dsn.split_whitespace().find_map(|kv| kv.strip_prefix("dbname=")),
+        from_env,
+        "resolved the dsn"
+    );
+    dsn
 }
 
 fn with_dbname(dsn: &str, db_name: &str) -> String {
@@ -69,25 +121,42 @@ pub fn dsn() -> String {
 }
 
 pub fn venv_name() -> String {
-    var("RUSTORM_VENV").unwrap_or_else(|| "p314o19m".to_string())
+    let given = var("RUSTORM_VENV");
+    resolved(
+        "venv_name",
+        given.clone().unwrap_or_else(|| "p314o19m".to_string()),
+        given.is_some(),
+    )
 }
 
 pub fn odoo_root() -> PathBuf {
-    match var("RUSTORM_ODOO_ROOT") {
+    let given = var("RUSTORM_ODOO_ROOT");
+    let root: PathBuf = match &given {
         Some(p) => p.into(),
         None => workspace().join("odoo"),
+    };
+    if !root.join("odoo-bin").exists() {
+        tracing::warn!(
+            target: "odoo_kernel::config",
+            path = %root.display(),
+            "odoo_root has no odoo-bin; an embedded boot from here will fail to import odoo"
+        );
     }
+    resolved("odoo_root", root, given.is_some())
 }
 
 pub fn odoo_conf() -> PathBuf {
     if let Some(p) = var("RUSTORM_ODOO_CONF") {
-        return p.into();
+        return resolved("odoo_conf", p.into(), true);
     }
     let root = workspace();
     let by_venv = root.join(format!("{}.conf", venv_name()));
     if by_venv.exists() {
-        return by_venv;
+        return resolved("odoo_conf", by_venv, false);
     }
+    // the workspace holds one conf per environment, so a single one is
+    // unambiguous and several are not -- falling back to the venv-named path
+    // then produces a file that does not exist rather than the wrong one
     let mut confs: Vec<PathBuf> = std::fs::read_dir(&root)
         .into_iter()
         .flatten()
@@ -96,27 +165,46 @@ pub fn odoo_conf() -> PathBuf {
         .filter(|p| p.extension().is_some_and(|e| e == "conf"))
         .collect();
     confs.sort();
-    match confs.len() {
+    tracing::debug!(
+        target: "odoo_kernel::config",
+        candidates = confs.len(),
+        by_venv = %by_venv.display(),
+        "no conf named after the venv; choosing among the workspace's confs"
+    );
+    let chosen = match confs.len() {
         1 => confs.pop().unwrap(),
         _ => by_venv,
+    };
+    if !chosen.is_file() {
+        tracing::warn!(
+            target: "odoo_kernel::config",
+            path = %chosen.display(),
+            "the resolved odoo conf does not exist; set RUSTORM_ODOO_CONF"
+        );
     }
+    resolved("odoo_conf", chosen, false)
 }
 
 pub fn harness_dir() -> PathBuf {
-    match var("RUSTORM_HARNESS") {
+    let given = var("RUSTORM_HARNESS");
+    let dir = match &given {
         Some(p) => p.into(),
         None => workspace().join("odoo-rust-orm/harness"),
-    }
+    };
+    resolved("harness_dir", dir, given.is_some())
 }
 
 pub fn venv_site() -> PathBuf {
     if let Some(p) = var("RUSTORM_VENV_SITE") {
-        return p.into();
+        return resolved("venv_site", p.into(), true);
     }
 
     let venv = workspace().join(venv_name());
     let lib = venv.join("lib");
 
+    // the highest python3.x under the venv's lib/, because a venv can carry
+    // more than one and importing the wrong site-packages resolves a DIFFERENT
+    // psycopg than the interpreter that will run the tests
     let mut candidates: Vec<((u32, u32), PathBuf)> = std::fs::read_dir(&lib)
         .into_iter()
         .flatten()
@@ -130,10 +218,27 @@ pub fn venv_site() -> PathBuf {
         })
         .collect();
     candidates.sort();
-    match candidates.pop().map(|(_, p)| p) {
-        Some(p) => p.join("site-packages"),
-        None => lib.join("python3/site-packages"),
-    }
+    let found = candidates.len();
+    let site = match candidates.pop() {
+        Some((version, p)) => {
+            tracing::debug!(
+                target: "odoo_kernel::config",
+                venv = %venv.display(), ?version, found,
+                "chose the highest python under the venv"
+            );
+            p.join("site-packages")
+        }
+        None => {
+            tracing::warn!(
+                target: "odoo_kernel::config",
+                lib = %lib.display(),
+                "no python3.x under the venv's lib/; the embedding binaries will \
+                 not find psycopg"
+            );
+            lib.join("python3/site-packages")
+        }
+    };
+    resolved("venv_site", site, false)
 }
 
 #[cfg(test)]

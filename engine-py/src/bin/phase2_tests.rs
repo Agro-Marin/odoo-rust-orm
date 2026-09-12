@@ -163,6 +163,7 @@ fn compare() -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    engine_py::logbridge::install_stderr();
     if std::env::var_os("PHASE2_MODE").is_none() {
         return compare();
     }

@@ -1530,12 +1530,25 @@ campaign ends — see *Removing the campaign logging* below.
 | `odoo_kernel::hierarchy` | `child_of` / `parent_of`: parent_path prefix match or a row-by-row walk, seeds, memo hits |
 | `odoo_kernel::cache` | prepared-statement and per-identity cache evictions |
 | `odoo_kernel::connect` | TLS mode, whether the host is authenticated, connect ms |
+| `odoo_kernel::config` | which value every setting resolved to and whether the environment or the default chose it — each one has a silent fallback, and a wrong one connects to the wrong database or imports another environment's packages and reports success |
 | `odoo_kernel::pool` | (server) pool fill, waits, saturation, poisoning |
 | `odoo_kernel::http` | (server) one line per call with status, kind and ms |
 | `odoo_kernel::cursor` | (hybrid) **every statement Odoo's own Python ORM runs**, with the query/decode split |
 | `odoo_kernel::copy` | (hybrid) COPY streams: binary or text, rows |
 | `odoo_kernel::bridge` | (hybrid) kernel build, generation, staleness, GIL-detached ms per dispatch |
 | `odoo_kernel::export` | (hybrid) the live-registry export walk |
+
+The harness binaries (`export_registry`, `phase1_shell`, `phase2_tests`,
+`phase2_verify`, `probe_audit`) install their own stderr subscriber first, so
+`RUSTORM_LOG` reaches them too. Without it nothing on their path set a
+subscriber until `RustKernel::build` did, by which time the registry export had
+already run and logged into one that did not exist — the boot/export split
+below was simply not observable:
+
+```
+INFO odoo_kernel::export: registry booted             db=… ms=1534.9
+INFO odoo_kernel::export: exported the live registry  bytes=893027 ms=32.5
+```
 
 Levels are used consistently: `info` is lifecycle, `debug` is one line per
 operation or decision, `trace` is per-item (per leaf, per name hop, per
@@ -1554,8 +1567,18 @@ rather than `tracing`:
 | `odoo.rust_kernel.routing` | mode and sample changes, kernel build, fallbacks |
 | `odoo.rust_kernel.gate` | one line per call the gate turned away, with the reason. `GATE_REASONS` is the same thing aggregated; this says *which call* |
 | `odoo.rust_kernel.call` | one line per routed call: wire sizes, kernel ms, and the flush and cache-warm the shim does around it |
-| `odoo.rust_kernel.pool` | which DSNs are intercepted and which are delegated to psycopg, pool fill, fork handling, drains |
+| `odoo.rust_kernel.pool` | which DSNs are intercepted and which are delegated to psycopg, pool fill, fork handling, drains, and **a connection whose `close()` raised** — suppressing that is right, since a pool must not fail its caller on it, but it has left a backend on the server |
 | `odoo.addons.rust_engine` | arming, the connector DSN it built, the periodic routing report |
+
+Two silent paths were made loud rather than merely logged. A parameter the
+cursor has no encoder for is **stringified** and the server asked to cast it —
+psycopg's own behaviour for an unregistered adapter, and also the shape that
+produced this transport's worst defects, so it now reports once per (python
+type, pg type). And `_taint` / `_note_written` in the ORM shim are the safety
+net that records what this transaction wrote so the gate can refuse a stale
+read; they swallowed a `TypeError` from an unhashable cursor, which records
+nothing and leaves the gate seeing a clean transaction. That failure now warns,
+because it is more serious than the thing it guards.
 
 ### Removing the campaign logging
 

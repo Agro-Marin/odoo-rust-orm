@@ -407,12 +407,28 @@ def _written_x2many(model, vals_list):
     return out
 
 
+def _unhashable_cursor(cr, what) -> None:
+    # These three bookkeepers are the SAFETY NET: they record that this
+    # transaction wrote something the kernel would otherwise read staleley, and
+    # the gate refuses on what they recorded. A cursor that cannot go in a
+    # WeakSet silently records nothing, and the gate then sees a clean
+    # transaction -- so the failure is louder than the thing it guards.
+    _logger.warning(
+        "cursor %r is unhashable, so %s was not recorded; the gate cannot "
+        "refuse on it and a routed read may answer from before the write",
+        type(cr).__name__,
+        what,
+    )
+
+
 def _note_written(model, vals_list) -> None:
     pairs = _written_x2many(model, vals_list)
     if not pairs:
         return
-    with contextlib.suppress(TypeError):
+    try:
         WRITTEN_X2MANY.setdefault(model.env.cr, set()).update(pairs)
+    except TypeError:
+        _unhashable_cursor(model.env.cr, "an x2many write on %s" % model._name)
 
 
 def _x2many_cached(model, field):
@@ -944,6 +960,9 @@ _INSTALLED = None
 
 
 def _untaint(cr) -> None:
+    # a commit or rollback ends the window the two bookkeepers guard; failing
+    # to clear is harmless (it only keeps the gate refusing), so this one stays
+    # quiet
     DIRTY_CRS.discard(cr)
     with contextlib.suppress(TypeError):
         WRITTEN_X2MANY.pop(cr, None)
@@ -1186,8 +1205,10 @@ def install():
 
     def _taint(self) -> None:
         if self._name in SECURITY_MODELS:
-            with contextlib.suppress(TypeError):
+            try:
                 DIRTY_CRS.add(self.env.cr)
+            except TypeError:
+                _unhashable_cursor(self.env.cr, "a write to %s" % self._name)
 
     def create(self, vals_list):
         _taint(self)
