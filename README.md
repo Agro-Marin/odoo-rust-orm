@@ -607,6 +607,39 @@ once and the last value wins as the comment always claimed. Pinned by
 `test_the_composed_dsn_names_every_keyword_once`, which fails against the old
 composition with the two-port dsn in its message.
 
+## Ordering by a company-dependent many2one asked PostgreSQL for `jsonb = integer`
+
+Found 2026-09-11 by the fuzz stage on a 162-module fixture, one case in 1,500,
+and it predates this branch — the base commit fails identically:
+
+```
+ERROR: operator does not exist: jsonb = integer
+HINT: No operator matches the given name and argument types.
+```
+
+A company-dependent field stores its value in a `jsonb` keyed by company, so a
+company-dependent **many2one** keeps its id inside that jsonb. `order_terms`
+took the FK as the raw column (`col(alias, &field.name)`) and `OrderJoin`
+carried a column NAME, so the LEFT JOIN onto the comodel compared the jsonb to
+`id`. The statement dies before it runs — an internal error, not a refusal, so
+the caller's transaction aborts rather than falling back to Python.
+
+The groupby itself was always right: `read_group` reads its group expression
+through `ctx.read_expr`, which handles company-dependent. **Only the ORDER BY
+was wrong, which is why it needs an order term to reproduce** — and it hit
+`search_read` just as hard as `read_group`, on any order naming such a field.
+
+`OrderJoin` carries an `Expr` now instead of a column name, and the FK comes
+from `order_expr`, which is what every other reader of the field already used.
+Pinned by `ordering_by_a_company_dependent_many2one_reads_it_out_of_its_jsonb`,
+which also asserts a plain many2one still joins on its own column, and which
+fails against the old FK.
+
+**base+mail could not reach this.** It has no company-dependent many2one whose
+comodel is ordered by something other than `id`, so all three fuzz seeds passed
+there. The same seeds on 162 modules found it on the second. That is the same
+lesson as the census: a fixture decides what a gate can see.
+
 ## PostGIS, and one class this transport cannot reach at all
 
 The same question asked of the other extension in this workspace's template.
@@ -1517,8 +1550,12 @@ grew without bound, and a database whose watermark never moves grew forever.
 
 ## Observability
 
-Nothing is on by default. `RUSTORM_LOG` takes a standard `tracing` `EnvFilter`
-string; `POC_TRACE=1` remains an alias for `odoo_kernel::sql=debug`.
+The default filter is `warn`, so **`warn` and `error` are on and everything
+below them is off** — that is deliberate, and two `error` lines depend on it
+(the internal invariants below, which are defects rather than refusals and must
+not need a flag to be seen). `RUSTORM_LOG` takes a standard `tracing`
+`EnvFilter` string; `POC_TRACE=1` remains an alias for
+`odoo_kernel::sql=debug`.
 
 ```sh
 RUSTORM_LOG=odoo_kernel=debug          # every subsystem, one line per decision
@@ -1588,7 +1625,10 @@ operation or decision, `trace` is per-item (per leaf, per name hop, per
 statement). A disabled callsite is an atomic load and a branch, and the field
 expressions are only evaluated once it is enabled — a benchmark with
 `RUSTORM_LOG` unset is indistinguishable from one built without any of it
-(p50 0.130 ms either way over 1,000 calls on base+mail).
+(p50 0.130 ms either way over 1,000 calls on base+mail). Read that as ruling
+out a LARGE regression and not a small one: three passes a side, not
+interleaved, and on the small fixture. Interleave control/instrumented pairs
+and report the per-pair ratio if you ever need a tighter bound.
 
 ### The Python half
 
@@ -1656,7 +1696,7 @@ Over the 24,199-case sweep on a 162-module fixture (account, sale, stock,
 project, hr, purchase, crm, mail — 557 models):
 
 ```
-  refusal=4221  access=10110  over 27 sites
+  refusal=4221  access=10110  over 27 sites   <- 23 refusal sites + 4 access ones
   1128  orm.rs:1215       <model> overrides the read path in Python (_field_to_sql)
    815  sqlgen.rs:1483    res.users lets an exact match on login take precedence over display_name
    450  sqlgen.rs:1049    <field> defines a custom search method
@@ -1675,8 +1715,8 @@ gives 1,241 refusals over 13 sites, and the difference is not a factor:
 | | base+mail | 162 modules |
 |---|---|---|
 | refusals | 1,241 | 4,221 |
-| distinct sites | 13 | 23 |
-| sites the smaller fixture never reached | — | **13** |
+| distinct **refusal** sites | 13 | 23 |
+| refusal sites the smaller fixture never reached | — | **13** |
 
 Two of the top eight at scale are **absent** from the small fixture entirely —
 `record rules could not be evaluated` (283) and `grouping by a comodel row this
@@ -1728,61 +1768,51 @@ and each failure looks fine from the other axis:
   refusal (`refusal_at!`). Wrapping it in one `map_err` collapses every cause
   the helper has onto one row and the census silently loses resolution.
 
-## Ordering by a company-dependent many2one asked PostgreSQL for `jsonb = integer`
-
-Found 2026-09-11 by the fuzz stage on a 162-module fixture, one case in 1,500,
-and it predates this branch — the base commit fails identically:
-
-```
-ERROR: operator does not exist: jsonb = integer
-HINT: No operator matches the given name and argument types.
-```
-
-A company-dependent field stores its value in a `jsonb` keyed by company, so a
-company-dependent **many2one** keeps its id inside that jsonb. `order_terms`
-took the FK as the raw column (`col(alias, &field.name)`) and `OrderJoin`
-carried a column NAME, so the LEFT JOIN onto the comodel compared the jsonb to
-`id`. The statement dies before it runs — an internal error, not a refusal, so
-the caller's transaction aborts rather than falling back to Python.
-
-The groupby itself was always right: `read_group` reads its group expression
-through `ctx.read_expr`, which handles company-dependent. **Only the ORDER BY
-was wrong, which is why it needs an order term to reproduce** — and it hit
-`search_read` just as hard as `read_group`, on any order naming such a field.
-
-`OrderJoin` carries an `Expr` now instead of a column name, and the FK comes
-from `order_expr`, which is what every other reader of the field already used.
-Pinned by `ordering_by_a_company_dependent_many2one_reads_it_out_of_its_jsonb`,
-which also asserts a plain many2one still joins on its own column, and which
-fails against the old FK.
-
-**base+mail could not reach this.** It has no company-dependent many2one whose
-comodel is ordered by something other than `id`, so all three fuzz seeds passed
-there. The same seeds on 162 modules found it on the second. That is the same
-lesson as the census: a fixture decides what a gate can see.
-
 ### Removing the campaign logging
 
 The campaign surface is mechanically identifiable, which is the point:
 
 ```sh
 grep -rn 'target: "odoo_kernel::' kernel/src server/src engine-py/src   # the rust half
-grep -rn '_gate_logger\|_call_logger' engine-py/python                 # the python half
+grep -rn '_gate_logger\|_call_logger' engine-py/python                 # the python half: all campaign
+grep -rn '_logger\.' engine-py/python/rust_db_shim.py                  # mixed — read the table below
 ```
 
+`odoo.rust_kernel.gate` and `odoo.rust_kernel.call` are campaign loggers
+outright: delete the two module-level handles and every use goes with them.
+`odoo.rust_kernel.pool` in `rust_db_shim.py` is **mixed** — the pool-fill and
+interception lines are campaign, the teardown and `close_db` ones are the
+permanent fix in the table below. `odoo.rust_kernel.routing` predates the
+campaign.
+
+`addons/rust_engine/__init__.py` is the third place and the one a grep for
+loggers does not obviously point at: its arming summary, the connector-dsn
+keywords and the export-versus-build split in `_build_kernel` are campaign.
+`_open_trace_level()` is campaign **infrastructure** rather than a fix — it
+exists because Odoo resolves a `--log-handler name:LEVEL` before any addon
+loads, so `:TRACE` read as INFO; once the `trace` events are gone nothing needs
+it, and until then removing it makes the finest level unreachable rather than
+merely quiet.
+
 **What the campaign FOUND does not come out with it.** The removal is of
-scaffolding, not of fixes: the dsn de-duplication, the `jsonb = integer` join,
-the question/demand pairs and their tests, the battery's derived conf and the
-parity gate's named baseline are all permanent, and so are the two `error`
-lines on the internal invariants — those are not campaign logging, they are the
-only report those paths have. A session deleting the targets must not delete
-them with it.
+scaffolding, not of fixes. These are permanent and a grep-and-delete pass takes
+them if nobody is looking:
+
+| stays | why it is not scaffolding |
+|---|---|
+| the dsn de-duplication (`_dsn_with_kwargs`) | without it the engine cannot open a connection when `db_host` is unset |
+| the `jsonb = integer` join (`OrderJoin` carrying an `Expr`) | ordering by a company-dependent many2one killed the statement |
+| the question/demand pairs and their tests | `lookup`, `groupby_names_seen`, `normalize_path_seen`, `parse_nested` |
+| the battery's derived conf, the parity gate's named baseline | two gates that could not report what they were asked |
+| the two `error!` lines on the internal invariants | **they look exactly like campaign lines** and are the only report those two paths have |
+| `_close_quietly` and the unhashable-cursor warnings | a suppressed teardown failure leaks a backend; a failed taint lets a routed read answer from before a write |
 
 Four of the targets predate the campaign and stay: `dispatch`, `sql`, `rules`,
 `signal`. The rest, and the `trace`-level events under the four, are the
 campaign's and come out with it. `odoo_kernel::refusal` and
-`odoo_kernel::access` are produced by the `refusal!` and `deny_access!` macros
-in `kernel/src/error.rs`, so removing them is two edits and not a sweep.
+`odoo_kernel::access` are produced by the `refusal!`, `refusal_at!` and
+`deny_access!` macros in `kernel/src/error.rs`, so removing them is three edits
+and not a sweep.
 
 The whole-registry sweep in `phase2_verify` runs at **every identity it can
 find** — admin, admin-superuser, and any other active user, preferring a share
