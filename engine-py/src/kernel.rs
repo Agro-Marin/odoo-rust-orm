@@ -80,6 +80,58 @@ impl RustKernel {
         self.registry.models.len()
     }
 
+    /// The `UPDATE` `PostgresBackend.update_rows` would compose, composed
+    /// from this kernel's registry instead.
+    ///
+    /// It is returned rather than executed: the caller binds the same
+    /// parameters and runs it on its own cursor, so the statement reaches
+    /// PostgreSQL through the same logging, metrics and savepoints as every
+    /// other write. What moves here is the composition, which is the part
+    /// decided by field metadata.
+    ///
+    /// `value_repeats` says how many parameters each column's value
+    /// contributes, because a whole-value translated column binds its value
+    /// three times -- the merge expression names it three times.
+    #[pyo3(signature = (model, fnames, uniform, row_count))]
+    fn update_rows_sql(
+        &self,
+        model: &str,
+        fnames: Vec<String>,
+        uniform: bool,
+        row_count: usize,
+    ) -> PyResult<(String, Vec<usize>)> {
+        if self.stale.load(Ordering::Acquire) {
+            return Err(KernelRegistryStale::new_err(
+                odoo_kernel::orm::RegistryStale.to_string(),
+            ));
+        }
+        let shape = if uniform {
+            odoo_kernel::write::UpdateShape::Uniform
+        } else {
+            odoo_kernel::write::UpdateShape::Values
+        };
+        let sql =
+            odoo_kernel::write::update_rows_sql(&self.registry, model, &fnames, shape, row_count)
+                .map_err(from_kernel)?;
+        let repeats = fnames
+            .iter()
+            .map(|fname| {
+                self.registry
+                    .lookup(model)
+                    .and_then(|m| m.fields.get(fname))
+                    .map_or(1, odoo_kernel::write::value_repeats)
+            })
+            .collect();
+        Ok((sql, repeats))
+    }
+
+    /// The registry sequence this kernel was built from, so a caller can
+    /// refuse to use it against a Python registry that has moved.
+    #[getter]
+    fn registry_sequence(&self) -> i64 {
+        self.registry_sequence
+    }
+
     fn dispatch(&self, py: Python<'_>, conn: &RustConn, request_json: &str) -> PyResult<String> {
         if self.stale.load(Ordering::Acquire) {
             // once stale, every call refuses until the registry reloads and

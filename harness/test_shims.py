@@ -9,6 +9,7 @@ import unittest
 
 HERE = pathlib.Path(pathlib.Path(__file__).resolve()).parent
 ROOT = pathlib.Path(HERE).parent
+sys.path.insert(0, str(HERE))
 
 try:
     import engine_py
@@ -1395,6 +1396,330 @@ def test_every_kernel_failure_path_reports_somewhere() -> None:
         "failure paths bypassing the refusal macros (%s)" % ", ".join(found),
         len(found),
         known,
+    )
+
+
+def _backend():
+    if engine_py is None:
+        raise unittest.SkipTest("engine_py is not importable (%s)" % IMPORT_ERROR)
+    _odoo()
+    return engine_py.install_backend()
+
+
+def _protocol_members():
+    from odoo.orm.runtime.backend import StorageBackend
+
+    methods = sorted(
+        name
+        for name, value in vars(StorageBackend).items()
+        if not name.startswith("_") and callable(value)
+    )
+    flags = sorted(
+        name
+        for name in getattr(StorageBackend, "__annotations__", {})
+        if not name.startswith("_")
+    )
+    return methods, flags
+
+
+def test_the_port_covers_the_forks_protocol_and_nothing_else() -> None:
+    # The point of implementing StorageBackend rather than patching methods on
+    # BaseModel is that the fork DECLARES this surface and pins it
+    # (odoo/orm/tests/test_backend_dispatch_surface.py). A method added to the
+    # protocol upstream has to reach RustBackend, and the failure mode if it
+    # does not is that the attribute lookup falls through to nothing -- so
+    # read the protocol here rather than restating it.
+    backend = _backend()
+    methods, flags = _protocol_members()
+    check("protocol methods", sorted(backend.PROTOCOL_METHODS), methods)
+    check("protocol flags", sorted(backend.PROTOCOL_FLAGS), flags)
+    missing = [
+        name for name in methods + flags if not hasattr(backend.RustBackend, name)
+    ]
+    check("RustBackend implements every member (%s)" % ", ".join(missing), missing, [])
+
+
+def _shape(fn):
+    # Parameter name, kind and default -- the part a CALLER can observe. The
+    # annotations are not compared: the fork annotates its ORM and this
+    # repository does not, this not being one of the fork's core packages, so
+    # comparing them would fail on a difference no call can see.
+    import inspect
+
+    return [
+        (p.name, p.kind, p.default) for p in inspect.signature(fn).parameters.values()
+    ]
+
+
+def test_the_ports_signatures_match_the_delegates() -> None:
+    # A delegating wrapper whose signature has drifted does not fail at import:
+    # it fails at the one call site that passes the argument it dropped, which
+    # on this port is a write.
+    from odoo.orm.runtime.backend import PostgresBackend
+
+    backend = _backend()
+    wrong = []
+    for name in backend.PROTOCOL_METHODS:
+        mine = _shape(getattr(backend.RustBackend, name))
+        theirs = _shape(getattr(PostgresBackend, name))
+        if mine != theirs:
+            wrong.append("%s: %s != %s" % (name, mine, theirs))
+    check("signatures (%s)" % "; ".join(wrong), wrong, [])
+
+
+class _RecordingDelegate:
+    supports_parent_store = True
+    supports_record_rules = True
+    supports_joined_m2m_read = True
+    supports_column_scan = True
+    supports_translation_terms = True
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def __getattr__(self, name):
+        def record(*args, **kwargs):
+            self.calls.append((name, args, kwargs))
+            return ("delegated", name)
+
+        return record
+
+
+def test_an_unarmed_port_is_its_delegate() -> None:
+    # The port is installed before any method is native, so "installed"
+    # must mean "no answer changed". Every protocol method is called here,
+    # including the ones with keyword-only arguments, because a wrapper that
+    # drops `check_access` would route a search AROUND the record rules.
+    backend = _backend()
+
+    class _Unarmed(backend.RustBackend):
+        # What the port is on a worker where nothing has been armed yet, which
+        # is the state every new native method starts in.
+        NATIVE = frozenset()
+
+    delegate = _RecordingDelegate()
+    port = _Unarmed(delegate)
+    backend.reset_stats()
+
+    calls = {
+        "create_rows": (("model", ["stored"], ["col"], ["field"]), {}),
+        "update_rows": (("model", ("name",), [(1, "x")]), {}),
+        "fetch": (("model", "query", ["a"], ["b"]), {}),
+        "search": (
+            ("model", "domain", 0, None, None),
+            {"check_access": False, "prof": "p"},
+        ),
+        "as_query": (("model", False), {}),
+        "get_existing_ids": (("model", [1, 2]), {}),
+        "lock_for_update": (("model",), {"allow_referencing": True}),
+        "try_lock_for_update": (("model",), {"allow_referencing": True, "limit": 3}),
+        "unlink_rows": (("model", (1,), "Data", "Defaults", "Attachment"), {}),
+        "read_m2m_pairs": (("model", "rel", "c1", "c2", [1]), {}),
+        "link_m2m_pairs": (("model", "rel", "c1", "c2", [(1, 2)]), {}),
+        "unlink_m2m_pairs": (("model", "rel", "c1", "c2", [(1, 2)]), {}),
+    }
+    check(
+        "every protocol method is exercised",
+        sorted(calls),
+        sorted(backend.PROTOCOL_METHODS),
+    )
+    for name, (args, kwargs) in calls.items():
+        got = getattr(port, name)(*args, **kwargs)
+        check("%s returns the delegate's answer" % name, got, ("delegated", name))
+
+    seen = {name for name, _args, _kwargs in delegate.calls}
+    check("every call reached the delegate", sorted(seen), sorted(calls))
+    for name, (args, kwargs) in calls.items():
+        recorded = next(c for c in delegate.calls if c[0] == name)
+        # positional-vs-keyword is not preserved by the port and does not need
+        # to be; what must survive is the VALUES, keyword-only ones included.
+        passed = dict(zip(("a", "b", "c", "d", "e"), recorded[1], strict=False))
+        passed.update(recorded[2])
+        wanted = dict(zip(("a", "b", "c", "d", "e"), args, strict=False))
+        wanted.update(kwargs)
+        check("%s forwards its arguments" % name, passed, wanted)
+
+    stats = backend.stats()
+    check("nothing was answered natively", stats["native"], {})
+    check(
+        "every call is counted as delegated",
+        sum(stats["delegated"].values()),
+        len(calls),
+    )
+    check("the native share is zero", stats["native_share"], 0.0)
+
+
+def test_the_port_mirrors_its_delegates_support_flags() -> None:
+    # `supports_parent_store` decides whether the ORM maintains parent_path at
+    # all, and `supports_record_rules` whether it applies them. These describe
+    # the STORAGE, so a port that answered for itself would change ORM
+    # behaviour for a reason unrelated to who builds the SQL.
+    backend = _backend()
+    _methods, flags = _protocol_members()
+    delegate = _RecordingDelegate()
+    port = backend.RustBackend(delegate)
+    for flag in flags:
+        for value in (True, False):
+            setattr(delegate, flag, value)
+            check(
+                "%s mirrors the delegate (%r)" % (flag, value),
+                getattr(port, flag),
+                value,
+            )
+
+
+def test_installing_the_port_leaves_the_in_memory_backend_alone() -> None:
+    # InMemoryBackend is how the ORM runs with no database. Wrapping it would
+    # put a kernel that needs a connection in front of the case defined by not
+    # having one.
+    backend = _backend()
+    from odoo.orm.runtime.backend import POSTGRES_BACKEND
+
+    orig_init = None
+    try:
+        backend.install(dbname=None)
+        orig_init = backend.installed()["orig_init"]
+
+        class _Registry:
+            db_name = "any"
+
+        class _T:
+            backend = None
+
+        from odoo.orm.runtime.transaction import Transaction
+
+        made = object.__new__(Transaction)
+        Transaction.__init__(made, _Registry())
+        check(
+            "a postgres transaction gets the port",
+            type(made.backend).__name__,
+            "RustBackend",
+        )
+        check(
+            "and the port wraps the postgres backend",
+            made.backend.delegate,
+            POSTGRES_BACKEND,
+        )
+
+        storage = {}
+        made2 = object.__new__(Transaction)
+        Transaction.__init__(made2, _Registry(), storage)
+        check(
+            "an in-memory transaction keeps its own backend",
+            type(made2.backend).__name__,
+            "InMemoryBackend",
+        )
+    finally:
+        backend.uninstall()
+    from odoo.orm.runtime.transaction import Transaction
+
+    check("uninstall restores the original", Transaction.__init__ is orig_init, True)
+    check("and forgets it installed", backend.installed(), None)
+
+
+def test_the_port_only_arms_for_the_database_it_was_built_for() -> None:
+    # The same process can hold transactions for more than one database (the
+    # database manager does), and a kernel built from one database's registry
+    # must not answer for another.
+    backend = _backend()
+    try:
+        backend.install(dbname="the_one")
+        from odoo.orm.runtime.transaction import Transaction
+
+        class _Registry:
+            def __init__(self, name) -> None:
+                self.db_name = name
+
+        mine = object.__new__(Transaction)
+        Transaction.__init__(mine, _Registry("the_one"))
+        check(
+            "the armed database gets the port",
+            type(mine.backend).__name__,
+            "RustBackend",
+        )
+
+        other = object.__new__(Transaction)
+        Transaction.__init__(other, _Registry("another"))
+        check(
+            "another database does not",
+            type(other.backend).__name__,
+            "PostgresBackend",
+        )
+    finally:
+        backend.uninstall()
+        backend.DBNAME = None
+
+
+def test_the_fork_still_composes_the_update_the_contract_pins() -> None:
+    # The other half of `kernel/tests/pure.rs::the_kernel_composes_the_update_
+    # the_forks_backend_composes`. That one asks the kernel; this one asks the
+    # FORK, so the statement is derived twice and neither derivation is
+    # checked against a copy of itself. A fork that starts composing something
+    # else fails HERE, and stays failing in Rust until the kernel is taught it.
+    _odoo()
+    import update_sql_contract
+
+    contract = update_sql_contract.load()
+    check("the contract names cases", bool(contract["cases"]), True)
+    for case in contract["cases"]:
+        check(
+            "the fork composes %r" % case["name"],
+            update_sql_contract.compose(contract, case),
+            case["sql"],
+        )
+
+
+def test_the_port_arms_only_what_the_contract_covers() -> None:
+    # `NATIVE` is the arming switch, and the reason it is separate from the
+    # implementation is that an implementation with no verification behind it
+    # must stay off. Every armed method needs a line here saying what verifies
+    # it; a method armed without one fails this.
+    backend = _backend()
+    verified_by = {
+        "update_rows": "harness/update_sql_contract.json, both derivations",
+    }
+    unverified = sorted(set(backend.RustBackend.NATIVE) - set(verified_by))
+    check(
+        "armed with nothing verifying it (%s)" % ", ".join(unverified), unverified, []
+    )
+    check(
+        "every armed method is a protocol method",
+        sorted(set(backend.RustBackend.NATIVE) - set(backend.PROTOCOL_METHODS)),
+        [],
+    )
+
+
+def test_a_column_group_the_kernel_refuses_falls_through_to_the_delegate() -> None:
+    # The native path reports whether it ran, and the port delegates when it
+    # did not. With no kernel in the process -- which is every worker that
+    # could not arm -- that is the whole behaviour, and it has to be the
+    # delegate's answer rather than a skipped write.
+    backend = _backend()
+    delegate = _RecordingDelegate()
+    port = backend.RustBackend(delegate)
+    backend.reset_stats()
+
+    class _Model:
+        env = object()
+
+    model = _Model()
+    backend.KERNEL_FOR = lambda _env: None
+    try:
+        got = port.update_rows(model, ("name",), [(1, "a")])
+    finally:
+        backend.KERNEL_FOR = None
+    check("the delegate answered", got, ("delegated", "update_rows"))
+    check(
+        "and it was told the same thing",
+        delegate.calls[-1][1],
+        (model, ("name",), [(1, "a")]),
+    )
+    stats = backend.stats()
+    check("nothing was counted native", stats["native"], {})
+    check(
+        "the reason names the missing kernel",
+        "no kernel in this process" in stats["reasons"],
+        True,
     )
 
 

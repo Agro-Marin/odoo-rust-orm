@@ -27,6 +27,16 @@ fn field(name: &str, ttype: FieldType) -> Field {
         },
         not_null: false,
         translated: false,
+        translate_whole: false,
+        column_cast: Some(
+            match ttype {
+                FieldType::Integer | FieldType::Many2one => "int4",
+                FieldType::Boolean => "bool",
+                FieldType::Float => "float8",
+                _ => "VARCHAR",
+            }
+            .into(),
+        ),
         related: None,
         domain: None,
         domain_callable: false,
@@ -2914,5 +2924,142 @@ fn ordering_by_a_company_dependent_many2one_reads_it_out_of_its_jsonb() {
     assert!(
         sql.contains(r#""res_partner"."parent_id" = "#),
         "a plain many2one must still join on its own column, got: {sql}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The write path's statement composition
+//
+// `harness/update_sql_contract.json` holds the statement text, and TWO tests
+// read it: this one asserts the kernel composes it, and `test_shims.py`
+// asserts the fork's own `PostgresBackend` composes the same thing from a stub
+// model. One literal, derived twice -- so a change to either composer fails
+// against the other rather than against a copy of itself.
+// ---------------------------------------------------------------------------
+
+fn write_registry() -> Registry {
+    let contract = contract();
+    let mut fields = vec![field("id", FieldType::Integer)];
+    for (fname, spec) in contract["fields"].as_object().unwrap() {
+        let translate = spec["translate"].as_str().unwrap();
+        let mut f = field(fname, FieldType::Char);
+        f.column_cast = Some(spec["cast"].as_str().unwrap().to_string());
+        if translate != "no" {
+            f.pg_type = "jsonb".into();
+            f.translated = true;
+        }
+        // `whole` is `translate is True`; `term` is a callable such as
+        // `html_translate`, stored in the same column and written differently.
+        f.translate_whole = translate == "whole";
+        fields.push(f);
+    }
+    let mut cd = field("credit_limit", FieldType::Float);
+    cd.company_dependent = true;
+    cd.column_cast = Some("JSONB".into());
+    fields.push(cd);
+    let mut nocast = field("legacy", FieldType::Char);
+    nocast.column_cast = None;
+    fields.push(nocast);
+
+    let mut m = model("res.partner", "id", fields);
+    m.table = contract["table"].as_str().unwrap().to_string();
+    registry(vec![m])
+}
+
+fn contract() -> serde_json::Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../harness/update_sql_contract.json");
+    serde_json::from_str(&std::fs::read_to_string(&path).expect("the contract file")).unwrap()
+}
+
+#[test]
+fn the_kernel_composes_the_update_the_forks_backend_composes() {
+    let reg = write_registry();
+    let contract = contract();
+    let cases = contract["cases"].as_array().unwrap();
+    assert!(!cases.is_empty(), "the contract file names no case");
+    for case in cases {
+        let fnames: Vec<String> = case["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        let shape = match case["shape"].as_str().unwrap() {
+            "uniform" => odoo_kernel::write::UpdateShape::Uniform,
+            "values" => odoo_kernel::write::UpdateShape::Values,
+            other => panic!("unknown shape {other}"),
+        };
+        let rows = case["rows"].as_u64().unwrap() as usize;
+        let got =
+            odoo_kernel::write::update_rows_sql(&reg, "res.partner", &fnames, shape, rows).unwrap();
+        assert_eq!(
+            got,
+            case["sql"].as_str().unwrap(),
+            "{}",
+            case["name"].as_str().unwrap()
+        );
+    }
+}
+
+#[test]
+fn a_whole_value_translated_column_binds_its_value_three_times() {
+    let reg = write_registry();
+    let m = reg.get("res.partner").unwrap();
+    // The merge expression names the value three times, so the caller binds it
+    // three times; a term-translated one is a plain assignment.
+    assert_eq!(
+        odoo_kernel::write::value_repeats(m.fields.get("title").unwrap()),
+        3
+    );
+    assert_eq!(
+        odoo_kernel::write::value_repeats(m.fields.get("body").unwrap()),
+        1
+    );
+    assert_eq!(
+        odoo_kernel::write::value_repeats(m.fields.get("name").unwrap()),
+        1
+    );
+}
+
+#[test]
+fn the_columns_whose_statement_would_need_pythons_knowledge_are_refused() {
+    let reg = write_registry();
+    for (fname, want) in [
+        // the assignment interpolates ir.default's per-company fallbacks
+        ("credit_limit", "company-dependent"),
+        // a registry built from ir_model carries no declared cast
+        ("legacy", "no declared column cast"),
+        // and a name this registry does not carry at all
+        ("nonesuch", "has no field nonesuch"),
+    ] {
+        let err = odoo_kernel::write::update_rows_sql(
+            &reg,
+            "res.partner",
+            &[fname.to_string()],
+            odoo_kernel::write::UpdateShape::Values,
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains(want), "{fname}: {err} does not mention {want}");
+    }
+}
+
+#[test]
+fn a_group_with_one_refused_column_refuses_whole() {
+    // The delegate writes the group; splitting it here would issue two
+    // statements where Python issues one, and the second would not see the
+    // first's row locks in the order Python takes them.
+    let reg = write_registry();
+    assert!(
+        odoo_kernel::write::update_rows_sql(
+            &reg,
+            "res.partner",
+            &["name".to_string(), "credit_limit".to_string()],
+            odoo_kernel::write::UpdateShape::Values,
+            1,
+        )
+        .is_err()
     );
 }

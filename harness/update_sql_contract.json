@@ -1,0 +1,47 @@
+{
+  "_why": "The statement PostgresBackend.update_rows composes, for the field shapes the kernel composes natively. Two tests read this file: harness/test_shims.py drives the FORK's backend against a stub model and asserts it produces these strings, and kernel/tests/pure.rs asserts the kernel's composer produces them. One literal, derived twice, so a change on either side fails against the other rather than against a copy of itself. Regenerate with harness/update_sql_contract.py after an intended change to the fork's composition.",
+  "table": "res_partner",
+  "cases": [
+    {
+      "name": "values, plain columns",
+      "fields": ["name", "active"],
+      "shape": "values",
+      "rows": 2,
+      "sql": " UPDATE \"res_partner\"\n                SET \"name\" = \"__tmp\".\"name\"::VARCHAR, \"active\" = \"__tmp\".\"active\"::BOOLEAN\n                FROM (VALUES (%s, %s, %s), (%s, %s, %s)) AS \"__tmp\"(\"id\", \"name\", \"active\")\n                WHERE \"res_partner\".\"id\" = \"__tmp\".\"id\"\n            "
+    },
+    {
+      "name": "uniform, plain columns",
+      "fields": ["name", "active"],
+      "shape": "uniform",
+      "rows": 2,
+      "sql": "UPDATE \"res_partner\" SET \"name\" = %s::VARCHAR, \"active\" = %s::BOOLEAN WHERE \"id\" = ANY(%s)"
+    },
+    {
+      "name": "values, a whole-value translated column",
+      "fields": ["title"],
+      "shape": "values",
+      "rows": 1,
+      "sql": " UPDATE \"res_partner\"\n                SET \"title\" = CASE WHEN \"__tmp\".\"title\"::JSONB IS NULL THEN NULL ELSE\n                        COALESCE(\"res_partner\".\"title\", jsonb_build_object(\n                            'en_US', jsonb_path_query_first(\"__tmp\".\"title\"::JSONB, '$.*')\n                        )) || \"__tmp\".\"title\"::JSONB\n                    END\n                FROM (VALUES (%s, %s)) AS \"__tmp\"(\"id\", \"title\")\n                WHERE \"res_partner\".\"id\" = \"__tmp\".\"id\"\n            "
+    },
+    {
+      "name": "uniform, a whole-value translated column binds its value three times",
+      "fields": ["title"],
+      "shape": "uniform",
+      "rows": 2,
+      "sql": "UPDATE \"res_partner\" SET \"title\" = CASE WHEN %s::JSONB IS NULL THEN NULL ELSE\n                        COALESCE(\"res_partner\".\"title\", jsonb_build_object(\n                            'en_US', jsonb_path_query_first(%s::JSONB, '$.*')\n                        )) || %s::JSONB\n                    END WHERE \"id\" = ANY(%s)"
+    },
+    {
+      "name": "uniform, a term-translated column is replaced whole",
+      "fields": ["body"],
+      "shape": "uniform",
+      "rows": 2,
+      "sql": "UPDATE \"res_partner\" SET \"body\" = %s::JSONB WHERE \"id\" = ANY(%s)"
+    }
+  ],
+  "fields": {
+    "name": {"cast": "VARCHAR", "translate": "no"},
+    "active": {"cast": "BOOLEAN", "translate": "no"},
+    "title": {"cast": "JSONB", "translate": "whole"},
+    "body": {"cast": "JSONB", "translate": "term"}
+  }
+}

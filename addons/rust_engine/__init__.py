@@ -14,6 +14,7 @@ _STATE = {
     "psycopg_info": None,
     "rust_db": None,
     "shims": None,
+    "port": None,
     "reporter": None,
     "switch_conn": None,
 }
@@ -471,6 +472,16 @@ def start() -> None:
         _apply_config(orm_shim, config)
         orm_shim.install()
 
+        if str(config.get("rust_engine_port", "on")).strip().lower() != "off":
+            port = engine_py.install_backend()
+            port.KERNEL_FOR = lambda env: (
+                orm_shim.KERNEL
+                if orm_shim._bound_db(env) and orm_shim._ensure_kernel(env)
+                else None
+            )
+            port.install(dbname=db_name)
+            _STATE["port"] = port
+
         capture_path = config.get("rust_engine_capture") or os.environ.get(
             "RUSTORM_CAPTURE"
         )
@@ -486,9 +497,6 @@ def start() -> None:
             db_name,
             orm_shim.MODE,
         )
-        # What the engine will and will not route, before any call arrives.
-        # `RUSTORM_LOG` is read by the rust side and is independent of Odoo's
-        # own --log-handler: both have to be open for a kernel line to print.
         _logger.debug(
             "rust_engine: sample=%s breaker=%s only=%s except=%s capture=%s "
             "RUSTORM_LOG=%r",

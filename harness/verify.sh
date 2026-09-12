@@ -358,6 +358,35 @@ else
   stage "copy encoder" SKIP "no libengine_py.so; cargo build --release"
 fi
 
+# The write path at the persistence port. Like the copy encoder above it is
+# differential against psycopg rather than against a recorded expectation,
+# because a corrupted write is equally corrupt on both sides of a read
+# comparison -- and it counts the statements the port answered natively, so a
+# run where everything delegated cannot report a clean comparison of two
+# identical Python writes.
+if [ -f "$ROOT/target/release/libengine_py.so" ]; then
+  PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/write_path.py" > "$OUT/write.log" 2>&1; rc=$?
+  if [ "$rc" = 0 ]; then
+    stage "write path (port)" OK "$(grep -a '^WRITE native update_rows' "$OUT/write.log" | head -1 | cut -c1-70)"
+  elif timed_out "$rc"; then stage "write path (port)" FAIL "$expired"
+  else
+    stage "write path (port)" FAIL "$(grep -aE '^ *WRITE MISMATCH|^WRITE ' "$OUT/write.log" | tail -1 | cut -c1-70)"
+  fi
+else
+  stage "write path (port)" SKIP "no libengine_py.so; cargo build --release"
+fi
+
+# The statement the port composes, against the statement the FORK composes,
+# with no database involved: `test_shims.py` and `kernel/tests/pure.rs` each
+# derive the contract file independently, and this is the half that asks Odoo.
+out=$("${T[@]}" "$PY" "$ROOT/harness/update_sql_contract.py" 2>&1); rc=$?
+if [ "$rc" = 0 ]; then
+  stage "update sql contract" OK "$(printf '%s' "$out" | grep -E '^CONTRACT' | head -1)"
+elif timed_out "$rc"; then stage "update sql contract" FAIL "$expired"
+else
+  stage "update sql contract" FAIL "$(printf '%s' "$out" | grep -E '^CONTRACT' | head -1)"
+fi
+
 # The only stage that compares what the SERVER SENDS rather than what a
 # method returned. It boots two servers, so it is minutes rather than
 # seconds -- but it is the only lane that can see an envelope key, a

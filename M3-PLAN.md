@@ -1407,3 +1407,50 @@ The correction is the same in every case and it is not "check more": it is to
 say out loud what the instrument actually measures, and then ask whether that
 is the claim being made. Every one of these was caught by writing the two
 sentences down next to each other, and none by looking harder at the code.
+
+## Phase 3 has a seam, and it is the fork's own (2026-09-12)
+
+Phase 3 as written above starts with a typed columnar cache in Rust, then the
+write primitives, then compute orchestration. That ordering assumed the engine
+would have to build its own way into `create`/`write`/`unlink`, the way the
+read path built its way in: by replacing methods on `BaseModel`.
+
+It does not. `odoo/orm/runtime/backend.py` declares `StorageBackend` — twelve
+methods and five capability flags through which every row read and every row
+write in the ORM passes — and
+`odoo/orm/tests/test_backend_dispatch_surface.py` pins it: fifteen sites
+across nine files, each one annotated with what the in-memory branch does NOT
+do, plus an assertion that the mixins hold no row I/O SQL of their own. Two
+implementors ship, `PostgresBackend` and `InMemoryBackend`, so the port is
+demonstrably not shaped around one backend.
+
+**That is the Phase 3 boundary, already drawn and already tested.** It is also
+exactly the line this plan's architecture sketch draws between the Rust engine
+and the embedded interpreter: Python keeps the business logic, the cache and
+the flush ORDERING; Rust owns what reaches the rows. Implementing the port is
+therefore not a detour around Phase 3, it is Phase 3's first three bullets
+approached from the side the fork supports.
+
+What this changes about the plan:
+
+- The write primitives do not need the Rust cache first. `update_rows` takes a
+  column-group and rows from the flush and renders one statement; the cache
+  decided what to flush, and that decision stays Python for now.
+- Coverage is declared per method (`NATIVE`) rather than predicted per call.
+  The read path's shim has to decide, in Python, whether the kernel supports
+  the shape it was handed — the source of the drift the README records. A port
+  method is armed or it is not.
+- The port reports its own backlog. Every delegated call is counted with its
+  reason, so "what moves next" is measured rather than argued.
+
+Landed on 2026-09-12: the port itself, delegating everything, plus
+`update_rows` armed. The README section "The persistence port, and the first
+write the kernel owns" carries the detail, the verification and the one defect
+it cost — a `threading.Lock` around the delegation counter, which serialised
+every `fetch` and `search` in the process and surfaced as an intermittent
+browser-tour failure rather than as a slow number.
+
+Not started, and the order the port's own counters suggest: `create_rows`
+(the other half of the write path), then `fetch` and `search`, which between
+them are the great majority of what the port currently delegates and are the
+two that would let the method-level shim retire.

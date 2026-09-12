@@ -106,6 +106,20 @@ pub struct Field {
 
     pub translated: bool,
 
+    /// `field.translate is True`, which is NOT `translated`: a field
+    /// translated term by term (`Html(translate=html_translate)`) is
+    /// stored in the same jsonb column and read the same way, and the
+    /// WRITE differs -- `_update_assignments` merges the new value into
+    /// the stored languages for one and replaces the whole column for the
+    /// other. Only the live export can tell them apart.
+    pub translate_whole: bool,
+
+    /// The cast `_update_assignments` writes after a value, taken from
+    /// the field's own `column_type[1]` rather than derived from
+    /// `information_schema`: the update SQL has to be the SAME cast
+    /// Python emits, not an equivalent one.
+    pub column_cast: Option<String>,
+
     pub related: Option<String>,
 
     pub domain: Option<serde_json::Value>,
@@ -963,6 +977,10 @@ impl Registry {
                     pg_type,
                     not_null,
                     translated,
+                    // `ir_model_fields` records neither, so a registry built
+                    // from the bootstrap refuses every write it would decide.
+                    translate_whole: false,
+                    column_cast: None,
                     related: if store { None } else { related },
 
                     domain: None,
@@ -1062,6 +1080,8 @@ impl Registry {
                         pg_type,
                         not_null,
                         translated,
+                        translate_whole: ef["translate_whole"].as_bool().unwrap_or(false),
+                        column_cast: ef["column_cast"].as_str().map(str::to_string),
                         related: if store { None } else { related },
                         domain: ef["domain"]
                             .as_array()

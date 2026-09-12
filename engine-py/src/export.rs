@@ -115,6 +115,8 @@ def export_registry(reg):
                 domain = None
             fields[fname] = {
                 "type": f.type,
+                "translate_whole": getattr(f, "translate", False) is True,
+                "column_cast": (f.column_type[1] if getattr(f, "column_type", None) else None),
                 "store": bool(f.store),
                 "relation": _s(getattr(f, "comodel_name", None)),
                 "related": _s(related),

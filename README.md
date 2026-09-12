@@ -12,11 +12,13 @@ Python are how both are held — every read shape the kernel serves is diffed
 against Python's answer, and runtime contracts check the effects a response-JSON
 comparison cannot see.
 
-The read path is the stage that is built, measured and serving. **Coexistence is
-the migration mechanism, not the destination**: while it lasts Python stays
-authoritative for registry metadata, extension hooks, cache/compute state and
-write orchestration, Rust executes eligible reads on the caller's transaction,
-and any shape it cannot answer exactly refuses back to Python. Those checks
+The read path is the stage that is built, measured and serving; the write path
+has started, at the fork's own persistence port and with one statement on it
+(see "The persistence port" below). **Coexistence is the migration mechanism,
+not the destination**: while it lasts Python stays authoritative for registry
+metadata, extension hooks, cache/compute state and write orchestration, Rust
+executes eligible reads on the caller's transaction, and any shape it cannot
+answer exactly refuses back to Python. Those checks
 establish the shapes they exercise and no more — the routed share and every
 remaining refusal are measured below, with a reason attached, because the
 refusal list is the replacement backlog.
@@ -2585,6 +2587,168 @@ above).
   `res.users` -- and it is the same set the shim already declines to route in
   production.
 
+## The persistence port, and the first write the kernel owns
+
+Everything above reaches Odoo the same way: `rust_orm_shim` replaces eight
+methods on `BaseModel`. That works and it is how every measurement on this
+page was taken, but it has a ceiling. Five of the eight it serves --
+`search_read`, `search_count`, `read`, `_read_group`, `name_search` -- and
+those are the calls a CLIENT names; the other three, `create`, `write` and
+`unlink`, it replaces only to NOTICE that a write happened, because it has no
+seam on the write itself. And for every call it does serve it has to decide,
+in Python and per call, whether the kernel supports the shape it was handed.
+The Known gaps entry about the routing shim no longer modelling what the
+kernel supports is that ceiling written down.
+
+The fork offers a better seam, and this engine was not on it.
+`odoo/orm/runtime/backend.py` declares `StorageBackend`: twelve methods and
+five capability flags through which **every row read and every row write in
+the ORM** passes. It is not a convention. `test_backend_dispatch_surface.py`
+enumerates the fifteen sites across nine files that choose between the SQL
+path and the port, says for each what the in-memory branch does NOT do, and
+asserts that the mixins hold no row I/O SQL of their own. Two implementors
+ship: `PostgresBackend` and `InMemoryBackend`, the second being how the whole
+ORM runs with no database at all.
+
+`RustBackend` is a third. It wraps the backend the transaction would
+otherwise have used and answers what it can, delegating the rest unchanged:
+
+```
+      BaseModel.write()  ->  cache flush  ->  env.backend.update_rows()
+                                                     |
+                                        RustBackend -+- armed?  -> kernel composes the UPDATE
+                                                     |            caller's cursor executes it
+                                                     +- else     -> PostgresBackend, unchanged
+```
+
+It is installed by wrapping `Transaction.__init__`, the one place a backend
+is chosen (`environment.py:121` is its only caller). A transaction that chose
+`InMemoryBackend` keeps it -- wrapping that one would put a kernel needing a
+connection in front of the case defined by not having one -- and a
+transaction for another database keeps `PostgresBackend`, so a process
+serving more than one database is unaffected.
+
+**Installing it changes no answer.** `NATIVE` is the arming switch and it is
+deliberately separate from the implementations: a method absent from that set
+is delegated without ever being asked, so an implementation with nothing
+verifying it stays off. `rust_engine_port = off` leaves `env.backend` exactly
+as the fork built it.
+
+### `update_rows`
+
+The first armed method is a write, and it is the bottom of every `write()` in
+the ORM. The cache flush hands `update_rows` a column-group and a list of
+rows; it renders one `UPDATE`. What it renders is decided entirely by field
+METADATA -- the column's declared cast, whether the field is translated as a
+whole value, whether it is company-dependent -- which is what the kernel's
+registry already holds. So `kernel/src/write.rs` composes the statement and
+the caller's own cursor executes it, with the same parameters Python would
+have passed. Nothing new binds values and nothing new reaches PostgreSQL: the
+statement goes through the same logging, metrics and savepoints as before.
+What moved is the composition.
+
+Two field members had to be exported, because neither is derivable from the
+column:
+
+| exported | why the column cannot say |
+|---|---|
+| `translate_whole` | `field.translate is True`, which is NOT `translated`. A field translated term by term (`Html(translate=html_translate)`) sits in the same jsonb column and reads the same way. Its WRITE differs: one merges the new value into the languages already stored, the other replaces the column. The wrong choice loses a language silently |
+| `column_cast` | the field's own `column_type[1]` rather than `information_schema`'s spelling. The statement has to carry the SAME cast Python emits, not an equivalent one |
+
+Neither is visible to the `ir_model` bootstrap, so a registry built that way
+carries `None` and refuses every write it would have decided -- the same
+posture as the rest of that bootstrap.
+
+Refused and delegated rather than guessed: a **company-dependent** column,
+whose assignment interpolates `ir.default`'s per-company fallbacks (resolving
+those from the kernel's snapshot would write the wrong jsonb rather than
+refuse); a column with no declared cast; a field this registry does not
+carry. A group with ONE refused column refuses whole, because splitting it
+would issue two statements where Python issues one, and the second would not
+see the first's row locks in the order Python takes them.
+
+### How a write is verified, given that a wrong one does not raise
+
+`harness/update_sql_contract.json` holds the statement text, and two tests
+derive it independently: `kernel/tests/pure.rs` asserts the kernel composes
+it, and `harness/test_shims.py` drives the **fork's own** `PostgresBackend`
+against a stub model and asserts it composes the same thing. One literal,
+derived twice -- so neither derivation is checked against a copy of itself. A
+fork that starts composing something else fails on the Python side and stays
+failing on the Rust side until the kernel is taught it, which is the order
+the two should move in; `update_sql_contract.py --update` is the
+regeneration step for an intended change.
+
+The contract is BYTE equality, not equivalence. An equivalent statement that
+read differently in `--log-sql` would be a second dialect to keep in step.
+
+What the text cannot see is the row. A statement that reads correctly and
+binds its parameters in the wrong order writes the wrong value without
+erroring. `harness/write_path.py` writes the same values twice on one
+database -- once through the kernel's statement and once with the port
+disarmed so the fork's composes -- and compares what PostgreSQL stored, read
+back by an independent connection neither path touched. It also proves the
+path RAN, per statement shape: a leg that delegated everything would compare
+two identical Python writes and pass while exercising nothing, which is the
+same hole the copy encoder's stream counter exists to close.
+
+Both statements are exercised, and the translated pair took finding. A
+whole-value translated column names its value THREE times in the merge
+expression, so the uniform statement binds it three times -- and a group
+holding one can never BE uniform, because its update value is a
+`PsycopgJson` wrapper and `_UNIFORM_UPDATE_TYPES` does not list it. The one
+path on which that three-parameter binding runs is a NULL on every row, which
+the harness reaches by clearing a column. Built for one occurrence instead,
+the id array lands inside the `CASE`.
+
+### Counting every call cost a browser tour
+
+The port counts what it answered and what it delegated, and the first version
+did it under a `threading.Lock`. That put one process-wide mutex on
+`env.backend.fetch` and `env.backend.search` -- the two hottest methods in the
+ORM, taken on every field read and every query the ORM builds -- in a server
+whose conf is `workers = 0`, which is threaded.
+
+Nothing in the battery reported it as a slow number -- the soak's
+throughput figure was unremarkable and no stage measures the port. It
+surfaced as
+`web/tests/test_login.py::TestUserSwitch.test_user_switch` failing with
+`RPC_ERROR: Odoo Session Expired` at the step that clicks Log out, which is a
+race between the logout destroying the session and an RPC already in flight.
+Measured over the same eight tour tags on the same database:
+
+```
+with the lock       3 runs, 2 failed
+without the lock    7 runs, 0 failed
+port off            3 runs, 0 failed
+```
+
+The counters are plain `Counter` increments under the GIL now. Two threads
+incrementing the same key can lose one of the two; nothing is corrupted, and a
+lost unit of instrumentation is the right trade against serialising every row
+read in the process. A figure read out of `stats()` is a lower bound under
+concurrency, and says so.
+
+The general point is worth more than the fix: **the port sits under the whole
+ORM, so anything it does per call, it does on the hottest path there is.** The
+method-level shim above it is entered only for the calls a client names, and
+never had this exposure.
+
+### What the port says about the rest
+
+Every delegated call is counted with its reason, so the port reports its own
+coverage. One `write_path` run, which is a handful of creates and writes:
+
+```
+native     update_rows 6
+delegated  fetch 40   search 39   create_rows 4   as_query 1
+```
+
+That is the map for what moves next, and it is a different map from the
+routed-share table above: `fetch` and `search` are hot here because the port
+sees every field read and every query the ORM builds, not only the ones an
+RPC method names.
+
 ## The road to replacement (M2, then M3)
 
 `M3-PLAN.md` is the plan of record for the end state: the Rust binary as the
@@ -2600,4 +2764,8 @@ between here and there, in the order the evidence says to take it:
    that Python *on* the kernel instead of beside it.
 4. The write path, flush and the dependency graph — the remaining half of the
    ORM, and the one that makes Python's copy removable rather than merely
-   bypassed.
+   bypassed. **Started**: `update_rows`, the statement every `write()` ends
+   in, is composed by the kernel and runs through the fork's own
+   `StorageBackend` port rather than through a patched method. The section
+   below says what that port is and why it is the seam the rest of this step
+   should arrive on.

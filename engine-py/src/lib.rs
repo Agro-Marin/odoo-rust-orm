@@ -25,6 +25,7 @@ fn engine_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<cursor::RustCopy>()?;
     m.add_class::<kernel::RustKernel>()?;
     m.add_function(pyo3::wrap_pyfunction!(install_shims, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(install_backend, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(export_registry, m)?)?;
     let _ = py;
     Ok(())
@@ -41,30 +42,47 @@ const SHIM_SOURCES: [(&str, &str); 3] = [
     ("rust_orm_shim", include_str!("../python/rust_orm_shim.py")),
 ];
 
+/// The persistence port is registered on its own, not with the shims.
+/// It replaces no method: it implements `StorageBackend`, which the fork
+/// declares and pins, so a caller can install the port without the method
+/// routing or the routing without the port.
+const BACKEND_SOURCE: (&str, &str) = ("rust_backend", include_str!("../python/rust_backend.py"));
+
+/// Register one embedded module under `name`, or hand back the one already
+/// registered: importing it twice would give the process two copies of the
+/// state these modules hold.
+fn register<'py>(py: Python<'py>, name: &str, src: &str) -> PyResult<Bound<'py, PyModule>> {
+    let modules = py.import("sys")?.getattr("modules")?;
+    if let Some(existing) = modules
+        .get_item(name)
+        .ok()
+        .and_then(|m| m.cast_into::<PyModule>().ok())
+    {
+        return Ok(existing);
+    }
+    let module = PyModule::from_code(
+        py,
+        &std::ffi::CString::new(src)?,
+        &std::ffi::CString::new(format!("{name}.py"))?,
+        &std::ffi::CString::new(name)?,
+    )?;
+    modules.set_item(name, &module)?;
+    Ok(module)
+}
+
+pub fn install_backend_py<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyModule>> {
+    errors::register(py)?;
+    let (name, src) = BACKEND_SOURCE;
+    register(py, name, src)
+}
+
 pub fn install_shims_py<'py>(
     py: Python<'py>,
 ) -> PyResult<(Bound<'py, PyModule>, Bound<'py, PyModule>)> {
     errors::register(py)?;
-    let modules = py.import("sys")?.getattr("modules")?;
     let mut out: Vec<Bound<'py, PyModule>> = Vec::new();
     for (name, src) in SHIM_SOURCES {
-        let existing = modules
-            .get_item(name)
-            .ok()
-            .and_then(|m| m.cast_into::<PyModule>().ok());
-        let module = match existing {
-            Some(m) => m,
-            None => {
-                let m = PyModule::from_code(
-                    py,
-                    &std::ffi::CString::new(src)?,
-                    &std::ffi::CString::new(format!("{name}.py"))?,
-                    &std::ffi::CString::new(name)?,
-                )?;
-                modules.set_item(name, &m)?;
-                m
-            }
-        };
+        let module = register(py, name, src)?;
         if name != "wire" {
             out.push(module);
         }
@@ -78,4 +96,9 @@ pub fn install_shims_py<'py>(
 fn install_shims(py: Python<'_>) -> PyResult<(Py<PyModule>, Py<PyModule>)> {
     let (db, orm) = install_shims_py(py)?;
     Ok((db.unbind(), orm.unbind()))
+}
+
+#[pyo3::pyfunction]
+fn install_backend(py: Python<'_>) -> PyResult<Py<PyModule>> {
+    Ok(install_backend_py(py)?.unbind())
 }
