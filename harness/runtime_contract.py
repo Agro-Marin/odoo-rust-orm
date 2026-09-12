@@ -365,9 +365,23 @@ shim.KERNEL = engine.RustKernel.build(rust_db, engine.export_registry(reg))
 count_request = json.dumps(
     {"model": "res.country", "method": "search_count", "uid": uid}
 )
+where_request = json.dumps(
+    {
+        "model": "res.country",
+        "method": "search",
+        "uid": uid,
+        "root_active_test": False,
+        "trusted_domain": True,
+        "domain": [],
+    }
+)
 with env_for(uid) as old:
     initial = json.loads(shim.KERNEL.dispatch(old.cr._cnx._rust, count_request))
     assert initial > 1
+    # the port's WHERE compile keeps the snapshot it checked for the rest of
+    # the transaction too; it has to be refused just the same once security
+    # moves past it
+    assert shim.KERNEL.search_where(old.cr._cnx._rust, where_request, offline=False)
     change_in_other_process(
         f"env['ir.rule'].browse({snapshot_rule_id}).write({{'domain_force': {repr([('id', '=', cid)])!r}}})"
     )
@@ -377,6 +391,11 @@ with env_for(uid) as old:
         engine.KernelRefused, "snapshot predates"
     ):
         shim.KERNEL.dispatch(old.cr._cnx._rust, count_request)
+    for offline in (True, False):
+        with unittest.TestCase().assertRaisesRegex(
+            engine.KernelRefused, "snapshot predates"
+        ):
+            shim.KERNEL.search_where(old.cr._cnx._rust, where_request, offline=offline)
 with env_for() as e:
     e["ir.rule"].browse(snapshot_rule_id).unlink()
     e.cr.commit()

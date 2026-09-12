@@ -1218,8 +1218,16 @@ def install():
     orig_write = BaseModel.write
     orig_unlink = BaseModel.unlink
 
-    def _taint(self) -> None:
+    def _taint(self, vals=None) -> None:
         if self._name in SECURITY_MODELS:
+            if _gate_logger.isEnabledFor(logging.DEBUG):
+                _gate_logger.debug(
+                    "cursor tainted by a write to %s (%s)",
+                    self._name,
+                    ", ".join(sorted(vals))
+                    if isinstance(vals, dict)
+                    else "create/unlink",
+                )
             try:
                 DIRTY_CRS.add(self.env.cr)
             except TypeError:
@@ -1231,7 +1239,7 @@ def install():
         return orig_create(self, vals_list)
 
     def write(self, vals):
-        _taint(self)
+        _taint(self, vals)
         _note_written(self, [vals])
         return orig_write(self, vals)
 

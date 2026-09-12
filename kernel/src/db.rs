@@ -182,6 +182,17 @@ impl<'a> Db<'a> {
         Ok(rows?)
     }
 
+    /// `query`, sent even in offline mode. Only for the signalling watermark;
+    /// see `Orm::check_signaling`.
+    pub async fn query_signals(&self, sql: &str) -> Result<Vec<tokio_postgres::Row>> {
+        Db {
+            offline: false,
+            ..*self
+        }
+        .query(sql, &[])
+        .await
+    }
+
     pub async fn query_opt(
         &self,
         sql: &str,

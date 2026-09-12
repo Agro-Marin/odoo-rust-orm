@@ -2725,7 +2725,9 @@ all                      6.193 s      5.645 s          0.91x
 ```
 
 (The machine was loaded differently between the two readings; compare within
-a row.) `search_count` at 1.15x and `web_read` at 1.06x are still slower
+a row.) Measured again after the unsound registry shortcut was removed from the
+dispatch path: all calls 0.94x, `search_read` 0.65x, `web_search_read` 0.91x,
+`web_read_group` 1.02x, `name_search` 1.02x. `search_count` at 1.15x and `web_read` at 1.06x are still slower
 routed. A routed call pays a savepoint, a signalling read, the query and a
 release, four round trips where Python's own statement is one; the port's
 `search` removed the middle two, and the dispatch path has not been given the
@@ -3037,17 +3039,28 @@ serial, and later compiles in that transaction reuse it. It is the snapshot
 the check produced, not `registry.dynamic()`, which another connection may
 have refreshed from a commit this transaction cannot see.
 
-**The first compile of a transaction trusts Python's registry when they
-agree.** The port sends the environment's registry sequences --
-`registry_sequence` and every cache sequence, named by their
-`orm_signaling_*` tables -- and when they equal the kernel snapshot's on the
-registry and the three security tables, the watermark is not read at all.
-Python's own search answers from caches at exactly those sequences, so this is
-parity with Python rather than a looser check. One window is stated plainly: a
-rule committed by another worker after this request's signalling check is
-invisible to the kernel until the next request, as it is to Python's cached
-rule domains -- but Python READS a rule domain it has not cached yet, and in
-that case sees it a request earlier.
+**Trusting Python's registry instead of the watermark was unsound, and is
+gone.** A first version let the first compile of a transaction skip the
+watermark whenever the environment's registry sequences equalled the kernel
+snapshot's on the registry and security tables. The registry object is shared
+by every thread of the process and advances while a transaction is open, so
+an OLD transaction's registry can already read the NEW sequences, match a
+refreshed kernel snapshot, and have the kernel apply rules its database
+snapshot cannot see. The runtime contract "security refresh cannot make old
+transactions use future rule metadata" failed on it when the same shortcut was
+put on the method shim's dispatch. It shipped with the port's `search`, which
+is not armed, and nothing routed through it. The same contract then showed a
+second hole in the per-transaction reuse: a remembered snapshot must still be
+COMPARED with the kernel's current metadata, because the kernel holds one
+current security state and refuses a transaction whose snapshot precedes it.
+Reuse now skips only the read; `Orm::snapshot` repeats the comparison in
+memory, and the contract checks `dispatch` and `search_where`, offline and
+online, against a refresh from another process.
+
+What replaced the shortcut for the first compile of a transaction: the
+signalling read is sent even offline. It takes no lock and fails only when the
+connection has, which Python's own next statement would meet the same way, so
+it costs a round trip and not a savepoint.
 
 **No savepoint unless the kernel needs the database.** `Db` has an offline
 mode that raises `NeedsRoundTrip` instead of sending a statement. The port
@@ -3069,18 +3082,20 @@ delegates everything. `search_path.py` ends by writing a rule and requiring the
 delegation and Python's answer.
 
 Measured over the sweep corpus's 4,624 searches, best of five interleaved
-rounds on a machine other sessions were loading (load average about 6 on 22
-cores), which puts the noise near ten percent:
+rounds, after the shortcut above was removed (load average about 4 on 22
+cores, other sessions running; the noise is near ten percent):
 
 ```
 a new transaction every      python      native     native / python
-search                       4.28 s      4.00 s     0.93
-8 searches                   3.11 s      3.38 s     1.09
-round (steady state)         2.70 s      2.52 s     0.93
+search                       4.19 s      4.90 s     1.17
+8 searches                   3.62 s      3.32 s     0.92
+round (steady state)         2.67 s      2.78 s     1.04
+no compile needed a savepoint in any measured round (online = 0)
 ```
 
-Parity, not a win: the eight-search row reading slower than the one-search row
-is the noise, not a curve. So `search` stays out of `NATIVE`, by the rule this
+Parity over transactions of a few searches, and slower where each transaction
+holds one: the first compile of a transaction still reads the watermark, the
+one statement the kernel cannot avoid. So `search` stays out of `NATIVE`, by the rule this
 port was built on. The cost that remains is upstream of the seam:
 `optimize_full` runs in `_search` before the backend is asked, and it is the
 same on both legs. At the seam alone native is clearly faster -- `backend.search`

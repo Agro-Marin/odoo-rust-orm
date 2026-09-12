@@ -268,6 +268,7 @@ impl RustKernel {
             ));
         }
         conn.ensure_tx(py)?;
+        let checked = conn.checked_signals(self.generation);
         let client = conn.client();
         let handle = conn.handle().clone();
         let stmts = conn.kernel_stmts_at(self.generation);
@@ -276,7 +277,7 @@ impl RustKernel {
         let t0 = std::time::Instant::now();
         let out = py.detach(|| {
             let orm = Orm::new(&self.registry, &client, self.caches.clone(), &stmts);
-            let result = handle.block_on(orm.dispatch(&req));
+            let result = handle.block_on(orm.dispatch_with(&req, checked.clone()));
             if result
                 .as_ref()
                 .err()
@@ -293,7 +294,14 @@ impl RustKernel {
                 self.stale.store(true, Ordering::Release);
                 stmts.clear();
             }
-            result.map_err(from_kernel)
+            let (raw, snapshot) = result.map_err(from_kernel)?;
+            // The signalling watermark cannot move inside the caller's
+            // REPEATABLE READ transaction; the next dispatch in it reuses the
+            // snapshot this one checked instead of reading the row again.
+            if checked.is_none() {
+                conn.remember_signals(self.generation, snapshot);
+            }
+            Ok(raw)
         });
         tracing::debug!(
             target: "odoo_kernel::bridge",

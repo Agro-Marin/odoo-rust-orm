@@ -196,13 +196,6 @@ pub struct Request {
     /// one. Only the port sets it; `dispatch` never reads it.
     #[serde(default)]
     pub trusted_domain: bool,
-
-    /// The caller's Python registry sequences by signalling table name. When
-    /// they agree with this kernel's snapshot on the registry and security
-    /// tables, `compile_where` skips reading the watermark: see
-    /// `registry::signals_agree`.
-    #[serde(default)]
-    pub python_signals: Option<HashMap<String, i64>>,
 }
 
 impl Request {
@@ -310,6 +303,45 @@ impl<'a> Orm<'a> {
         self
     }
 
+    /// The signalling snapshot a request runs against: the one `checked`
+    /// earlier in the same transaction, else the watermark read now.
+    ///
+    /// There was a third source, and it was unsound: the caller's Python
+    /// registry sequences, trusted when they matched the kernel's snapshot. The
+    /// registry object is shared by every thread of the process and advances
+    /// while a transaction is open, so an OLD transaction's registry can read
+    /// the NEW sequences -- match the kernel's refreshed snapshot -- and the
+    /// kernel would apply rules its database snapshot cannot see yet. The
+    /// runtime contract "security refresh cannot make old transactions use
+    /// future rule metadata" failed on it. Only the watermark this
+    /// transaction can SEE says which snapshot it may use.
+    async fn snapshot(
+        &self,
+        _req: &Request,
+        checked: Option<Arc<crate::registry::Dynamic>>,
+    ) -> Result<Arc<crate::registry::Dynamic>> {
+        if let Some(dynamic) = checked {
+            // Reuse skips READING the watermark, not COMPARING it: once another
+            // connection has refreshed the kernel's registry or security
+            // metadata past what this transaction checked, the transaction is
+            // refused as `check_signaling` would refuse it. The kernel holds
+            // one current security state, and some compile paths read it from
+            // the registry rather than from the snapshot passed in. The
+            // contract "security refresh cannot make old transactions use
+            // future rule metadata" failed until this comparison was here.
+            if self
+                .registry
+                .snapshot_precedes(&dynamic.signals, &self.registry.dynamic().signals)
+            {
+                refuse!(
+                    "the request snapshot predates this kernel's registry or security metadata"
+                );
+            }
+            return Ok(dynamic);
+        }
+        self.check_signaling().await
+    }
+
     async fn check_signaling(&self) -> Result<Arc<crate::registry::Dynamic>> {
         let Some(sql) = self.registry.signals_sql() else {
             tracing::trace!(
@@ -318,7 +350,13 @@ impl<'a> Orm<'a> {
             );
             return Ok(self.registry.dynamic());
         };
-        let rows = self.db.query(sql, &[]).await?;
+        // Sent even offline: a read of the signalling tables' maximum ids
+        // takes no lock and fails only when the connection has, which Python's
+        // own statement would meet the same way -- a savepoint could not roll
+        // it back. It is the one kernel statement the first compile of a
+        // transaction cannot avoid, and it must not cost that compile a
+        // savepoint.
+        let rows = self.db.query_signals(sql).await?;
         let signals = Registry::signals_of(&rows[0]);
         let current = self.registry.dynamic();
         tracing::trace!(
@@ -1173,6 +1211,17 @@ impl<'a> Orm<'a> {
     }
 
     pub async fn dispatch(&self, req: &Request) -> Result<String> {
+        self.dispatch_with(req, None).await.map(|(raw, _)| raw)
+    }
+
+    /// `dispatch`, reusing a snapshot `checked` earlier in the caller's
+    /// transaction and returning the one it ran against, so the caller can
+    /// keep it for the rest of that transaction. See `snapshot`.
+    pub async fn dispatch_with(
+        &self,
+        req: &Request,
+        checked: Option<Arc<crate::registry::Dynamic>>,
+    ) -> Result<(String, Arc<crate::registry::Dynamic>)> {
         let span = tracing::info_span!(
             "dispatch",
             id = req.id.as_deref().unwrap_or("-"),
@@ -1200,11 +1249,14 @@ impl<'a> Orm<'a> {
             );
         }
         let t0 = std::time::Instant::now();
-        let out = self.dispatch_inner(req).instrument(span.clone()).await;
+        let out = self
+            .dispatch_inner(req, checked)
+            .instrument(span.clone())
+            .await;
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         let _guard = span.enter();
         match &out {
-            Ok(raw) => {
+            Ok((raw, _)) => {
                 tracing::debug!(
                     target: "odoo_kernel::dispatch",
                     ms,
@@ -1247,10 +1299,15 @@ impl<'a> Orm<'a> {
         out
     }
 
-    async fn dispatch_inner(&self, req: &Request) -> Result<String> {
+    async fn dispatch_inner(
+        &self,
+        req: &Request,
+        checked: Option<Arc<crate::registry::Dynamic>>,
+    ) -> Result<(String, Arc<crate::registry::Dynamic>)> {
         Self::validate_shape(req)?;
         let t_signal = std::time::Instant::now();
-        let dynamic = self.check_signaling().await?;
+        let dynamic = self.snapshot(req, checked).await?;
+        let snapshot = dynamic.clone();
         let signal_ms = t_signal.elapsed().as_secs_f64() * 1000.0;
         let t_env = std::time::Instant::now();
         let env = self.build_env(req, dynamic).await?;
@@ -1281,12 +1338,13 @@ impl<'a> Orm<'a> {
                 req.model
             );
         }
-        match req.method.as_str() {
+        let raw = match req.method.as_str() {
             "search_read" => self.search_read(req, &env).await,
             "search_count" => self.search_count(req, &env).await,
             "read_group" => self.read_group(req, &env).await,
             m => refuse!("unknown method {m}"),
-        }
+        }?;
+        Ok((raw, snapshot))
     }
 
     /// The WHERE clause `StorageBackend.search` would add for this domain and
@@ -1313,22 +1371,7 @@ impl<'a> Orm<'a> {
         req: &Request,
         checked: Option<Arc<crate::registry::Dynamic>>,
     ) -> Result<CompiledWhere> {
-        let dynamic = match checked {
-            Some(dynamic) => dynamic,
-            None => {
-                let current = self.registry.dynamic();
-                match &req.python_signals {
-                    Some(python) if self.registry.agrees_with_python(python, &current.signals) => {
-                        tracing::trace!(
-                            target: "odoo_kernel::signal",
-                            "the caller's Python registry sees this snapshot's watermark; not reading it"
-                        );
-                        current
-                    }
-                    _ => self.check_signaling().await?,
-                }
-            }
-        };
+        let dynamic = self.snapshot(req, checked).await?;
         let snapshot = dynamic.clone();
         let env = self.build_env(req, dynamic).await?;
         let model = self.registry.get(&req.model)?;

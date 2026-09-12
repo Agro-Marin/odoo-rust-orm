@@ -488,13 +488,6 @@ def _security_written(env):
     return None
 
 
-def _python_signals(registry):
-    signals = {"orm_signaling_registry": registry.registry_sequence}
-    for name, sequence in registry.cache_sequences.items():
-        signals["orm_signaling_%s" % name] = sequence
-    return signals
-
-
 def _search_native(model, domain, offset, limit, order, check_access):
     """A `Query` whose WHERE the kernel compiled, or None to delegate.
 
@@ -550,12 +543,6 @@ def _search_native(model, domain, offset, limit, order, check_access):
             "tz": context.get("tz") or None,
             "root_active_test": False,
             "trusted_domain": True,
-            # What this environment's registry processed at the start of the
-            # request. Equal to the kernel's snapshot on the registry and
-            # security tables, it lets the first compile of a transaction skip
-            # reading the watermark -- and therefore the savepoint -- because
-            # Python itself answers from caches at exactly these sequences.
-            "python_signals": _python_signals(env.registry),
         }
     )
     request = request[:-1] + ', "domain": ' + domain_json + "}"

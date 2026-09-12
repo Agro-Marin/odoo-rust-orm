@@ -1462,8 +1462,9 @@ which is ORM work the port would have to call back into.
 NOT armed. It started 1.4 to 1.6 times slower than Python and is at parity now
 (0.93 to 1.09 across transaction lengths, within a noisy machine's margin):
 the kernel reports the flush set, the watermark is read once per transaction
-or not at all when Python's registry agrees, and a compile runs inside a
-savepoint only when it needs the database. At the seam alone it is about a
+(a shortcut that trusted Python's registry sequences instead was unsound and
+was removed), and a compile runs inside a savepoint only when it needs the
+database. At the seam alone it is about a
 third faster; the remaining cost is `optimize_full`, which runs in `_search`
 before the port is asked. So the next gain for `search` is not in the port:
 it is the kernel taking over the domain optimisation that precedes it, which

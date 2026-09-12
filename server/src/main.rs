@@ -307,7 +307,6 @@ async fn main() -> Result<()> {
                 tz: None,
                 root_active_test: None,
                 trusted_domain: false,
-                python_signals: None,
             };
             let raw = orm.dispatch_in_transaction(&req).await?;
             let value: Json = serde_json::from_str(&raw)?;
