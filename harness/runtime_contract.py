@@ -428,6 +428,56 @@ print(
     flush=True,
 )
 
+# A routed _read_group hands back many2one group values that PREFETCH TOGETHER,
+# as _read_group_postprocess_groupby builds them. Browsed one by one, reading a
+# field of the groups fetched once per record per field: routed web_read_group
+# ran 3.95x slower than Python on captured traffic, every answer correct. The
+# check is on the query count, because nothing about the rows would show it.
+shim.reset_breaker()
+previous_mode, previous_sample = shim.MODE, shim.SAMPLE
+shim.MODE, shim.SAMPLE = "on", 0.0
+try:
+    with env_for() as e:
+        partners = e["res.partner"]
+        # two countries of its own, so the check does not depend on the
+        # fixture; the transaction rolls back with the context manager
+        seeded = partners.create(
+            [
+                {"name": "prefetch contract A", "country_id": e.ref("base.be").id},
+                {"name": "prefetch contract B", "country_id": e.ref("base.fr").id},
+            ]
+        )
+        e.flush_all()
+        routed_before = shim.STATS["kernel"]
+        rows = partners._read_group(
+            [("id", "in", seeded.ids)], ["country_id"], ["__count"]
+        )
+        assert shim.STATS["kernel"] == routed_before + 1, "the group read did not route"
+        groups = [row[0] for row in rows]
+        assert len(groups) >= 2, (
+            "the contract needs partners in two countries; seed more"
+        )
+        ids = {g.id for g in groups}
+        shared = [set(g._prefetch_ids) >= ids for g in groups]
+        assert all(shared), "routed group records do not prefetch together"
+        e.invalidate_all()
+        before = e.cr.sql_log_count
+        names = [g.name for g in groups]
+        queries = e.cr.sql_log_count - before
+        assert all(names) and queries <= 2, (
+            "reading the name of %d routed groups took %d queries"
+            % (len(groups), queries)
+        )
+        # env_for's cursor commits on a clean exit; the seeded partners are
+        # this check's alone
+        e.cr.rollback()
+finally:
+    shim.MODE, shim.SAMPLE = previous_mode, previous_sample
+print(
+    "CONTRACT routed many2one groups prefetch together: one query reads every group's field",
+    flush=True,
+)
+
 # Release committed rule/field policy changes before the rest of the corpus.
 with env_for() as e:
     e["ir.rule"].browse(rule_id).unlink()

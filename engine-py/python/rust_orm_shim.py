@@ -1144,6 +1144,19 @@ def install():
                 STATS["kernel"] += 1
                 out = []
                 gb_fields = [self._fields[g.split(":")[0]] for g in groupby]
+                # Every group record of a column prefetches with the others,
+                # as `_read_group_postprocess_groupby` builds them. Browsed one
+                # by one, each was its own prefetch set, and a caller reading a
+                # field of the groups -- web_read_group reads their names --
+                # fetched once per record per field: on the captured traffic
+                # 5,372 single-field fetches and routed web_read_group 3.95x
+                # slower than Python.
+                prefetch = [
+                    tuple(row[i] for row in rows if row[i])
+                    if f.type == "many2one"
+                    else ()
+                    for i, f in enumerate(gb_fields)
+                ]
                 agg_fields = [
                     None
                     if a == "__count" or a.rsplit(":", 1)[-1] in COUNT_AGGREGATES
@@ -1156,7 +1169,9 @@ def install():
                         v = row[i]
                         if f.type == "many2one":
                             item.append(
-                                self.env[f.comodel_name].browse(v)
+                                self.env[f.comodel_name]
+                                .browse(v)
+                                .with_prefetch(prefetch[i])
                                 if v
                                 else self.env[f.comodel_name]
                             )

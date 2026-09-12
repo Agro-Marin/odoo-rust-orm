@@ -2685,6 +2685,78 @@ and value pairs, the ones whose leaf can fold to a constant, both dotted and
 in their `any` form and requires them equal. `=?` was the only one that was
 not.
 
+## Recorded traffic said the routed path was slower, and why
+
+Every speed figure above was the kernel alone, a synthetic corpus, or an
+HTTP burn-in. `harness/traffic_bench.py` replays calls Odoo actually served --
+the byte-parity stage records 1,792 of them, `web_search_read`,
+`web_read_group`, `search_read`, `search_count`, `name_search`, `web_read` --
+in one process, with the method shim routing and with it off, interleaved.
+Its first reading, on committed `odoo` and `enterprise` worktrees:
+
+```
+                     calls   routing off   routing on
+web_search_read        584       2.705 s      2.658 s    0.98x
+web_read_group         286       0.805 s      3.176 s    3.95x
+search_read            292       0.358 s      0.265 s    0.74x
+web_read               138       0.300 s      0.383 s    1.27x
+name_search            230       0.272 s      0.314 s    1.15x
+search_count           292       0.160 s      0.212 s    1.32x
+all                   1792       4.601 s      7.008 s    1.52x
+```
+
+The workspace conf ships with routing on. Every answer was exact.
+
+**`web_read_group` browsed each group on its own.** The routed `_read_group`
+rebuilt each many2one group value as `env[comodel].browse(id)`, a recordset
+whose prefetch set is itself. `web_read_group` then reads the groups' names,
+and each name was a fetch of one record's one field: routed, the replay ran
+6,008 statements where Python ran 678, 5,372 of them single-field fetches.
+Python's `_read_group_postprocess_groupby` gives every group of a column the
+column's values as prefetch ids; the shim does the same now. A runtime
+contract routes a two-country `_read_group` and requires the groups to share a
+prefetch set and their names to cost at most two queries; with the fix
+reverted it fails.
+
+```
+                     routing off   routing on      after the fix
+web_read_group           1.256 s      1.192 s          0.95x
+all                      6.193 s      5.645 s          0.91x
+```
+
+(The machine was loaded differently between the two readings; compare within
+a row.) `search_count` at 1.15x and `web_read` at 1.06x are still slower
+routed. A routed call pays a savepoint, a signalling read, the query and a
+release, four round trips where Python's own statement is one; the port's
+`search` removed the middle two, and the dispatch path has not been given the
+same treatment.
+
+**A profile pointed at record rules, and the timers said otherwise.** Under
+`cProfile`, `_check_access` was 32% of the replay and `filtered_domain` --
+evaluating the caller's rules against records in memory -- most of that. A
+prototype answered the rule half of `_check_access('read')` natively, as
+`SELECT id FROM t WHERE id = ANY(ids) AND <the kernel's rule WHERE>`, flushing
+the columns the kernel reports. It agreed with Python on all 1,804 decisions
+it made and saved nothing measurable: 4.99 s against 4.83 s, 4.99 against
+4.79, 5.19 against 5.32. The profiler had doubled the replay's wall time, and
+that overhead lands on exactly the many small Python calls a predicate
+evaluation is made of. Boundary timers, with no profiler, read the replay as:
+
+```
+_check_access                    22%   most of it ACL lookup and recordset work
+backend.fetch, with its SQL      20%
+all SQL execution                19%
+_search                           9.5%
+backend.search compile            5%
+_read_format                      4.5%
+optimize_full                     3.5%
+```
+
+So the rule check was not made native, and the port's methods, one at a time,
+bound what they can save at a few percent of a request. The gain is in whole
+calls leaving Python, which is what the method shim does -- once its own
+round trips are paid for.
+
 ## The persistence port, and the first write the kernel owns
 
 Everything above reaches Odoo the same way: `rust_orm_shim` replaces eight
