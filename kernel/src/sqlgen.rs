@@ -834,6 +834,30 @@ impl<'a> Compiler<'a> {
         let v = &l.value;
 
         if op == "=?" {
+            // `DomainCondition._optimize_step` splits a relational dotted path
+            // into `head any [rest op value]` at BASIC, BEFORE any operator
+            // optimisation runs, so `=?` is decided inside the sub-domain.
+            // Collapsing the whole leaf first turned `('currency_id.decimal_
+            // places', '=?', 0)` into TRUE -- every row -- where Odoo reads
+            // "currency_id is set"; the fuzzer's seed 3 found it as 232 rows
+            // against 0.
+            let head_relational = matches!(
+                ttype,
+                Some(
+                    FieldType::Many2one
+                        | FieldType::Many2oneReference
+                        | FieldType::One2many
+                        | FieldType::Many2many
+                )
+            );
+            if dotted && head_relational {
+                let rest = &l.field[head.len() + 1..];
+                return Ok(Some(leaf(
+                    head,
+                    "any",
+                    serde_json::json!([[rest, "=?", v.clone()]]),
+                )));
+            }
             return Ok(Some(if is_py_falsy(v) {
                 Node::True
             } else {

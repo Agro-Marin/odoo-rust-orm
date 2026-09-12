@@ -57,16 +57,11 @@ PROTOCOL_METHODS = (
     "unlink_m2m_pairs",
 )
 
-#: Every call is counted, and `fetch` and `search` arrive on the hottest path
-#: in the ORM -- so the counters are plain `Counter` increments under the GIL
-#: with NO lock. Two threads incrementing the same key can lose one of the
-#: two; nothing is corrupted, and a lost unit of instrumentation is the right
-#: trade against serialising every row read in the process on one mutex. A
-#: figure read out of here is therefore a lower bound under concurrency.
 STATS = {
     "native": collections.Counter(),
     "delegated": collections.Counter(),
     "reasons": collections.Counter(),
+    "reasons_by_method": collections.Counter(),
 }
 
 
@@ -77,6 +72,7 @@ def _count(bucket, key) -> None:
 def _delegated(method, reason) -> None:
     STATS["delegated"][method] += 1
     STATS["reasons"][reason] += 1
+    STATS["reasons_by_method"][method, reason] += 1
     if _port_logger.isEnabledFor(logging.DEBUG):
         _port_logger.debug("%s -> delegate (%s)", method, reason)
 
@@ -86,7 +82,10 @@ def stats():
         "native": dict(STATS["native"]),
         "delegated": dict(STATS["delegated"]),
         "reasons": dict(STATS["reasons"]),
+        "reasons_by_method": {},
     }
+    for (method, reason), n in STATS["reasons_by_method"].items():
+        out["reasons_by_method"].setdefault(method, {})[reason] = n
     # The per-shape counters are a breakdown of `update_rows`, not calls of
     # their own: counting them again would make the share exceed one.
     native = sum(v for k, v in out["native"].items() if "." not in k)
@@ -176,7 +175,13 @@ class RustBackend:
     def search(
         self, model, domain, offset, limit, order, *, check_access=True, prof=None
     ):
-        _delegated("search", "not implemented natively")
+        if "search" not in self.NATIVE:
+            _delegated("search", "not armed")
+        else:
+            query = _search_native(model, domain, offset, limit, order, check_access)
+            if query is not None:
+                _count("native", "search")
+                return query
         return self._delegate.search(
             model, domain, offset, limit, order, check_access=check_access, prof=prof
         )
@@ -402,6 +407,250 @@ def _create_rows_native(model, stored_list, columns, col_fields):
 
     cr.execute(sql, params or None)
     return [id_ for (id_,) in cr.fetchall()]
+
+
+def _revive(value):
+    if isinstance(value, list):
+        return [_revive(item) for item in value]
+    if isinstance(value, dict):
+        import datetime
+
+        if "__date__" in value:
+            return datetime.date.fromisoformat(value["__date__"])
+        if "__datetime__" in value:
+            return datetime.datetime.fromisoformat(value["__datetime__"])
+    return value
+
+
+class _NoWireForm(Exception):
+    pass
+
+
+def _domain_json(domain):
+    """The optimized domain as the prefix list the kernel parses, or raise.
+
+    `list(domain)` is Odoo's own serialisation and already thaws a sub-domain
+    into a list. What it cannot express is a value the kernel has no wire form
+    for -- a `Query` from a field's `search=` method, an `SQL` object, a
+    custom SQL node -- and every one of those is a delegation, not a guess.
+    """
+    import json
+
+    from odoo.orm.domain.ast import DomainCustom
+
+    if any(isinstance(node, DomainCustom) for node in _walk(domain)):
+        raise _NoWireForm("a custom SQL condition")
+
+    import wire
+
+    def refuse(value):
+        raise _NoWireForm("a %s value" % type(value).__name__)
+
+    return json.dumps(wire.ser(list(domain)), default=refuse)
+
+
+def _walk(node):
+    from odoo.orm.domain.ast import Domain, DomainCondition, DomainNary, DomainNot
+
+    yield node
+    if isinstance(node, DomainNary):
+        for child in node.children:
+            yield from _walk(child)
+    elif isinstance(node, DomainNot):
+        yield from _walk(node.child)
+    elif isinstance(node, DomainCondition) and isinstance(node.value, Domain):
+        yield from _walk(node.value)
+
+
+#: Rule-domain dependencies by (model, the rule Domain object). Optimizing a
+#: rule domain is what makes its columns knowable, and on a comodel that can
+#: mean running searches -- `ir.attachment` and the mail access checks search
+#: while they optimize -- so it was two thirds of a native search's cost when
+#: done per call. `_get_domain_accessible_records` is an ormcache, and it hands
+#: back the SAME object until the rules or the user's groups change, when the
+#: cache is cleared and a new object comes back; so the object's identity is
+#: the invalidation, and the entry keeps the object alive so an id is never
+#: reused under it.
+_RULE_DEPENDENCIES = {}
+_RULE_DEPENDENCIES_MAX = 4096
+
+
+def _rule_dependencies(records, rules):
+    if rules.is_true() or rules.is_false():
+        return {}, set()
+    key = (records._name, id(rules))
+    hit = _RULE_DEPENDENCIES.get(key)
+    if hit is not None and hit[0] is rules:
+        return hit[1]
+    from odoo.orm.runtime._search_flush import _DependencyCollector
+
+    sudo = records.sudo().with_context(active_test=False)
+    collector = _DependencyCollector()
+    collector.collect_domain(sudo, rules.optimize_full(sudo))
+    collected = (
+        None
+        if collector.opaque
+        else (
+            {name: frozenset(f) for name, f in collector.fields_by_model.items()},
+            frozenset(collector.seen),
+        )
+    )
+    if len(_RULE_DEPENDENCIES) >= _RULE_DEPENDENCIES_MAX:
+        _RULE_DEPENDENCIES.clear()
+    _RULE_DEPENDENCIES[key] = (rules, collected)
+    return collected
+
+
+def _flush_fields(model, domain, check_access):
+    """The fields a native WHERE must flush before it runs, or None to delegate.
+
+    Odoo's `domain._to_sql` returns an `SQL` whose `to_flush` names the fields
+    the statement reads, and the cursor flushes them when the query EXECUTES --
+    not when `search` returns. A native fragment has to carry the same, or a
+    search following a write in the same transaction reads the old row.
+
+    The fork's dependency collector gives the fields a domain NAMES. A
+    sub-query reads more than that, and the first sweep over the corpus found
+    every kind: its comodel's `active` column, the relational field's own
+    `domain=`, and the comodel's record rules. So every relational field the
+    collection traverses is expanded with those three, and the walk runs to a
+    fixed point, because a rule or a field domain can traverse further.
+
+    The result is a superset of Odoo's set, which costs a flush and never a
+    stale row; the search harness checks it covers Odoo's case by case. A
+    collector that reports the domain opaque means only a flush of everything
+    would be safe, which is not a fragment's to carry.
+    """
+    from odoo.fields import Domain
+    from odoo.orm.runtime._search_flush import _DependencyCollector
+
+    env = model.env
+    collector = _DependencyCollector()
+    collector.collect_domain(model, domain)
+
+    def rules_of(records):
+        rules = env["ir.rule"]._get_domain_accessible_records(records._name, "read")
+        collected = _rule_dependencies(records, rules)
+        if collected is None:
+            collector.opaque = True
+            return
+        fields_by_model, seen = collected
+        for name, fnames in fields_by_model.items():
+            collector.fields_by_model[name].update(fnames)
+        collector.seen.update(seen)
+
+    if check_access:
+        rules_of(model)
+    expanded = set()
+    while pending := [key for key in collector.seen if key not in expanded]:
+        for name, expression in pending:
+            expanded.add((name, expression))
+            field = env[name]._fields.get(expression.split(".", 1)[0])
+            if field is None or not field.relational:
+                continue
+            comodel = env[field.comodel_name]
+            if comodel._active_name:
+                collector.collect_field(comodel, comodel._active_name)
+            if isinstance(field.domain, (list, tuple)) and field.domain:
+                collector.collect_domain(comodel, Domain(field.domain))
+            if not env.su:
+                rules_of(comodel)
+    if collector.opaque:
+        return None
+    return sorted(
+        (
+            env[name]._fields[fname]
+            for name, fnames in collector.fields_by_model.items()
+            for fname in fnames
+        ),
+        key=lambda f: (f.model_name, f.name),
+    )
+
+
+def _search_native(model, domain, offset, limit, order, check_access):
+    """A `Query` whose WHERE the kernel compiled, or None to delegate.
+
+    Everything after the WHERE is the fork's: `_order_to_sql` on the same
+    query, the limit and the offset, so what differs from
+    `_prepare_postgres_search_query` is exactly the part `domain._to_sql` and
+    the rule domain's `_to_sql` contribute.
+    """
+    import json
+
+    from odoo.libs.sql.builder import SQL
+    from odoo.tools.query import Query
+
+    env = model.env
+    if not check_access and not env.su:
+        # `_search(bypass_access=True)` without superuser: no rules on the
+        # root, and the sub-queries still apply their comodels' rules. The
+        # kernel's two modes are "rules everywhere" and "superuser", and
+        # neither is this.
+        _delegated("search", "bypass_access without superuser")
+        return None
+    kernel = _kernel(env)
+    if kernel is None:
+        _delegated("search", "no kernel in this process")
+        return None
+    if getattr(env.registry, "registry_sequence", None) not in (
+        None,
+        kernel.registry_sequence,
+    ):
+        _delegated("search", "the registry moved under this kernel")
+        return None
+    try:
+        domain_json = _domain_json(domain)
+    except _NoWireForm as exc:
+        _delegated("search", "the domain carries %s" % exc)
+        return None
+    to_flush = _flush_fields(model, domain, check_access)
+    if to_flush is None:
+        _delegated("search", "the flush dependencies are opaque")
+        return None
+
+    context = env.context
+    request = json.dumps(
+        {
+            "model": model._name,
+            "method": "search",
+            "registry_sequence": env.registry.registry_sequence,
+            "uid": env.uid,
+            "su": bool(env.su),
+            "lang": context.get("lang") or None,
+            "allowed_company_ids": context.get("allowed_company_ids") or None,
+            "active_test": bool(context.get("active_test", True)),
+            "tz": context.get("tz") or None,
+            "root_active_test": False,
+            "trusted_domain": True,
+        }
+    )
+    request = request[:-1] + ', "domain": ' + domain_json + "}"
+    try:
+        import rust_orm_shim
+
+        conn = rust_orm_shim._rust_conn(env)
+        # The kernel reads the signalling watermark, the user and the rules
+        # on the caller's connection; a database error there must roll back
+        # to here rather than abort the transaction Python would have
+        # finished.
+        with env.cr.savepoint(flush=False):
+            fragment, params = kernel.search_where(conn, request)
+    except (KernelRefused, KernelRegistryStale) as exc:
+        _delegated("search", str(exc))
+        return None
+
+    query = Query(env, model._table, model._table_sql)
+    if fragment != "TRUE":
+        query.add_where(SQL(fragment, *_revive(json.loads(params)), to_flush=to_flush))
+    if order:
+        query.order = model._order_to_sql(order, query) or SQL.identifier(
+            model._table, "id"
+        )
+    if limit is not None and limit is not False:
+        query.limit = 1 if limit is True else limit
+    if offset is not None and offset is not False:
+        query.offset = 1 if offset is True else offset
+    return query
 
 
 _INSTALLED = None

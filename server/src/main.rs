@@ -305,6 +305,8 @@ async fn main() -> Result<()> {
                 active_test: no_active_test.then_some(false),
                 x2many_active_test: None,
                 tz: None,
+                root_active_test: None,
+                trusted_domain: false,
             };
             let raw = orm.dispatch_in_transaction(&req).await?;
             let value: Json = serde_json::from_str(&raw)?;

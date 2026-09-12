@@ -144,8 +144,54 @@ impl RustKernel {
             .map_err(from_kernel)
     }
 
-    /// The registry sequence this kernel was built from, so a caller can
-    /// refuse to use it against a Python registry that has moved.
+    fn search_where(
+        &self,
+        py: Python<'_>,
+        conn: &RustConn,
+        request_json: &str,
+    ) -> PyResult<(String, String)> {
+        if self.stale.load(Ordering::Acquire) {
+            return Err(KernelRegistryStale::new_err(
+                odoo_kernel::orm::RegistryStale.to_string(),
+            ));
+        }
+        let req: Request = serde_json::from_str(request_json)
+            .map_err(|e| KernelRefused::new_err(e.to_string()))?;
+        if req
+            .registry_sequence
+            .is_some_and(|sequence| sequence != self.registry_sequence)
+        {
+            return Err(KernelRefused::new_err(
+                "the request's Python registry does not match this kernel's generation",
+            ));
+        }
+        if conn.autocommit() {
+            return Err(KernelRefused::new_err(
+                "kernel reads require a repeatable-read transaction",
+            ));
+        }
+        conn.ensure_tx(py)?;
+        let client = conn.client();
+        let handle = conn.handle().clone();
+        let stmts = conn.kernel_stmts_at(self.generation);
+        py.detach(|| {
+            let orm = Orm::new(&self.registry, &client, self.caches.clone(), &stmts);
+            let result = handle.block_on(orm.compile_where(&req));
+            if result
+                .as_ref()
+                .err()
+                .is_some_and(odoo_kernel::orm::is_registry_stale)
+            {
+                self.stale.store(true, Ordering::Release);
+                stmts.clear();
+            }
+            let (sql, params) = result.map_err(from_kernel)?;
+            let params = serde_json::to_string(&params)
+                .map_err(|e| KernelRefused::new_err(e.to_string()))?;
+            Ok((sql, params))
+        })
+    }
+
     #[getter]
     fn registry_sequence(&self) -> i64 {
         self.registry_sequence
@@ -153,8 +199,6 @@ impl RustKernel {
 
     fn dispatch(&self, py: Python<'_>, conn: &RustConn, request_json: &str) -> PyResult<String> {
         if self.stale.load(Ordering::Acquire) {
-            // once stale, every call refuses until the registry reloads and
-            // the addon publishes a replacement kernel
             tracing::debug!(
                 target: "odoo_kernel::bridge",
                 generation = self.generation,

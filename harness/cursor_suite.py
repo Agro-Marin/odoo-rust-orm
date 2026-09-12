@@ -117,6 +117,26 @@ if MODE == "rust":
             % (_cnx_class, _counters.get("connects"))
         )
 
+# The mirror of the guard above, and the one this gate went without: a
+# "psycopg" leg that drew a rust connection makes the diff read rust against
+# rust. It did, in every battery until 2026-09-12, because the conf the
+# battery shared armed `rust_engine` for this database and the addon installs
+# the db shim at load -- so ONLY-RUST=0 was agreement with itself.
+if MODE != "rust":
+    from odoo.db import db_connect
+
+    _probe_cr = db_connect(os.environ.get("RUSTORM_DB", "rustorm_probe")).cursor()
+    _cnx_class = type(_probe_cr._cnx).__name__
+    _probe_cr.rollback()
+    _probe_cr.close()
+    outcomes["__cursor__"] = _cnx_class
+    if _cnx_class == "FakeConnection":
+        raise SystemExit(
+            "VACUOUS: the psycopg leg drew a FakeConnection -- the engine is "
+            "installed in this process, so this leg is the rust cursor and the "
+            "comparison proves nothing. Run it on a conf without rust_engine."
+        )
+
 outcomes["__detail__"] = detail
 with pathlib.Path(OUT).open("w", encoding="utf-8") as fh:
     json.dump(outcomes, fh, indent=1)

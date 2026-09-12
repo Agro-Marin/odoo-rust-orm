@@ -213,3 +213,79 @@ pub fn insert_rows_sql(
         "INSERT INTO {table} ({names}) VALUES {values} RETURNING \"id\""
     ))
 }
+
+/// A statement rendered with PostgreSQL's `$N` placeholders, rewritten into
+/// the dialect Odoo's `SQL` object and cursor speak: `%s` in text order, one
+/// parameter per occurrence, and every literal `%` doubled so the cursor's
+/// printf-style substitution leaves it alone.
+///
+/// Placeholders are rewritten only outside single-quoted literals, where a
+/// `$1` is text: the kernel writes jsonb paths such as `'$.*'` into its SQL,
+/// and a rewrite there would change what the path matches.
+pub fn to_odoo_dialect(
+    sql: &str,
+    values: &[sea_query::Value],
+) -> Result<(String, Vec<serde_json::Value>)> {
+    let mut out = String::with_capacity(sql.len() + 8);
+    let mut params = Vec::new();
+    let mut chars = sql.chars().peekable();
+    let mut quoted = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                quoted = !quoted;
+                out.push(c);
+            }
+            '%' => out.push_str("%%"),
+            '$' if !quoted && chars.peek().is_some_and(char::is_ascii_digit) => {
+                let mut n = String::new();
+                while let Some(d) = chars.peek().copied().filter(char::is_ascii_digit) {
+                    n.push(d);
+                    chars.next();
+                }
+                let index: usize = n.parse()?;
+                let value = values.get(index.wrapping_sub(1)).ok_or_else(|| {
+                    refusal!("placeholder ${index} has no value among {}", values.len())
+                })?;
+                params.push(value_to_json(value)?);
+                out.push_str("%s");
+            }
+            _ => out.push(c),
+        }
+    }
+    if quoted {
+        refuse!("unterminated literal in rendered SQL: {sql}");
+    }
+    Ok((out, params))
+}
+
+/// A bound value as JSON the Python side revives into the object psycopg
+/// would have been handed. Dates and datetimes are tagged, because as bare
+/// strings they would reach PostgreSQL as text and compare as text.
+fn value_to_json(value: &sea_query::Value) -> Result<serde_json::Value> {
+    use sea_query::Value as V;
+    use serde_json::{Value as J, json};
+    Ok(match value {
+        V::Bool(v) => v.map_or(J::Null, J::from),
+        V::TinyInt(v) => v.map_or(J::Null, J::from),
+        V::SmallInt(v) => v.map_or(J::Null, J::from),
+        V::Int(v) => v.map_or(J::Null, J::from),
+        V::BigInt(v) => v.map_or(J::Null, J::from),
+        V::Double(v) => v.map_or(J::Null, J::from),
+        V::Float(v) => v.map_or(J::Null, |f| J::from(f64::from(f))),
+        V::String(v) => v.as_ref().map_or(J::Null, |s| J::from(s.as_str())),
+        V::ChronoDate(v) => v.map_or(
+            J::Null,
+            |d| json!({"__date__": d.format("%Y-%m-%d").to_string()}),
+        ),
+        V::ChronoDateTime(v) => v.map_or(
+            J::Null,
+            |d| json!({"__datetime__": d.format("%Y-%m-%d %H:%M:%S%.f").to_string()}),
+        ),
+        V::Array(_, Some(items)) => {
+            J::Array(items.iter().map(value_to_json).collect::<Result<_>>()?)
+        }
+        V::Array(_, None) => J::Null,
+        other => refuse!("a bound value of kind {other:?} has no wire form for the port"),
+    })
+}

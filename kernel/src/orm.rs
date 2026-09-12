@@ -168,6 +168,22 @@ pub struct Request {
 
     #[serde(default)]
     pub tz: Option<String>,
+
+    /// Whether the ROOT model gets the implicit active filter, apart from
+    /// `active_test`, which still governs every sub-query. The persistence
+    /// port sends `false`: the domain it compiles has already been through
+    /// `_search`, which decided the root filter -- including the
+    /// `_search(active_test=False)` keyword the port never sees -- and wrote
+    /// it into the domain when it applies.
+    #[serde(default)]
+    pub root_active_test: Option<bool>,
+
+    /// The domain was composed by the ORM (`optimize_full` output handed to
+    /// `StorageBackend.search`) rather than received from a caller, so an
+    /// `any!` in it is a field's own bypass declaration and not a request for
+    /// one. Only the port sets it; `dispatch` never reads it.
+    #[serde(default)]
+    pub trusted_domain: bool,
 }
 
 impl Request {
@@ -221,6 +237,8 @@ pub struct Env {
     pub company_id: i32,
     pub company_ids: Vec<i32>,
     pub active_test: bool,
+
+    pub root_active_test: bool,
 
     pub x2many_active_test: bool,
 
@@ -462,6 +480,9 @@ impl<'a> Orm<'a> {
             company_id,
             company_ids,
             active_test: req.active_test.unwrap_or(true),
+            root_active_test: req
+                .root_active_test
+                .unwrap_or(req.active_test.unwrap_or(true)),
             x2many_active_test: req.x2many_active_test.unwrap_or(true),
             tz: req
                 .tz
@@ -1226,6 +1247,50 @@ impl<'a> Orm<'a> {
         }
     }
 
+    /// The WHERE clause `StorageBackend.search` would add for this domain and
+    /// the caller's record rules, as Odoo's own SQL dialect: `%s` for every
+    /// parameter, a literal `%` doubled, and the root table named by its table
+    /// name, which is the alias Odoo's `Query` gives it.
+    ///
+    /// It is a fragment and not a statement on purpose. The caller attaches it
+    /// to a lazy `Query` that the ORM goes on composing -- ordering, limits, a
+    /// `search_count` around it, a sub-select inside another domain -- so what
+    /// the kernel owns is exactly what `domain._to_sql` and the rule domain's
+    /// `_to_sql` would have contributed, and nothing the query does after.
+    pub async fn compile_where(&self, req: &Request) -> Result<(String, Vec<Json>)> {
+        let dynamic = self.check_signaling().await?;
+        let env = self.build_env(req, dynamic).await?;
+        let model = self.registry.get(&req.model)?;
+        let rules = if env.su {
+            Arc::new(RuleSet::default())
+        } else {
+            self.uid_rules(req, &env).await?
+        };
+        let cond = self
+            .build_condition(model, &req.domain, &env, &rules, req.trusted_domain)
+            .await?;
+        let mut select = sea_query::Query::select();
+        select
+            .expr(sea_query::Expr::cust("1"))
+            .from(sea_query::Alias::new(&model.table))
+            .cond_where(cond);
+        let (sql, values) = sea_query_postgres::PostgresBinder::build_postgres(
+            &select,
+            sea_query::PostgresQueryBuilder,
+        );
+        let prefix = format!("SELECT 1 FROM {}", crate::db::ident(&model.table));
+        let rest = sql.strip_prefix(&prefix).ok_or_else(|| {
+            refusal!("compile_where: the rendered statement does not start with {prefix}: {sql}")
+        })?;
+        let fragment = match rest.strip_prefix(" WHERE ") {
+            Some(w) => w,
+            None if rest.is_empty() => "TRUE",
+            None => refuse!("compile_where: unexpected clause after FROM: {rest}"),
+        };
+        let values: Vec<sea_query::Value> = values.0.into_iter().map(|v| v.0).collect();
+        crate::write::to_odoo_dialect(fragment, &values)
+    }
+
     fn validate_shape(req: &Request) -> Result<()> {
         tracing::trace!(
             target: "odoo_kernel::dispatch",
@@ -1329,6 +1394,7 @@ impl<'a> Orm<'a> {
         domain_json: &Json,
         env: &Env,
         rules: &RuleSet,
+        trusted: bool,
     ) -> Result<Condition> {
         let empty = json!([]);
         let domain_json = if domain_json.is_null() {
@@ -1340,7 +1406,9 @@ impl<'a> Orm<'a> {
         let mut memo: HierMemo = HashMap::new();
         let ctx = self.ctx(env);
         let t0 = std::time::Instant::now();
-        domain::reject_internal_operators(&domain::parse(domain_json)?)?;
+        if !trusted {
+            domain::reject_internal_operators(&domain::parse(domain_json)?)?;
+        }
         let resolved = self
             .resolve_hierarchy(&ctx, model, domain_json, &mut memo, Some((rules, env.su)))
             .await?;
@@ -1353,7 +1421,7 @@ impl<'a> Orm<'a> {
 
         let mut implicit_active = false;
         if let Some(active_name) = model.active_name.as_deref()
-            && env.active_test
+            && env.root_active_test
         {
             let mut referenced = Vec::new();
             domain::referenced_fields(&node, &mut referenced);

@@ -1888,5 +1888,84 @@ def test_an_extension_older_than_the_port_does_not_stop_the_engine_arming() -> N
         check("%s leaves the port uninstalled" % label, addon._STATE["port"], None)
 
 
+def test_search_is_implemented_and_not_armed() -> None:
+    # Native search answers the sweep corpus exactly (harness/search_path.py)
+    # and runs slower than the Python it would replace
+    # (harness/search_bench.py), so it is deliberately left out of NATIVE. This
+    # pins that decision, so arming it is a change someone makes on purpose
+    # with a benchmark in hand, and not a side effect.
+    backend = _backend()
+    check("search is not armed", "search" in backend.RustBackend.NATIVE, False)
+    check(
+        "but it is implemented",
+        callable(getattr(backend, "_search_native", None)),
+        True,
+    )
+
+
+def test_a_domain_without_a_wire_form_is_delegated() -> None:
+    # `Domain.custom(to_sql=...)` and a `Query` value are what optimize_full
+    # leaves for a field's search= method; neither has a JSON form, and
+    # compiling around them would answer a different question.
+    backend = _backend()
+    _odoo()
+    from odoo.fields import Domain
+    from odoo.libs.sql.builder import SQL
+
+    custom = Domain.custom(to_sql=lambda *_a: SQL("TRUE"))
+    for label, domain in (
+        ("a custom SQL condition", custom),
+        (
+            "a custom SQL condition under a conjunction",
+            Domain("name", "=", "x") & custom,
+        ),
+    ):
+        try:
+            backend._domain_json(domain)
+        except backend._NoWireForm as exc:
+            check(label + " names what it refused", "custom SQL" in str(exc), True)
+        else:
+            raise AssertionError("%s was serialised" % label)
+
+    class _Opaque:
+        pass
+
+    try:
+        backend._domain_json(Domain("id", "in", [1]) & Domain("name", "=", _Opaque()))
+    except backend._NoWireForm as exc:
+        check("an object value names its type", "_Opaque" in str(exc), True)
+    else:
+        raise AssertionError("an object value was serialised")
+    check(
+        "a plain domain serialises to the prefix list",
+        json.loads(
+            backend._domain_json(Domain("name", "=", "x") | Domain("id", "in", [1, 2]))
+        ),
+        ["|", ["name", "=", "x"], ["id", "in", [1, 2]]],
+    )
+
+
+def test_bypass_access_without_superuser_is_delegated() -> None:
+    # `_search(bypass_access=True)` drops the root's rules and keeps every
+    # sub-query's; the kernel's modes are "rules everywhere" and "superuser",
+    # so neither answers it, and the port must not pick one.
+    backend = _backend()
+
+    class _Env:
+        su = False
+
+    class _Model:
+        env = _Env()
+
+    backend.reset_stats()
+    got = backend._search_native(_Model(), None, 0, None, None, False)
+    check("delegated", got, None)
+    check(
+        "with its reason",
+        backend.stats()["reasons_by_method"].get("search"),
+        {"bypass_access without superuser": 1},
+    )
+
+
 if __name__ == "__main__":
     sys.exit(main())

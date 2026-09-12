@@ -72,6 +72,8 @@ fn register<'py>(py: Python<'py>, name: &str, src: &str) -> PyResult<Bound<'py, 
 
 pub fn install_backend_py<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyModule>> {
     errors::register(py)?;
+    let (wire_name, wire_src) = SHIM_SOURCES[0];
+    register(py, wire_name, wire_src)?;
     let (name, src) = BACKEND_SOURCE;
     register(py, name, src)
 }

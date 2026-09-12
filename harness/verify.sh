@@ -68,6 +68,23 @@ if grep -qE '^rust_engine_db *=' "$RUSTORM_ODOO_CONF"; then
   fi
 fi
 
+# The same conf with the engine taken out, for every stage whose output is the
+# REFERENCE a comparison is made against: the Python baseline, the psycopg leg
+# of cursor parity, the psycopg half of the copy encoder. The armed conf above
+# arms `rust_engine` for this database in every process that loads it, and
+# until 2026-09-12 those stages loaded it too -- the baseline routed thousands
+# of its calls through the kernel and the "psycopg" cursor leg ran on
+# `FakeConnection`, so kernel sweep, fuzz and cursor parity were reading an
+# engine against itself. A stage that wants the engine installs it explicitly
+# (install_shims / install_backend); a stage that wants Python gets this.
+{
+  grep -vE '^(server_wide_modules|rust_engine_[a-z_]+) *=' "$RUSTORM_ODOO_CONF"
+  swm=$(sed -nE 's/^server_wide_modules *= *//p' "$RUSTORM_ODOO_CONF" | tail -1)
+  swm=$(printf '%s' "${swm:-base,web}" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -vx rust_engine | paste -sd, -)
+  printf 'server_wide_modules = %s\n' "${swm:-base,web}"
+} > "$OUT/python.conf"
+export RUSTORM_PYTHON_CONF="$OUT/python.conf"
+
 # every stage runs under a deadline; rc 124 is what `timeout` returns on expiry
 T=(timeout -k 15 "$STAGE_TIMEOUT")
 timed_out() { [ "$1" = 124 ] || [ "$1" = 137 ]; }
@@ -81,6 +98,13 @@ stage() { NAMES+=("$1"); RESULTS+=("$2"); NOTES+=("${3:-}"); printf '  %-22s %s 
 shell_script() {
   local script="$1"; shift
   "${T[@]}" "$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 "$@" \
+    <<< "import runpy; runpy.run_path('$script', init_globals={'env': env}, run_name='__main__')"
+}
+
+# the same, on the disarmed conf: for scripts that produce a reference
+python_script() {
+  local script="$1"; shift
+  "${T[@]}" "$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_PYTHON_CONF" -d "$DB" --no-http --db_maxconn=8 "$@" \
     <<< "import runpy; runpy.run_path('$script', init_globals={'env': env}, run_name='__main__')"
 }
 
@@ -202,7 +226,7 @@ if [ "$QUICK" = 1 ]; then
   stage "kernel sweep" SKIP "--quick"
 elif [ "$SWEEP_CORPUS_OK" = 1 ]; then
   RUSTORM_CORPUS="$OUT/sweep_corpus.json" RUSTORM_EXPECTED="$OUT/sweep_expected.json" \
-    shell_script "$ROOT/harness/gen_expected.py" > "$OUT/sweep_exp.log" 2>&1 \
+    python_script "$ROOT/harness/gen_expected.py" > "$OUT/sweep_exp.log" 2>&1 \
     || echo "gen_expected exited $?" >> "$OUT/sweep_exp.log"
   "${T[@]}" "$ROOT/target/release/rustorm" --db "$DB" --export "$OUT/export.json" \
       run-corpus --file "$OUT/sweep_corpus.json" > "$OUT/sweep_actual.json" 2> "$OUT/sweep_run.log" \
@@ -212,7 +236,7 @@ elif [ "$SWEEP_CORPUS_OK" = 1 ]; then
 else
   stage "kernel sweep" FAIL "corpus generation failed; see $OUT/sweep_gen.log"; fi
 
-RUSTORM_EXPECTED="$OUT/expected.json" shell_script "$ROOT/harness/gen_expected.py" > "$OUT/gen.log" 2>&1; rc=$?
+RUSTORM_EXPECTED="$OUT/expected.json" python_script "$ROOT/harness/gen_expected.py" > "$OUT/gen.log" 2>&1; rc=$?
 if [ "$rc" = 0 ]; then
   "${T[@]}" "$ROOT/target/release/rustorm" --db "$DB" --export "$OUT/export.json" \
       run-corpus --file "$ROOT/harness/corpus.json" > "$OUT/actual.json" 2> "$OUT/corpus.log"
@@ -238,7 +262,7 @@ else
       shell_script "$ROOT/harness/fuzz_corpus.py" > "$OUT/fuzz_gen_$seed.log" 2>&1 \
       || { fuzz_fail=1; fuzz_note="$fuzz_note seed$seed:GENFAIL"; continue; }
     RUSTORM_CORPUS="$OUT/fuzz_$seed.json" RUSTORM_EXPECTED="$OUT/fuzz_exp_$seed.json" \
-      shell_script "$ROOT/harness/gen_expected.py" > "$OUT/fuzz_expgen_$seed.log" 2>&1 \
+      python_script "$ROOT/harness/gen_expected.py" > "$OUT/fuzz_expgen_$seed.log" 2>&1 \
       || { fuzz_fail=1; fuzz_note="$fuzz_note seed$seed:EXPFAIL"; continue; }
     "${T[@]}" "$ROOT/target/release/rustorm" --db "$DB" --export "$OUT/export.json" \
         run-corpus --file "$OUT/fuzz_$seed.json" > "$OUT/fuzz_act_$seed.json" 2> "$OUT/fuzz_run_$seed.log" \
@@ -310,7 +334,10 @@ elif ! pg -tAc "select 1 from ir_module_module where name='mail' and state='inst
 else
   TOUR_PORT="$(free_port 9401 9449 || echo 9401)"
   {
-    grep -vE '^(addons_path|server_wide_modules|http_port|logfile|rust_engine_[a-z_]+) *=' "$RUSTORM_ODOO_CONF"
+    grep -vE '^(addons_path|server_wide_modules|http_port|logfile|db_maxconn|rust_engine_[a-z_]+) *=' "$RUSTORM_ODOO_CONF"
+    # a browser tour server does not need Odoo's default 64 connections, and
+    # the cluster is shared with other sessions
+    printf 'db_maxconn = %s\n' "${RUSTORM_TOURS_MAXCONN:-16}"
     printf 'addons_path = %s,%s/addons\n' "$(grep -E '^addons_path *=' "$RUSTORM_ODOO_CONF" | sed 's/^addons_path *= *//')" "$ROOT"
     printf 'server_wide_modules = base,web,rust_engine\nrust_engine_db = %s\nrust_engine_mode = shadow\nrust_engine_report_seconds = 15\nrust_engine_capture = %s\nhttp_port = %s\n' "$DB" "$OUT/tours_capture.jsonl" "$TOUR_PORT"
   } > "$OUT/tours.conf"
@@ -347,7 +374,7 @@ else
 fi
 
 if [ -f "$ROOT/target/release/libengine_py.so" ]; then
-  PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/copy_path.py" > "$OUT/copy.log" 2>&1; rc=$?
+  PYTHONPATH="$PYMOD" python_script "$ROOT/harness/copy_path.py" > "$OUT/copy.log" 2>&1; rc=$?
   if [ "$rc" = 0 ]; then
     stage "copy encoder" OK "$(grep -a '^COPY streams' "$OUT/copy.log" | head -1 | cut -c1-58)"
   elif timed_out "$rc"; then stage "copy encoder" FAIL "$expired"
@@ -374,6 +401,23 @@ if [ -f "$ROOT/target/release/libengine_py.so" ]; then
   fi
 else
   stage "write path (port)" SKIP "no libengine_py.so; cargo build --release"
+fi
+
+# The port's search, over the sweep corpus: ids, counts, the query as a
+# sub-select, and whether the native WHERE flushes everything Odoo's does. It
+# arms `search` for its own legs only -- the method stays out of NATIVE until a
+# benchmark says it pays for itself (harness/search_bench.py).
+if [ -f "$ROOT/target/release/libengine_py.so" ] && [ -f "$OUT/sweep_corpus.json" ]; then
+  RUSTORM_SWEEP="$OUT/sweep_corpus.json" RUSTORM_SEARCH_FAILURES="$OUT/search_failures.json" \
+    PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/search_path.py" > "$OUT/search.log" 2>&1; rc=$?
+  if [ "$rc" = 0 ]; then
+    stage "search (port)" OK "$(grep -a '^SEARCH cases' "$OUT/search.log" | head -1 | cut -c1-90)"
+  elif timed_out "$rc"; then stage "search (port)" FAIL "$expired"
+  else
+    stage "search (port)" FAIL "$(grep -aE '^SEARCH (FAILED|failure kinds|SKIP)' "$OUT/search.log" | tr '\n' ' ' | cut -c1-90)"
+  fi
+else
+  stage "search (port)" SKIP "needs libengine_py.so and the sweep corpus"
 fi
 
 # The statement the port composes, against the statement the FORK composes,
@@ -419,7 +463,8 @@ if [ "$QUICK" = 1 ]; then
 elif [ ! -f "$ROOT/target/release/libengine_py.so" ]; then
   stage "cursor parity" SKIP "no libengine_py.so; cargo build --release"
 else
-  out=$(RUSTORM_CURSOR_DIR="$OUT/cursor" "${T[@]}" "$ROOT/harness/cursor_parity.sh" --db "$DB" 2>&1)
+  out=$(RUSTORM_ODOO_CONF="$RUSTORM_PYTHON_CONF" RUSTORM_CURSOR_DIR="$OUT/cursor" \
+    "${T[@]}" "$ROOT/harness/cursor_parity.sh" --db "$DB" 2>&1)
   verdict=$(printf '%s\n' "$out" | grep -aE '^CURSOR PARITY (OK|FAILED|VACUOUS)' | head -1)
   counts=$(printf '%s\n' "$out" | grep -aE '^ *ran psycopg=' | head -1 | sed 's/^ *//')
   case "$verdict" in
@@ -434,7 +479,7 @@ if [ "$QUICK" = 1 ]; then
 else
   # Earlier lanes commit fixtures and login logs. Compare against Python on
   # that final state, not the pre-fuzz baseline used by phase 1.
-  RUSTORM_EXPECTED="$OUT/soak_expected.json" shell_script "$ROOT/harness/gen_expected.py" > "$OUT/soak_gen.log" 2>&1
+  RUSTORM_EXPECTED="$OUT/soak_expected.json" python_script "$ROOT/harness/gen_expected.py" > "$OUT/soak_gen.log" 2>&1
   baseline_rc=$?
   "${T[@]}" "$ROOT/target/release/export_registry" "$OUT/soak_export.json" > "$OUT/soak_export.log" 2>&1
   export_rc=$?

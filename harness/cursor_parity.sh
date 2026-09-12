@@ -21,7 +21,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE="${RUSTORM_WORKSPACE:-$(cd "$ROOT/.." && pwd)}"
-ODOO="${RUSTORM_ODOO:-$WORKSPACE/odoo}"
+ODOO="${RUSTORM_ODOO_ROOT:-${RUSTORM_ODOO:-$WORKSPACE/odoo}}"
 PY="${RUSTORM_PYTHON:-$WORKSPACE/p314o19m/bin/python}"
 CONF="${RUSTORM_ODOO_CONF:-$WORKSPACE/p314o19m.conf}"
 
@@ -72,6 +72,12 @@ names = {
 # Second half of the vacuity guard: the suite refuses to write a leg that ran
 # on psycopg, and this refuses to SCORE one whose marker is missing -- an old
 # artifact, or a leg that never reached the check.
+if psy.get("__cursor__") in (None, "FakeConnection"):
+    print(
+        "  VACUOUS: the psycopg leg reports cursor=%r; it did not run on psycopg "
+        "and this comparison proves nothing" % (psy.get("__cursor__"),)
+    )
+    sys.exit(1)
 if rust.get("__cursor__") != "FakeConnection" or not rust.get("__connects__"):
     print(
         "  VACUOUS: the rust leg reports cursor=%r connects=%r; it did not run "

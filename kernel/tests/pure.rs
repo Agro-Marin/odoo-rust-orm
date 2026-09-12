@@ -2841,6 +2841,8 @@ fn a_request_naming_no_groupby_is_answered_not_refused() {
         active_test: None,
         x2many_active_test: None,
         tz: None,
+        root_active_test: None,
+        trusted_domain: false,
     };
 
     // the demanding form refuses a missing groupby because read_group needs
@@ -3106,4 +3108,145 @@ fn a_group_with_one_refused_column_refuses_whole() {
         )
         .is_err()
     );
+}
+
+// ---------------------------------------------------------------------------
+// The port's dialect: `$N` into Odoo's `%s`
+// ---------------------------------------------------------------------------
+
+#[test]
+fn placeholders_become_percent_s_in_text_order_one_parameter_each() {
+    use sea_query::Value;
+    let (sql, params) = odoo_kernel::write::to_odoo_dialect(
+        "\"t\".\"a\" = $2 AND \"t\".\"b\" = $1 AND \"t\".\"c\" = $2",
+        &[Value::from(10i32), Value::from("x")],
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        "\"t\".\"a\" = %s AND \"t\".\"b\" = %s AND \"t\".\"c\" = %s"
+    );
+    // reordered and repeated: each occurrence binds its own copy, in the order
+    // the text names them, because Odoo's cursor has no numbered parameters
+    assert_eq!(params, vec![json!("x"), json!(10), json!("x")]);
+}
+
+#[test]
+fn a_dollar_inside_a_literal_is_text_and_a_percent_is_doubled() {
+    let (sql, params) = odoo_kernel::write::to_odoo_dialect(
+        "jsonb_path_query_first(\"t\".\"n\", '$.*') LIKE '50% $1' AND \"t\".\"x\" % 2 = 0",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        "jsonb_path_query_first(\"t\".\"n\", '$.*') LIKE '50%% $1' AND \"t\".\"x\" %% 2 = 0"
+    );
+    assert!(params.is_empty());
+}
+
+#[test]
+fn dates_and_datetimes_are_tagged_so_they_do_not_bind_as_text() {
+    use sea_query::Value;
+    let d = chrono::NaiveDate::from_ymd_opt(2026, 9, 12).unwrap();
+    let dt = d.and_hms_opt(6, 30, 0).unwrap();
+    let (_, params) = odoo_kernel::write::to_odoo_dialect(
+        "$1 $2 $3",
+        &[
+            Value::from(d),
+            Value::from(dt),
+            Value::Array(
+                sea_query::ArrayType::Int,
+                Some(Box::new(vec![Value::from(1i32), Value::from(2i32)])),
+            ),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        params,
+        vec![
+            json!({"__date__": "2026-09-12"}),
+            json!({"__datetime__": "2026-09-12 06:30:00"}),
+            json!([1, 2]),
+        ]
+    );
+}
+
+#[test]
+fn a_placeholder_with_no_value_or_an_open_literal_is_refused() {
+    assert!(
+        odoo_kernel::write::to_odoo_dialect("a = $2", &[sea_query::Value::from(1i32)]).is_err()
+    );
+    assert!(odoo_kernel::write::to_odoo_dialect("a = 'open", &[]).is_err());
+}
+
+#[test]
+fn a_conditional_equality_on_a_dotted_path_is_decided_inside_the_traversal() {
+    // `('country_id.name', '=?', '')` is `country_id any [name =? '']` in Odoo,
+    // which is `country_id any []`: the partner HAS a country. Collapsing the
+    // whole leaf to TRUE first answered every row.
+    let reg = base_registry();
+    let unset = compile_res(&reg, json!([["country_id.name", "=?", ""]])).unwrap();
+    assert_eq!(
+        unset,
+        compile_res(&reg, json!([["country_id", "any", []]])).unwrap()
+    );
+    assert_ne!(unset, compile_res(&reg, json!([])).unwrap());
+
+    let set = compile_res(&reg, json!([["country_id.name", "=?", "Mexico"]])).unwrap();
+    assert_eq!(
+        set,
+        compile_res(
+            &reg,
+            json!([["country_id", "any", [["name", "=", "Mexico"]]]])
+        )
+        .unwrap()
+    );
+
+    // a plain field keeps the collapse, which is what `=?` is for
+    assert_eq!(
+        compile_res(&reg, json!([["name", "=?", false]])).unwrap(),
+        compile_res(&reg, json!([])).unwrap()
+    );
+}
+
+#[test]
+fn a_dotted_leaf_compiles_as_its_any_form_for_every_operator_that_folds() {
+    // Odoo turns `a.b op v` into `a any [b op v]` before it optimises the
+    // operator. `=?` was the one rewrite the kernel applied to the whole path
+    // first; these are the operators and values whose leaf can fold to a
+    // constant, which is exactly where applying it outside the traversal would
+    // change the answer.
+    let reg = base_registry();
+    let mut diffs = Vec::new();
+    for (op, v) in [
+        ("=", json!(false)),
+        ("!=", json!(false)),
+        ("in", json!([])),
+        ("not in", json!([])),
+        ("in", json!([false])),
+        ("not in", json!([false])),
+        ("=?", json!(false)),
+        ("like", json!("")),
+        ("ilike", json!("")),
+        ("not ilike", json!("")),
+        ("not like", json!("")),
+        ("=like", json!("%")),
+        ("=ilike", json!("%")),
+        (">", json!(false)),
+        ("<", json!(false)),
+        ("=", json!("x")),
+        ("!=", json!("x")),
+        ("not ilike", json!("x")),
+        ("in", json!(["x", false])),
+        ("not in", json!(["x", false])),
+    ] {
+        let dotted = compile_res(&reg, json!([["country_id.name", op, v]]));
+        let any = compile_res(&reg, json!([["country_id", "any", [["name", op, v]]]]));
+        match (dotted, any) {
+            (Ok(a), Ok(b)) if a == b => {}
+            (a, b) => diffs.push(format!("{op} {v}:\n   dotted {a:?}\n   any    {b:?}")),
+        }
+    }
+    assert!(diffs.is_empty(), "{}", diffs.join("\n"));
 }

@@ -138,8 +138,35 @@ def inapplicable(env, case) -> str | None:
     return None
 
 
+def python_only():
+    """Turn the engine off in this process, and report how to prove it stayed off.
+
+    This file writes what PYTHON answers; every stage that diffs against it
+    reads it as the reference. `verify.sh` arms `rust_engine` for the battery's
+    database, because the stages that must exercise routing need that -- and
+    this generator runs through the same `odoo-bin shell` with the same conf.
+    So until 2026-09-12 the "expected" side routed through whatever `engine_py`
+    the process imported: 3,601 of the kernel sweep's calls in a battery that
+    morning, 666 of a fuzz seed's, and the kernel sweep, fuzz and shadow corpus
+    were comparing a kernel against a kernel for most of what they called
+    compared. It surfaced as a fuzz case whose "Python" answer flipped between
+    batteries, because the kernel it was really reading changed.
+
+    Routing is switched off before the first case, and the caller checks the
+    shim's own counter afterwards: a baseline the kernel touched is not written.
+    """
+    try:
+        import rust_orm_shim
+    except ImportError:
+        return lambda: 0
+    rust_orm_shim.set_mode("off")
+    before = rust_orm_shim.STATS["kernel"]
+    return lambda: rust_orm_shim.STATS["kernel"] - before
+
+
 def main(env) -> None:
     env = base_env(env)
+    routed = python_only()
     corpus = json.loads(pathlib.Path(CORPUS).read_text(encoding="utf-8"))
     results = []
     for case in corpus:
@@ -161,6 +188,11 @@ def main(env) -> None:
             )
         env.cr.rollback()
         env.invalidate_all()
+    if routed():
+        raise SystemExit(
+            "refusing to write %s: %d calls reached the kernel while the Python "
+            "baseline was generated" % (EXPECTED, routed())
+        )
     payload = {
         "db": env.cr.dbname,
         "data_fingerprint": data_fingerprint(env, corpus_tables(env, corpus)),

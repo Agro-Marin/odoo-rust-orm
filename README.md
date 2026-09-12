@@ -2587,6 +2587,104 @@ above).
   `res.users` -- and it is the same set the shim already declines to route in
   production.
 
+## The references were the engine: kernel sweep, fuzz and cursor parity read an engine against itself
+
+**Correction to every battery reading in this file taken through `verify.sh`
+in this workspace until 2026-09-12**, including the figures in the two
+commits before this one. The kernel still holds -- measured again below
+against a pure Python reference -- but the earlier readings did not show
+that.
+
+`verify.sh` rewrites the conf's `rust_engine_db` to the database it verifies,
+because stages such as the replay controls and the copy encoder need the
+engine armed there. Every stage shared that conf, so the stages that produce
+the REFERENCE a comparison is made against loaded the addon too:
+
+```
+                                  what it claimed      what it ran        measured
+gen_expected (kernel sweep,       Python answers       routing ON, on     3,601 calls routed to the
+fuzz, shadow corpus, soak)                             the kernel          kernel in one sweep baseline;
+                                                                           666 in one fuzz seed's
+cursor parity, psycopg leg        psycopg cursor       FakeConnection     type(env.cr._cnx) under the
+                                                                           armed conf
+copy encoder, psycopg batch       psycopg COPY         the rust cursor    same conf
+```
+
+So for most of what those stages called compared, the "expected" side was the
+kernel, through whatever `engine_py` the process imported -- often the venv's
+copy from the day before -- and the cursor gate compared the rust cursor with
+the rust cursor, reading `ONLY-RUST=0` and "3 moved into the both-legs
+bucket", which is the shape of an improvement and was agreement with itself.
+
+It surfaced as a fuzz case whose "Python" answer moved between batteries:
+`('currency_id.decimal_places', '=?', 0)` read 0 as the expected value in two
+of them and 246 in a third, each from a baseline process that had routed
+hundreds of calls through a kernel. Which engine answered that one case in
+each is not recoverable from the logs. What Python itself answers, probed
+directly with routing off, is 0 -- and the kernel had a real defect on that
+shape as well (next section), which a reference that moved could not show.
+
+**The fix is structural, not a flag.** `verify.sh` writes a second conf,
+`python.conf`, with `rust_engine` out of `server_wide_modules` and every
+`rust_engine_*` key removed, and runs the reference-producing stages on it:
+the four `gen_expected` sites, both legs of cursor parity (the rust leg
+installs its shim explicitly, as it always did), and the copy encoder, which
+installs its shim after writing its psycopg batch. A stage that wants the
+engine installs it; a stage that wants Python gets a process without it.
+
+Each also proves it now, rather than relying on the conf:
+
+- `gen_expected.py` turns routing off before its first case and refuses to
+  write a baseline if the shim's counter moved while it ran.
+- `cursor_suite.py` refuses to write a psycopg leg that drew a
+  `FakeConnection`, the mirror of the check its rust leg always had, and
+  `cursor_parity.sh` refuses to score one without the marker.
+- `copy_path.py` refuses to write its reference batch through the rust
+  cursor.
+
+Measured again on committed trees only -- detached `odoo` and `enterprise`
+worktrees at their HEADs, because the shared trees held another session's
+uncommitted `ir.cron` rework the database schema did not match:
+
+```
+kernel sweep     7,679/9,097   4,021 compared against pure Python, 0 mismatches
+fuzz             3 seeds pass  against pure Python baselines
+cursor parity    379 tests     ONLY-RUST 3 -- exactly the three the baseline
+                               names: two pipeline-mode cases and one COPY
+                               type resolution -- on an honest psycopg leg
+```
+
+The cursor baseline was right all along: it had been measured on a setup that
+did not arm the engine. The "3 moved, 0 only-rust" readings were the ones that
+were wrong.
+
+**A related path bug, fixed with it.** `parity.sh` and `cursor_parity.sh`
+read `RUSTORM_ODOO` where every other stage reads `RUSTORM_ODOO_ROOT`, and
+`write_sql_contract.py` read the workspace tree unconditionally, so a battery
+pointed at a worktree ran those stages against the shared tree. All three honour
+`RUSTORM_ODOO_ROOT` now.
+
+## `=?` on a dotted path was decided outside the traversal
+
+`('currency_id.decimal_places', '=?', 0)` on `mail.tracking.value`, counted
+at superuser: Python 0, kernel 232. Odoo's `DomainCondition._optimize_step`
+splits a relational dotted path into `currency_id any [decimal_places =? 0]`
+at the BASIC level, before any operator optimisation, so the `=?` folds to
+TRUE INSIDE the sub-domain and the whole condition reads "the currency is
+set". The kernel applied the `=?` rewrite to the leaf first and folded the
+whole condition to TRUE -- every row.
+
+The fuzzer's seed 3 had generated it, and it read as intermittent: failed,
+passed, failed across three batteries on one database. It is deterministic in
+the data. The case disagrees exactly when some rows have the relation unset,
+and `mail.tracking.value` grows between batteries, because the write-path
+stage writes tracked fields.
+
+The fix splits first, as Odoo does. A second test compiles twenty operator
+and value pairs, the ones whose leaf can fold to a constant, both dotted and
+in their `any` form and requires them equal. `=?` was the only one that was
+not.
+
 ## The persistence port, and the first write the kernel owns
 
 Everything above reaches Odoo the same way: `rust_orm_shim` replaces eight
@@ -2769,6 +2867,80 @@ create of 5                 INSERT   native
 create of 12                COPY     delegated, reason reported
 create of 12 in a pipeline  INSERT   native
 ```
+
+### `search`: exact, and not armed
+
+`search` is the method that would let the method-level shim retire, and it is
+the first one on the port that is compiled natively, verified exactly, and
+**deliberately left out of `NATIVE`**, because it is slower than the Python it
+would replace.
+
+It does not return rows. It returns a lazy `Query` the ORM keeps composing --
+`_order_to_sql` joins onto it, `search_count` wraps it, a field's `search=`
+method embeds it as a sub-select -- so a native one has to be that same object
+with a different WHERE. `Orm::compile_where` compiles the domain and the
+caller's record rules into a fragment in Odoo's own dialect (`%s` for every
+parameter, a literal `%` doubled, the root table named by its table name,
+which is the alias `Query` gives it), and the port attaches it to an ordinary
+`Query`. Ordering, limit and offset stay the fork's. The domain that reaches
+the port has already been through `optimize_full`, so two knobs were needed:
+`root_active_test: false`, because `_search` already decided the root's
+active filter -- including a `_search(active_test=False)` keyword the port
+never sees -- while the context's `active_test` still governs every
+sub-query; and `trusted_domain`, because an `any!` in an ORM-composed domain
+is a field's own bypass declaration and not a caller asking for one.
+
+Delegated: `bypass_access` without superuser, which is neither of the
+kernel's two modes; a domain carrying a value with no wire form, such as the
+`Query` a `search=` method leaves or a custom SQL node; and every refusal the
+compiler already had.
+
+**The flush was the hard part, and the sweep is what found it.** Odoo's WHERE
+is an `SQL` whose `to_flush` names the fields the cursor flushes when the
+query EXECUTES. A fragment missing one reads a stale row after a write in the
+same transaction, and no read-only comparison would notice. So
+`harness/search_path.py` requires the native fragment's set to cover Odoo's,
+case by case. The fork's dependency collector gives the fields a domain names;
+the first sweep failed 411 cases, and every one of the forty it printed was a
+field no domain names: a sub-query's comodel `active` column, a relational
+field's own `domain=`, and -- most of them -- the comodel's record rules. The
+collection now expands every relational field it traverses with all three,
+to a fixed point.
+
+Over the sweep corpus at every identity it seeds, after that:
+
+```
+native     4,140   ids, unlimited count, as a sub-select, flush coverage: all equal
+delegated    505   with reasons: bypass_access 49, non-stored traversal 29,
+                   a comodel's Python _search 44, Python-computed field domains 34, ...
+both raised 3,101  the access check `_search` makes before it reaches the port
+```
+
+**And it is slower.** `harness/search_bench.py` times `search()` and query
+execution apart, over the 4,612 distinct searches the corpus holds that
+Python answers:
+
+```
+                                   python        native
+first version                      3.4-3.7 s     7.5-8.8 s
+rule dependencies cached           3.1-3.8 s     4.7-5.7 s
+query execution, either version    ~1.5 s        ~1.5 s
+```
+
+The first version optimized every traversed comodel's rule domain on every
+call to collect its columns, and optimizing a rule can SEARCH -- the
+`ir.attachment` and mail access checks do -- so that was two thirds of the
+cost. `_get_domain_accessible_records` is an ormcache that returns the same
+object until the rules change, so its identity is now the cache key. What
+remains, profiled: the savepoint around the kernel call, two statements per
+search and the largest single cost, then the kernel's own compile, which
+includes a signalling round trip. The savepoint is what keeps a kernel-side
+database error from aborting the caller's transaction, so removing it is not
+a speed fix but a correctness trade. Those two are the backlog for arming it.
+
+The benchmark's two measurements straddle a rebase of `odoo` by another
+session. Both legs of each run are on the same tree, so each ratio holds; the
+absolute times across the two rows are not comparable to the second decimal.
 
 ### Counting every call cost a browser tour
 

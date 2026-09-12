@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ODOO="${RUSTORM_ODOO:-$(cd "$ROOT/../odoo" && pwd)}"
+ODOO="${RUSTORM_ODOO_ROOT:-${RUSTORM_ODOO:-$(cd "$ROOT/../odoo" && pwd)}}"
 PY="${RUSTORM_PYTHON:-$(cd "$ROOT/.." && pwd)/p314o19m/bin/python}"
 CONF="${RUSTORM_ODOO_CONF:-$(cd "$ROOT/.." && pwd)/p314o19m.conf}"
 

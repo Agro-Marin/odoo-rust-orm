@@ -1,0 +1,108 @@
+"""What the port's `search` costs against the backend it would replace.
+
+Correctness is `search_path.py`'s; this is the other half of the arming
+decision, because a native path that answers exactly and runs slower is not
+one to arm. Every distinct (model, domain, order, limit, identity) the sweep
+corpus holds that Python answers is searched three rounds per leg, and the two
+phases are timed apart: `search()`, which is where the legs differ, and running
+the query, which is the same statement shape on both and should read the same.
+"""
+
+import json
+import os
+import pathlib
+import sys
+import time
+
+_HERE = (
+    pathlib.Path(pathlib.Path(__file__).resolve()).parent
+    if "__file__" in globals()
+    else None
+)
+sys.path.insert(
+    0,
+    os.environ.get("RUSTORM_HARNESS")
+    or _HERE
+    or os.path.join(
+        os.environ.get("RUSTORM_WORKSPACE") or pathlib.Path("~/Odoo").expanduser(),
+        "odoo-rust-orm",
+        "harness",
+    ),
+)
+import engine_py
+from _env import base_env, harness_dir
+from cases import case_env
+
+CORPUS = os.environ.get("RUSTORM_SWEEP") or os.path.join(harness_dir(), "corpus.json")
+ROUNDS = int(os.environ.get("RUSTORM_SEARCH_BENCH_ROUNDS", "3"))
+
+port = engine_py.install_backend()
+ORIGINAL = port.RustBackend.NATIVE
+
+with pathlib.Path(CORPUS).open(encoding="utf-8") as fh:
+    corpus = json.load(fh)
+base = base_env(env)  # noqa: F821
+picked, seen, refused = [], set(), 0
+for case in corpus:
+    key = json.dumps(
+        [
+            case["model"],
+            case.get("domain"),
+            case.get("uid"),
+            case.get("order"),
+            case.get("limit"),
+        ],
+        sort_keys=True,
+    )
+    if key in seen:
+        continue
+    seen.add(key)
+    try:
+        cenv = case_env(base, case)
+        if case["model"] not in cenv:
+            continue
+        model = cenv[case["model"]]
+        args = (case.get("domain") or [], case.get("order"), case.get("limit"))
+        with cenv.cr.savepoint():
+            model._search(args[0], limit=args[2], order=args[1]).get_result_ids()
+        picked.append((model, *args))
+    except Exception:
+        # a case Python itself refuses has nothing to time
+        refused += 1
+
+
+def run(*, armed):
+    port.RustBackend.NATIVE = (ORIGINAL | {"search"}) if armed else ORIGINAL
+    build = execute = 0.0
+    for model, domain, order, limit in picked:
+        t0 = time.perf_counter()
+        query = model._search(domain, limit=limit, order=order)
+        t1 = time.perf_counter()
+        query.get_result_ids()
+        build += t1 - t0
+        execute += time.perf_counter() - t1
+    return build, execute
+
+
+print(
+    "SEARCH BENCH %d searches per round, %d rounds per leg (%d cases python refuses)"
+    % (len(picked), ROUNDS, refused)
+)
+totals = {True: [], False: []}
+try:
+    for n in range(ROUNDS):
+        for armed in (False, True):
+            build, execute = run(armed=armed)
+            totals[armed].append(build)
+            print(
+                "  round %d %-6s search() %.3fs  execute %.3fs"
+                % (n, "native" if armed else "python", build, execute)
+            )
+finally:
+    port.RustBackend.NATIVE = ORIGINAL
+    env.cr.rollback()  # noqa: F821
+best = {armed: min(values) for armed, values in totals.items()}
+print(
+    "SEARCH BENCH best search(): python %.3fs native %.3fs -> native is %.2fx python"
+    % (best[False], best[True], best[True] / best[False])
+)

@@ -1458,7 +1458,15 @@ remaining write, and it is not a statement: it collects `ir.model.data` and
 `ir.attachment` rows and runs the company-dependent `ir.default` cleanup,
 which is ORM work the port would have to call back into.
 
-Not started, and the order the port's own counters suggest: `fetch` and
-`search`, which between them are the great majority of what the port
-currently delegates and are the two that would let the method-level shim
-retire.
+`search` is implemented and verified exactly over the sweep corpus -- 4,140
+native cases equal on ids, counts, sub-select composition and flush coverage
+-- and is NOT armed, because it is 1.4 to 1.6 times slower than Python at
+building the query. That is the first method where the arming switch did the
+job it exists for. What stands between it and arming is measured: the
+savepoint around each kernel call and the kernel's per-call signalling round
+trip. Removing a round trip there is kernel work (cache the watermark check
+per transaction); removing the savepoint is a correctness trade to be argued,
+not assumed.
+
+Not started: `fetch`, which with `search` is the great majority of what the
+port delegates.

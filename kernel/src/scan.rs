@@ -266,7 +266,7 @@ impl<'a> Orm<'a> {
         let rules_ms = t_rules.elapsed().as_secs_f64() * 1000.0;
         let t_cond = std::time::Instant::now();
         let cond = self
-            .build_condition(model, domain_json, env, &rules)
+            .build_condition(model, domain_json, env, &rules, false)
             .await?;
         let cond_ms = t_cond.elapsed().as_secs_f64() * 1000.0;
         let ctx = self.ctx(env);
@@ -692,7 +692,7 @@ impl<'a> Orm<'a> {
         let model = self.registry.get(model_name)?;
         let rules = self.uid_rules(req, env).await?;
         let cond = self
-            .build_condition(model, domain_json, env, &rules)
+            .build_condition(model, domain_json, env, &rules, false)
             .await?;
         // a limited count is COUNT(*) over a capped subquery, which stops the
         // scan early; an unlimited one counts every matching row
@@ -738,7 +738,7 @@ impl<'a> Orm<'a> {
         }
         let rules = self.uid_rules(req, env).await?;
         let cond = self
-            .build_condition(model, domain_json, env, &rules)
+            .build_condition(model, domain_json, env, &rules, false)
             .await?;
         let ctx = self.ctx(env);
         tracing::debug!(

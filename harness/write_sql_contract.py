@@ -133,7 +133,11 @@ def main():
     )
     args = parser.parse_args()
 
-    sys.path.insert(0, str(pathlib.Path(_env.workspace()) / "odoo"))
+    sys.path.insert(
+        0,
+        os.environ.get("RUSTORM_ODOO_ROOT")
+        or str(pathlib.Path(_env.workspace()) / "odoo"),
+    )
     contract = load()
     drift = []
     for key, composer in (("cases", compose), ("insert_cases", compose_insert)):
