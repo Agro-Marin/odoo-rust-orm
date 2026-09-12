@@ -57,6 +57,9 @@ impl Dsn {
                     };
                 }
                 "sslrootcert" => root_cert = Some(value.to_string()),
+                // every other keyword is passed through to the connector, which
+                // is where an unknown one is rejected -- this is the seam where
+                // a dsn stops being ours and becomes tokio-postgres'
                 _ => kept.push(part.to_string()),
             }
         }
@@ -68,8 +71,18 @@ impl Dsn {
                 SslMode::Require | SslMode::VerifyFull => "require",
             }
         ));
-        let config: tokio_postgres::Config =
-            kept.join(" ").parse().context("parsing the keyword dsn")?;
+        let config: tokio_postgres::Config = kept
+            .join(" ")
+            .parse()
+            .inspect_err(|e| {
+                tracing::warn!(
+                    target: "odoo_kernel::connect",
+                    error = %e,
+                    keywords = kept.len(),
+                    "the connector rejected the dsn; no connection will be opened from it"
+                );
+            })
+            .context("parsing the keyword dsn")?;
         Ok(Dsn {
             config,
             mode,

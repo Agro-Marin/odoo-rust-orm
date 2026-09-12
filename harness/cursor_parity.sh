@@ -107,27 +107,69 @@ print()
 if ran_r == 0 or ran_p == 0:
     print("CURSOR PARITY VACUOUS  a leg ran no tests; it compared nothing")
     sys.exit(1)
-# The baseline file owns the remaining differences; this gate requires an
-# exact match, as the repo's other ratchets do, so fixing
-# one is expected to lower the baseline in the same commit rather than bank
-# slack for later.
+# The baseline file owns the remaining differences, BY NAME. A count cannot
+# tell "fixed" from "not exercised": on a fixture that does not reach these
+# paths all three fail under psycopg too, leave only_rust for the `both`
+# bucket, and a count-only gate reads ONLY-RUST=0 -- the shape of an
+# improvement, with nothing improved. Lowering the floor on that banks a
+# number measured on a fixture that never asked the question. Names let the
+# gate say which of the three MOVED and which were actually FIXED, and only
+# the second kind asks for the floor to come down.
 import os
 base_path = os.environ.get("RUSTORM_CURSOR_BASELINE", sys.argv[3])
 try:
-    baseline = json.load(open(base_path))["only_rust"]
+    doc = json.load(open(base_path))
+    baseline = doc["only_rust"]
+    expected = set(doc.get("only_rust_tests") or [])
 except Exception as exc:
     print("CURSOR PARITY FAILED  no baseline at %s (%s)" % (base_path, exc))
     sys.exit(1)
 
-if len(only_rust) > baseline:
-    print("CURSOR PARITY FAILED  %d test(s) fail only under the rust cursor, "
-          "baseline %d -- %d NEW" % (len(only_rust), baseline, len(only_rust) - baseline))
+# the count is documentation now that the names decide; a file whose two halves
+# disagree is a file that lies to whoever reads only one of them
+if expected and len(expected) != baseline:
+    print("CURSOR PARITY FAILED  the baseline names %d test(s) but its count says %d"
+          % (len(expected), baseline))
     sys.exit(1)
-if len(only_rust) < baseline:
-    print("CURSOR PARITY FAILED  %d fail only under the rust cursor, baseline "
-          "%d: lower the baseline in the same commit that fixed them"
-          % (len(only_rust), baseline))
+
+if not expected:
+    # a baseline that names nothing can only be compared as a count
+    if len(only_rust) != baseline:
+        print("CURSOR PARITY FAILED  %d fail only under the rust cursor, baseline %d "
+              "(the baseline names no tests, so this gate cannot say which)"
+              % (len(only_rust), baseline))
+        sys.exit(1)
+    print("CURSOR PARITY OK   (%d tests; %d fail only under the rust cursor, at the "
+          "baseline; %d fail identically on both)" % (ran_r, len(only_rust), len(both)))
+    sys.exit(0)
+
+seen = set(only_rust)
+new_failures = sorted(seen - expected)
+still = sorted(seen & expected)
+moved = sorted(n for n in expected - seen if n in set(both))
+absent = sorted(n for n in expected - seen if n not in set(both) and n not in names)
+fixed = sorted(n for n in expected - seen if n not in set(both) and n in names)
+
+for n in new_failures:
+    print("    NEW only-rust: %s\n        %s" % (n, detail.get(n, "?")[:150]))
+for n in moved:
+    print("    baseline entry now failing under BOTH (moved, not fixed): %s" % n)
+for n in absent:
+    print("    baseline entry not exercised by this fixture: %s" % n)
+for n in fixed:
+    print("    baseline entry now PASSES under the rust cursor: %s" % n)
+
+if new_failures:
+    print("CURSOR PARITY FAILED  %d test(s) fail only under the rust cursor and are "
+          "not in the baseline" % len(new_failures))
     sys.exit(1)
-print("CURSOR PARITY OK   (%d tests; %d fail only under the rust cursor, at the "
-      "baseline; %d fail identically on both)" % (ran_r, len(only_rust), len(both)))
+if fixed:
+    print("CURSOR PARITY FAILED  %d baseline test(s) now pass under the rust cursor: "
+          "drop them from only_rust_tests in the same commit that fixed them"
+          % len(fixed))
+    sys.exit(1)
+print("CURSOR PARITY OK   (%d tests; %d of %d baseline differences still only-rust, "
+      "%d moved into the both-legs bucket on this fixture, %d not exercised; "
+      "%d fail identically on both)"
+      % (ran_r, len(still), len(expected), len(moved), len(absent), len(both)))
 PYEOF

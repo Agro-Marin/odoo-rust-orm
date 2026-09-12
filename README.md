@@ -1613,6 +1613,34 @@ read; they swallowed a `TypeError` from an unhashable cursor, which records
 nothing and leaves the gate seeing a clean transaction. That failure now warns,
 because it is more serious than the thing it guards.
 
+### The cursor-parity floor could not tell "fixed" from "not exercised"
+
+It compared a COUNT. On a base+mail fixture all three recorded differences fail
+under **psycopg too** — they leave `only_rust` for the both-legs bucket — so the
+gate read `ONLY-RUST=0` against a floor of 3 and asked for the floor to be
+lowered. That is the shape of an improvement with nothing improved, and
+lowering it would have banked a number measured on a fixture that never reaches
+those paths. The battery's documented quick path (`--build base,mail`) hits this
+every time.
+
+The baseline names the three now, and the gate says which of them moved:
+
+```
+baseline entry now failing under BOTH (moved, not fixed): …test_can_dump_binary_agrees_with_set_types…
+baseline entry now failing under BOTH (moved, not fixed): …test_pipeline_enters_on_the_second_statement
+baseline entry now failing under BOTH (moved, not fixed): …test_pipeline_nesting_does_not_re_enter_the_mode
+CURSOR PARITY OK   (379 tests; 0 of 3 baseline differences still only-rust,
+                    3 moved into the both-legs bucket on this fixture, 0 not
+                    exercised; 22 fail identically on both)
+```
+
+Only a baseline entry that **passes under the rust cursor while the suite still
+runs it** asks for the floor to come down, and the gate says so by name. It
+still fails on a rust-only failure that is not in the baseline, it still
+refuses to score a leg whose connection is not a `FakeConnection`, and it now
+also refuses a baseline whose count and names disagree — a file that lies to
+whoever reads only one half. All four are negative-controlled.
+
 ### The refusal census, and what it took to make it mean something
 
 `odoo_kernel::refusal` carries the source line, so the backlog is a group-by
@@ -1649,10 +1677,22 @@ beside `normalize_path`, `parse_nested` beside `parse`. 1,241 then, against the
 **1,233** the harness counts through a completely separate path — that agreement
 is what makes the number worth acting on.
 
-Two rules fall out of it, and they are the ones to keep:
+Three rules fall out of it, and they are the ones to keep. **A census needs
+both of the first two and neither implies the other** — a count can be inflated
+by questions nobody asked, or deflated by sites that refuse and never report,
+and each failure looks fine from the other axis:
 
-- **A corpus that is fully handled must log zero refusals.** That is the null
-  hypothesis, and checking it is what finds a speculative caller.
+- **Null control: a corpus that is fully handled must log zero refusals.** That
+  is what finds a speculative caller. This census failed it.
+- **Completeness: every path that can fail must report somewhere.** `refuse!` /
+  `refusal!` / `deny_access!` cover their sites by construction, so what matters
+  is the paths that BYPASS them — a bare `bail!` or `anyhow!` is invisible to
+  every target. `test_every_kernel_failure_path_reports_somewhere` pins the 14
+  that exist: two kernel invariant violations that are defects rather than
+  refusals and log at `error` (visible under the default `warn` filter), the
+  dsn rejections, and the server's, each answered by `handle_call`, which logs
+  status and kind. A fifteenth fails the test until somebody decides which it
+  is.
 - **A helper that reports why it stopped must report WHERE**, as
   `concat!(file!(), ":", line!())`, and let the caller decide whether that is a
   refusal (`refusal_at!`). Wrapping it in one `map_err` collapses every cause

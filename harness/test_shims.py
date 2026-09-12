@@ -1364,5 +1364,39 @@ def test_pool_drain_retires_borrowed_connections() -> None:
     check("close retires idle connections", fresh.closed, True)
 
 
+def test_every_kernel_failure_path_reports_somewhere() -> None:
+    # The completeness half of a census, which a null control does NOT imply:
+    # a corpus reading zero refusals says nothing about a site that refuses and
+    # never reports. `refuse!` / `refusal!` / `deny_access!` cover every site
+    # that uses them by construction, so what this looks for is the failure
+    # paths that BYPASS them -- a bare `bail!` or `anyhow!` on the read path is
+    # invisible to `odoo_kernel::refusal` and to every other target.
+    #
+    # Each one listed here is either logged at its site or answered at a
+    # boundary that logs; a NEW one is neither until somebody decides which.
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    pattern = re.compile(r"\b(?:anyhow::)?(?:bail!|anyhow!)\(")
+    found = []
+    for rel in ("kernel/src", "engine-py/src", "server/src"):
+        for path in sorted((root / rel).rglob("*.rs")):
+            if path.name == "error.rs" or "/bin/" in str(path):
+                continue
+            for n, line in enumerate(path.read_text().splitlines(), 1):
+                if pattern.search(line) and not line.lstrip().startswith("//"):
+                    found.append("%s:%d" % (path.relative_to(root), n))
+    # kernel: two internal invariants, both logged at `error` on their own
+    # subsystem target; connect: dsn rejections, logged by the parser.
+    # server: every one is answered by handle_call, which logs status and kind.
+    known = 14
+    check(
+        "failure paths bypassing the refusal macros (%s)" % ", ".join(found),
+        len(found),
+        known,
+    )
+
+
 if __name__ == "__main__":
     sys.exit(main())

@@ -1803,7 +1803,24 @@ impl<'a> Compiler<'a> {
                 Expr::cust("TRUE")
             });
         }
-        sql.ok_or_else(|| anyhow::anyhow!("missing sql for {op} {values:?}"))
+        // NOT a refusal: reaching this means the branches above disagreed with
+        // each other, which is a defect in this function rather than a
+        // capability the kernel lacks. It carries no `odoo_kernel::refusal`
+        // line for that reason, and logs at `error` so it is visible with
+        // `RUSTORM_LOG` unset -- the default filter is `warn`.
+        sql.ok_or_else(|| {
+            tracing::error!(
+                target: "odoo_kernel::compile",
+                model = %self.model.name,
+                field = %field.name,
+                %op,
+                values = values.len(),
+                null_in_condition,
+                can_be_null,
+                "kernel defect: in_condition produced no SQL for a membership it accepted"
+            );
+            anyhow::anyhow!("missing sql for {op} {values:?}")
+        })
     }
 
     /// Odoo's trigram accelerator: a conjunct on the ONE expression the GIN

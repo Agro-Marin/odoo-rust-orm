@@ -117,6 +117,17 @@ pub(crate) fn records_to_json(names: &[&str], cells: &[Vec<Json>]) -> Result<Str
         }
         for (i, cell) in rec.iter().enumerate() {
             let frag = frags.get(i).ok_or_else(|| {
+                // NOT a refusal: the reader built a row wider than the column
+                // plan it announced, which is a defect here rather than a
+                // capability the kernel lacks. `error` so it survives the
+                // default `warn` filter.
+                tracing::error!(
+                    target: "odoo_kernel::scan",
+                    cells = rec.len(),
+                    names = names.len(),
+                    row = r,
+                    "kernel defect: a row carries more cells than the read named columns"
+                );
                 anyhow::anyhow!("row has {} cells for {} names", rec.len(), names.len())
             })?;
             buf.extend_from_slice(frag.as_bytes());
