@@ -33,6 +33,26 @@ impl std::fmt::Display for RegistryStale {
 }
 impl std::error::Error for RegistryStale {}
 
+/// A compile that would have had to ask the database, raised by a `Db` in
+/// offline mode before any statement is sent. It is not a refusal of the
+/// question: the caller asks again with the database available, which on the
+/// persistence port means inside a savepoint -- and in the common case, where
+/// the watermark, the identity and the rules are already known, it is never
+/// raised and no savepoint is paid for.
+#[derive(Debug, Clone, Copy)]
+pub struct NeedsRoundTrip;
+
+impl std::fmt::Display for NeedsRoundTrip {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("answering this needs a round trip to the database")
+    }
+}
+impl std::error::Error for NeedsRoundTrip {}
+
+pub fn needs_round_trip(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<NeedsRoundTrip>())
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum ErrorKind {
     Refused,

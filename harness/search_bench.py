@@ -35,6 +35,11 @@ from cases import case_env
 
 CORPUS = os.environ.get("RUSTORM_SWEEP") or os.path.join(harness_dir(), "corpus.json")
 ROUNDS = int(os.environ.get("RUSTORM_SEARCH_BENCH_ROUNDS", "3"))
+# End the transaction every N searches. The port keeps the watermark it
+# checked for the rest of a TRANSACTION, so a run that never ends one measures
+# the steady state only; a web request is a transaction of a handful of
+# searches, and 0 here means one transaction for the whole round.
+TX_EVERY = int(os.environ.get("RUSTORM_SEARCH_BENCH_TX_EVERY", "0"))
 
 port = engine_py.install_backend()
 ORIGINAL = port.RustBackend.NATIVE
@@ -74,29 +79,41 @@ for case in corpus:
 def run(*, armed):
     port.RustBackend.NATIVE = (ORIGINAL | {"search"}) if armed else ORIGINAL
     build = execute = 0.0
-    for model, domain, order, limit in picked:
+    port.reset_stats()
+    for n, (model, domain, order, limit) in enumerate(picked, 1):
+        if TX_EVERY and n % TX_EVERY == 0:
+            env.cr.rollback()  # noqa: F821
         t0 = time.perf_counter()
         query = model._search(domain, limit=limit, order=order)
         t1 = time.perf_counter()
         query.get_result_ids()
         build += t1 - t0
         execute += time.perf_counter() - t1
-    return build, execute
+    return build, execute, port.stats()["native"]
 
 
 print(
-    "SEARCH BENCH %d searches per round, %d rounds per leg (%d cases python refuses)"
-    % (len(picked), ROUNDS, refused)
+    "SEARCH BENCH %d searches per round, %d rounds per leg (%d cases python refuses), "
+    "a transaction every %s" % (len(picked), ROUNDS, refused, TX_EVERY or "round")
 )
 totals = {True: [], False: []}
 try:
     for n in range(ROUNDS):
         for armed in (False, True):
-            build, execute = run(armed=armed)
+            build, execute, native = run(armed=armed)
             totals[armed].append(build)
             print(
-                "  round %d %-6s search() %.3fs  execute %.3fs"
-                % (n, "native" if armed else "python", build, execute)
+                "  round %d %-6s search() %.3fs  execute %.3fs  %s"
+                % (
+                    n,
+                    "native" if armed else "python",
+                    build,
+                    execute,
+                    "native=%s online=%s"
+                    % (native.get("search", 0), native.get("search.online", 0))
+                    if armed
+                    else "",
+                )
             )
 finally:
     port.RustBackend.NATIVE = ORIGINAL

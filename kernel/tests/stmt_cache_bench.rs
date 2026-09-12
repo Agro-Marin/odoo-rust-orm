@@ -27,6 +27,7 @@ fn req(model: &str, fields: &[&str], limit: Option<u64>) -> Request {
         tz: None,
         root_active_test: None,
         trusted_domain: false,
+        python_signals: None,
     }
 }
 

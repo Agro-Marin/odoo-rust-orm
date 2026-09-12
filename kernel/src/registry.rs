@@ -408,6 +408,30 @@ pub enum SignalChange {
     Irrelevant,
 }
 
+/// Whether a Python registry's sequences equal a kernel snapshot's signals on
+/// every table that decides what a compile may read: the registry itself and
+/// the security caches. Cache tables that carry no security (assets,
+/// templates, routing, ...) may differ; they change nothing the kernel reads.
+///
+/// Python's own search answers from caches consistent with exactly these
+/// sequences -- its registry processed them at the start of the request -- so
+/// a kernel snapshot at the same sequences applies the same rules without
+/// reading the watermark. A table Python does not report is a disagreement,
+/// not an assumption. The kernel reads `max(id)`, NULL on an empty table,
+/// where Python reads `coalesce(max(id), 0)`.
+pub fn signals_agree(tables: &[String], python: &HashMap<String, i64>, kernel: &Signals) -> bool {
+    !tables.is_empty()
+        && tables.iter().enumerate().all(|(i, table)| {
+            if table != "orm_signaling_registry"
+                && !SECURITY_SIGNAL_TABLES.contains(&table.as_str())
+            {
+                return true;
+            }
+            let ours = kernel.get(i).copied().flatten().unwrap_or(0);
+            python.get(table).is_some_and(|theirs| *theirs == ours)
+        })
+}
+
 pub const SECURITY_SIGNAL_TABLES: [&str; 3] = [
     "orm_signaling_default",
     "orm_signaling_groups",
@@ -697,6 +721,13 @@ impl Registry {
             "stamped the watermark onto the snapshot this request read"
         );
         fresh
+    }
+
+    /// Whether Python's registry, as the caller's environment holds it, sees
+    /// the same registry and security watermark this kernel's snapshot was
+    /// built at. See `signals_agree`.
+    pub fn agrees_with_python(&self, python: &HashMap<String, i64>, current: &Signals) -> bool {
+        signals_agree(&self.signal_tables, python, current)
     }
 
     pub fn snapshot_precedes(&self, snapshot: &Signals, current: &Signals) -> bool {

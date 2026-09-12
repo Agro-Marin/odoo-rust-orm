@@ -1967,5 +1967,67 @@ def test_bypass_access_without_superuser_is_delegated() -> None:
     )
 
 
+def test_search_delegates_once_the_transaction_wrote_security() -> None:
+    # The kernel's rules come from a snapshot that moves on commit; a rule
+    # written in this transaction is visible to Python and not to it. The
+    # shim's DIRTY_CRS is the record of that write, and the port must read it
+    # before it compiles anything -- and delegate when no shim keeps it.
+    backend = _backend()
+    orm_shim = _shims()[1]
+
+    class _Cursor:
+        pass
+
+    class _Env:
+        su = True
+        cr = _Cursor()
+
+    class _Model:
+        env = _Env()
+
+    saved = orm_shim._INSTALLED
+    backend.KERNEL_FOR = lambda _env: None
+    try:
+        orm_shim._INSTALLED = None
+        backend.reset_stats()
+        check(
+            "no shim: delegated",
+            backend._search_native(_Model(), None, 0, None, None, True),
+            None,
+        )
+        check(
+            "no shim: the reason says the writes are untracked",
+            list(backend.stats()["reasons_by_method"]["search"]),
+            ["the method shim is not installed, so security writes are not tracked"],
+        )
+
+        orm_shim._INSTALLED = {"installed": True}
+        orm_shim.DIRTY_CRS.add(_Model.env.cr)
+        backend.reset_stats()
+        check(
+            "tainted cursor: delegated",
+            backend._search_native(_Model(), None, 0, None, None, True),
+            None,
+        )
+        check(
+            "tainted cursor: the reason names the security write",
+            list(backend.stats()["reasons_by_method"]["search"]),
+            ["this transaction wrote a security model"],
+        )
+
+        orm_shim.DIRTY_CRS.discard(_Model.env.cr)
+        backend.reset_stats()
+        backend._search_native(_Model(), None, 0, None, None, True)
+        check(
+            "a clean cursor goes past the check to the kernel lookup",
+            list(backend.stats()["reasons_by_method"]["search"]),
+            ["no kernel in this process"],
+        )
+    finally:
+        orm_shim._INSTALLED = saved
+        orm_shim.DIRTY_CRS.discard(_Model.env.cr)
+        backend.KERNEL_FOR = None
+
+
 if __name__ == "__main__":
     sys.exit(main())

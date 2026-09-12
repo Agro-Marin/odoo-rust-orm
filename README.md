@@ -2942,6 +2942,80 @@ The benchmark's two measurements straddle a rebase of `odoo` by another
 session. Both legs of each run are on the same tree, so each ratio holds; the
 absolute times across the two rows are not comparable to the second decimal.
 
+### `search`, taken from 1.5x slower to parity
+
+The first native `search` compiled exactly and ran 1.4 to 1.6 times slower
+than Python. Four changes took it to parity, each measured, and a fifth was a
+correctness gap found on the way.
+
+**The flush set comes from the kernel now.** The port used to predict the
+fields Odoo's WHERE flushes with the fork's dependency collector, expanded
+over comodel rules, field domains and `active` columns; optimizing a comodel's
+rule domain can itself search. The compiler instead records every (model,
+field) whose column its SQL reads -- through `ExprCtx::touch`, shared by every
+copy of the context so rule compiles report too -- and `compile_where`
+returns it. It is Odoo's `to_flush` by construction rather than by
+prediction, and the sweep's coverage check agrees on every native case. The
+collector and its rule cache are gone.
+
+**The watermark is read once per transaction.** The caller's transaction is
+REPEATABLE READ, so the signalling row it can see does not move inside it. The
+connection records the snapshot a compile verified against its transaction
+serial, and later compiles in that transaction reuse it. It is the snapshot
+the check produced, not `registry.dynamic()`, which another connection may
+have refreshed from a commit this transaction cannot see.
+
+**The first compile of a transaction trusts Python's registry when they
+agree.** The port sends the environment's registry sequences --
+`registry_sequence` and every cache sequence, named by their
+`orm_signaling_*` tables -- and when they equal the kernel snapshot's on the
+registry and the three security tables, the watermark is not read at all.
+Python's own search answers from caches at exactly those sequences, so this is
+parity with Python rather than a looser check. One window is stated plainly: a
+rule committed by another worker after this request's signalling check is
+invisible to the kernel until the next request, as it is to Python's cached
+rule domains -- but Python READS a rule domain it has not cached yet, and in
+that case sees it a request earlier.
+
+**No savepoint unless the kernel needs the database.** `Db` has an offline
+mode that raises `NeedsRoundTrip` instead of sending a statement. The port
+compiles offline first; only a compile that has to ask -- an identity or rule
+set not yet cached, a watermark Python does not agree with -- runs online,
+inside the savepoint. Opening the transaction is sent either way: the query
+would send the same `BEGIN`. The first sweep with offline compiles delegated
+936 cases instead of 507, because rule evaluation turned the round-trip error
+into "rules could not be evaluated" and CACHED that for the identity; it
+propagates the error now, as it does a database error.
+
+**The correctness gap: a security write in the same transaction.** The
+kernel's rules move with the watermark, and the watermark moves on commit. The
+method shim has always refused a cursor that wrote `ir.rule`, a group, a user
+or the like (`DIRTY_CRS`); the port did not check it. A search after an
+in-transaction `ir.rule` would have applied the old rules. It delegates now,
+and without the shim installed -- nothing then records such writes -- it
+delegates everything. `search_path.py` ends by writing a rule and requiring the
+delegation and Python's answer.
+
+Measured over the sweep corpus's 4,624 searches, best of five interleaved
+rounds on a machine other sessions were loading (load average about 6 on 22
+cores), which puts the noise near ten percent:
+
+```
+a new transaction every      python      native     native / python
+search                       4.28 s      4.00 s     0.93
+8 searches                   3.11 s      3.38 s     1.09
+round (steady state)         2.70 s      2.52 s     0.93
+```
+
+Parity, not a win: the eight-search row reading slower than the one-search row
+is the noise, not a curve. So `search` stays out of `NATIVE`, by the rule this
+port was built on. The cost that remains is upstream of the seam:
+`optimize_full` runs in `_search` before the backend is asked, and it is the
+same on both legs. At the seam alone native is clearly faster -- `backend.search`
+took 1.12 to 1.24 s against Python's 1.69 to 1.75 s, because the kernel
+compiles a sub-query itself where Python calls `_search` again -- which says
+where the next gain has to come from.
+
 ### Counting every call cost a browser tour
 
 The port counts what it answered and what it delegated, and the first version

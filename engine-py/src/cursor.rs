@@ -1297,6 +1297,14 @@ pub struct RustConn {
     kernel_stmts: Arc<odoo_kernel::orm::StmtCache>,
     kernel_generation: std::sync::atomic::AtomicU64,
     in_tx: AtomicBool,
+    /// Incremented every time this connection opens a transaction, so a value
+    /// recorded inside one says nothing about the next.
+    tx_serial: std::sync::atomic::AtomicU64,
+    /// The signalling snapshot a kernel compile verified in the transaction
+    /// numbered here, for the kernel generation named, so later compiles in
+    /// the same REPEATABLE READ transaction reuse it instead of reading the
+    /// watermark again.
+    signals_checked: std::sync::Mutex<Option<(u64, u64, Arc<odoo_kernel::registry::Dynamic>)>>,
     autocommit: AtomicBool,
     pub readonly: AtomicBool,
     closed: AtomicBool,
@@ -1326,6 +1334,39 @@ impl RustConn {
         self.kernel_stmts.clone()
     }
 
+    /// Whether a transaction is open, without opening one.
+    pub fn tx_open(&self) -> bool {
+        self.in_tx.load(Ordering::SeqCst)
+    }
+
+    /// The snapshot checked earlier in the CURRENT transaction for this
+    /// kernel generation, if there was one.
+    pub fn checked_signals(&self, generation: u64) -> Option<Arc<odoo_kernel::registry::Dynamic>> {
+        if !self.tx_open() {
+            return None;
+        }
+        let serial = self.tx_serial.load(Ordering::SeqCst);
+        let guard = self.signals_checked.lock().ok()?;
+        match guard.as_ref() {
+            Some((tx, generation_seen, dynamic))
+                if *tx == serial && *generation_seen == generation =>
+            {
+                Some(dynamic.clone())
+            }
+            _ => None,
+        }
+    }
+
+    pub fn remember_signals(&self, generation: u64, dynamic: Arc<odoo_kernel::registry::Dynamic>) {
+        if !self.tx_open() {
+            return;
+        }
+        let serial = self.tx_serial.load(Ordering::SeqCst);
+        if let Ok(mut guard) = self.signals_checked.lock() {
+            *guard = Some((serial, generation, dynamic));
+        }
+    }
+
     pub fn new(client: Arc<Client>, handle: Handle) -> Self {
         RustConn {
             client,
@@ -1334,6 +1375,8 @@ impl RustConn {
             kernel_stmts: Arc::new(odoo_kernel::orm::StmtCache::default()),
             kernel_generation: std::sync::atomic::AtomicU64::new(0),
             in_tx: AtomicBool::new(false),
+            tx_serial: std::sync::atomic::AtomicU64::new(0),
+            signals_checked: std::sync::Mutex::new(None),
             autocommit: AtomicBool::new(false),
             readonly: AtomicBool::new(false),
             closed: AtomicBool::new(false),
@@ -1360,6 +1403,7 @@ impl RustConn {
             return Ok(());
         }
         if !self.in_tx.swap(true, Ordering::SeqCst) {
+            self.tx_serial.fetch_add(1, Ordering::SeqCst);
             let readonly = self.readonly.load(Ordering::SeqCst);
             let begin = if readonly {
                 "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"

@@ -106,11 +106,18 @@ pub fn ident(name: &str) -> String {
 pub struct Db<'a> {
     pub client: &'a Client,
     pub stmts: &'a StmtCache,
+    /// Raise `NeedsRoundTrip` instead of sending a statement. See
+    /// `crate::error::NeedsRoundTrip`.
+    pub offline: bool,
 }
 
 impl<'a> Db<'a> {
     pub fn new(client: &'a Client, stmts: &'a StmtCache) -> Self {
-        Db { client, stmts }
+        Db {
+            client,
+            stmts,
+            offline: false,
+        }
     }
 
     pub async fn query(
@@ -118,6 +125,14 @@ impl<'a> Db<'a> {
         sql: &str,
         params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
     ) -> Result<Vec<tokio_postgres::Row>> {
+        if self.offline {
+            tracing::trace!(
+                target: "odoo_kernel::sql",
+                %sql,
+                "offline: this statement would need a round trip; not sent"
+            );
+            return Err(crate::error::NeedsRoundTrip.into());
+        }
         let t_prepare = std::time::Instant::now();
         let (stmt, freshly_prepared) = match self.stmts.get(sql) {
             Some(s) => (s, false),

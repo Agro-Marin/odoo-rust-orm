@@ -41,6 +41,14 @@ pub struct ExprCtx<'a> {
 
     // the request's `tz`, already validated by the registry; None reads as UTC
     pub tz: Option<String>,
+
+    /// Every (model, field) whose column the compiled SQL reads. Shared by
+    /// every copy of this context -- rule compiles take an owned copy -- so
+    /// the set a request ends with covers its sub-queries and its rules. The
+    /// persistence port hands it to Odoo as the fragment's `to_flush`: the
+    /// fields to write before the statement runs, exact because they are the
+    /// columns in it.
+    pub touched: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<(String, String)>>>,
 }
 
 impl<'a> ExprCtx<'a> {
@@ -64,6 +72,13 @@ impl<'a> ExprCtx<'a> {
             active_test,
             access: None,
             tz: None,
+            touched: Default::default(),
+        }
+    }
+
+    pub fn touch(&self, model: &str, field: &str) {
+        if let Ok(mut set) = self.touched.lock() {
+            set.insert((model.to_string(), field.to_string()));
         }
     }
 
@@ -114,6 +129,7 @@ impl<'a> ExprCtx<'a> {
         if !f.has_column {
             refuse!("field {}.{} has no column", model.name, f.name);
         }
+        self.touch(&model.name, &f.name);
         let raw = col(alias, &f.name);
         if f.company_dependent {
             let ty = pg_cast_type(f.ttype);
@@ -350,6 +366,7 @@ impl<'a> ExprCtx<'a> {
             .expr(inner)
             .from_as(Alias::new(&co.table), Alias::new(sub_alias.as_str()))
             .and_where(col(&sub_alias, "id").eq(col(alias, &field.name)));
+        self.touch(&model.name, &field.name);
         Ok(subquery(select))
     }
 }
@@ -1293,6 +1310,7 @@ impl<'a> Compiler<'a> {
         if satisfied {
             cond
         } else {
+            self.ctx.touch(&self.model.name, &field.name);
             col(&self.alias, &field.name).is_not_null().and(cond)
         }
     }
@@ -1364,6 +1382,7 @@ impl<'a> Compiler<'a> {
                         inverse
                     )
                 })?;
+                compiler.ctx.touch(&co.name, model_field);
                 cond = cond.add(col(&compiler.alias, model_field).eq(owner.name.as_str()));
             }
         }
@@ -1401,6 +1420,7 @@ impl<'a> Compiler<'a> {
             target: "odoo_kernel::compile",
             comodel = %co.name, %active_name, "added the implicit active filter to the subquery"
         );
+        self.ctx.touch(&co.name, active_name);
         Ok(Cond::all().add(col(&self.alias, active_name).is_in([true])))
     }
 
@@ -1727,6 +1747,7 @@ impl<'a> Compiler<'a> {
         match field.ttype {
             FieldType::One2many => {
                 let inverse = field.o2m_inverse_column(&self.model.name, co)?;
+                self.ctx.touch(&co.name, inverse);
                 select
                     .expr(col(&sub_alias, inverse))
                     .from_as(Alias::new(&co.table), Alias::new(sub_alias.as_str()))
@@ -1735,6 +1756,9 @@ impl<'a> Compiler<'a> {
             }
             FieldType::Many2many => {
                 let (rel, c1, c2) = field.m2m_columns()?;
+                // the relation table has no fields of its own; what Odoo
+                // flushes for it is the many2many field
+                self.ctx.touch(&self.model.name, &field.name);
                 select
                     .expr(col(rel, c1))
                     .from(Alias::new(rel))
@@ -1870,7 +1894,10 @@ impl<'a> Compiler<'a> {
     fn trigram_conjunct(&self, field: &Field, pattern: String, insensitive: bool) -> Expr {
         let left = Expr::cust_with_exprs(
             "jsonb_path_query_array($1, '$.*')::text",
-            [col(&self.alias, &field.name)],
+            [{
+                self.ctx.touch(&self.model.name, &field.name);
+                col(&self.alias, &field.name)
+            }],
         );
         let keyword = if insensitive { "ILIKE" } else { "LIKE" };
         if self.ctx.registry.has_unaccent {

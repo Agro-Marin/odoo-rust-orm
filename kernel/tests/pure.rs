@@ -2843,6 +2843,7 @@ fn a_request_naming_no_groupby_is_answered_not_refused() {
         tz: None,
         root_active_test: None,
         trusted_domain: false,
+        python_signals: None,
     };
 
     // the demanding form refuses a missing groupby because read_group needs
@@ -3249,4 +3250,59 @@ fn a_dotted_leaf_compiles_as_its_any_form_for_every_operator_that_folds() {
         }
     }
     assert!(diffs.is_empty(), "{}", diffs.join("\n"));
+}
+
+#[test]
+fn a_python_registry_view_agrees_only_on_every_registry_and_security_table() {
+    use odoo_kernel::registry::signals_agree;
+    let tables: Vec<String> = [
+        "orm_signaling_assets",
+        "orm_signaling_default",
+        "orm_signaling_groups",
+        "orm_signaling_registry",
+        "orm_signaling_stable",
+    ]
+    .iter()
+    .map(|t| (*t).to_string())
+    .collect();
+    let kernel = vec![Some(35), Some(83), Some(37), Some(42), None];
+    let python = |pairs: &[(&str, i64)]| -> HashMap<String, i64> {
+        pairs.iter().map(|(k, v)| ((*k).to_string(), *v)).collect()
+    };
+    let same = python(&[
+        ("orm_signaling_assets", 99),
+        ("orm_signaling_default", 83),
+        ("orm_signaling_groups", 37),
+        ("orm_signaling_registry", 42),
+        ("orm_signaling_stable", 0),
+    ]);
+    // assets carries no security and may differ; an empty stable table is
+    // NULL to the kernel and 0 to Python, and that is agreement
+    assert!(signals_agree(&tables, &same, &kernel));
+
+    let mut groups_moved = same.clone();
+    groups_moved.insert("orm_signaling_groups".into(), 38);
+    assert!(
+        !signals_agree(&tables, &groups_moved, &kernel),
+        "a security table moved"
+    );
+
+    let mut registry_moved = same.clone();
+    registry_moved.insert("orm_signaling_registry".into(), 41);
+    assert!(
+        !signals_agree(&tables, &registry_moved, &kernel),
+        "the registry is older"
+    );
+
+    let mut missing = same.clone();
+    missing.remove("orm_signaling_default");
+    assert!(
+        !signals_agree(&tables, &missing, &kernel),
+        "a table python did not report"
+    );
+
+    assert!(
+        !signals_agree(&[], &same, &Vec::new()),
+        "no signalling tables at all is not agreement"
+    );
 }

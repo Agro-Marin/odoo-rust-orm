@@ -144,12 +144,28 @@ impl RustKernel {
             .map_err(from_kernel)
     }
 
+    /// The WHERE fragment `StorageBackend.search` would add, compiled on the
+    /// caller's connection as `(sql, payload_json)` in Odoo's `%s` dialect,
+    /// the payload carrying `params` and `touched` -- the (model, field) pairs
+    /// the fragment reads, which the caller flushes. See `Orm::compile_where`.
+    ///
+    /// `offline` asks for an answer that sends no statement, and returns None
+    /// when one is needed -- a watermark not yet checked in this transaction,
+    /// an identity or rule set not yet cached, a hierarchy lookup. The caller
+    /// asks again online inside a savepoint. The watermark a compile verifies
+    /// is kept on the connection for the rest of its transaction, so after the
+    /// first search of a transaction the offline answer is the usual one.
+    ///
+    /// The same guards as `dispatch`: a stale kernel, another Python registry
+    /// and an autocommit cursor all refuse.
+    #[pyo3(signature = (conn, request_json, offline))]
     fn search_where(
         &self,
         py: Python<'_>,
         conn: &RustConn,
         request_json: &str,
-    ) -> PyResult<(String, String)> {
+        offline: bool,
+    ) -> PyResult<Option<(String, String)>> {
         if self.stale.load(Ordering::Acquire) {
             return Err(KernelRegistryStale::new_err(
                 odoo_kernel::orm::RegistryStale.to_string(),
@@ -170,25 +186,43 @@ impl RustKernel {
                 "kernel reads require a repeatable-read transaction",
             ));
         }
+        // Opening the transaction is a statement, and it is sent offline too:
+        // the query this fragment ends up in would send the same BEGIN, so it
+        // costs nothing Python's own path does not, and a BEGIN that fails has
+        // broken the connection for Python as well -- there is nothing a
+        // savepoint could roll back to. What offline withholds is every
+        // statement that is the KERNEL's.
         conn.ensure_tx(py)?;
+        let checked = conn.checked_signals(self.generation);
         let client = conn.client();
         let handle = conn.handle().clone();
         let stmts = conn.kernel_stmts_at(self.generation);
         py.detach(|| {
-            let orm = Orm::new(&self.registry, &client, self.caches.clone(), &stmts);
-            let result = handle.block_on(orm.compile_where(&req));
-            if result
-                .as_ref()
-                .err()
-                .is_some_and(odoo_kernel::orm::is_registry_stale)
-            {
-                self.stale.store(true, Ordering::Release);
-                stmts.clear();
+            let mut orm = Orm::new(&self.registry, &client, self.caches.clone(), &stmts);
+            if offline {
+                orm = orm.offline();
             }
-            let (sql, params) = result.map_err(from_kernel)?;
-            let params = serde_json::to_string(&params)
+            let result = handle.block_on(orm.compile_where(&req, checked.clone()));
+            if let Err(e) = &result {
+                if odoo_kernel::error::needs_round_trip(e) {
+                    return Ok(None);
+                }
+                if odoo_kernel::orm::is_registry_stale(e) {
+                    self.stale.store(true, Ordering::Release);
+                    stmts.clear();
+                }
+            }
+            let compiled = result.map_err(from_kernel)?;
+            if checked.is_none() {
+                conn.remember_signals(self.generation, compiled.snapshot);
+            }
+            let payload = serde_json::json!({
+                "params": compiled.params,
+                "touched": compiled.touched,
+            });
+            let payload = serde_json::to_string(&payload)
                 .map_err(|e| KernelRefused::new_err(e.to_string()))?;
-            Ok((sql, params))
+            Ok(Some((compiled.fragment, payload)))
         })
     }
 

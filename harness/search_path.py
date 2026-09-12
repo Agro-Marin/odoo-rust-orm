@@ -235,6 +235,54 @@ for case in corpus:
         continue
     tally["matched"] += 1
 
+# A record rule written in THIS transaction. The kernel's rules move with the
+# signalling watermark, which moves on commit, so it cannot see this one and
+# Python can: the only right native answer is a delegation. Last, because the
+# write taints the cursor for the rest of the transaction, and the rollback
+# after it is what clears that.
+Users = env["res.users"].sudo()  # noqa: F821
+user = Users.search(
+    [("share", "=", False), ("id", "not in", [1, 2]), ("active", "=", True)],
+    order="id",
+    limit=1,
+)
+if not user:
+    failures.append(
+        "no internal user besides the administrator to run the rule scenario as"
+    )
+else:
+    partner_model = env["ir.model"].sudo()._get("res.partner")  # noqa: F821
+    env["ir.rule"].sudo().create(  # noqa: F821
+        {
+            "name": "search_path: hides every partner, written in-transaction",
+            "model_id": partner_model.id,
+            "domain_force": "[('id', '=', 0)]",
+            "perm_read": True,
+        }
+    )
+    partners = env(user=user.id)["res.partner"]  # noqa: F821
+    port.RustBackend.NATIVE = ARMED
+    port.reset_stats()
+    armed_ids = partners._search([]).get_result_ids()
+    reasons = port.stats()["reasons_by_method"].get("search", {})
+    port.RustBackend.NATIVE = DISARMED
+    python_ids = partners._search([]).get_result_ids()
+    port.RustBackend.NATIVE = ORIGINAL
+    print(
+        "SEARCH after an in-transaction ir.rule: native %d ids, python %d ids, reasons %r"
+        % (len(armed_ids), len(python_ids), reasons)
+    )
+    if list(armed_ids) != list(python_ids):
+        failures.append(
+            "after an ir.rule written in this transaction the port answered %d ids "
+            "where python answers %d" % (len(armed_ids), len(python_ids))
+        )
+    if not reasons.get("this transaction wrote a security model"):
+        failures.append(
+            "the port did not delegate after an in-transaction ir.rule: %r" % (reasons,)
+        )
+    env.cr.rollback()  # noqa: F821
+
 port.RustBackend.NATIVE = ORIGINAL
 print("SEARCH cases: %s" % dict(tally))
 print("SEARCH delegation reasons (top 12):")

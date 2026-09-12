@@ -1458,15 +1458,16 @@ remaining write, and it is not a statement: it collects `ir.model.data` and
 `ir.attachment` rows and runs the company-dependent `ir.default` cleanup,
 which is ORM work the port would have to call back into.
 
-`search` is implemented and verified exactly over the sweep corpus -- 4,140
-native cases equal on ids, counts, sub-select composition and flush coverage
--- and is NOT armed, because it is 1.4 to 1.6 times slower than Python at
-building the query. That is the first method where the arming switch did the
-job it exists for. What stands between it and arming is measured: the
-savepoint around each kernel call and the kernel's per-call signalling round
-trip. Removing a round trip there is kernel work (cache the watermark check
-per transaction); removing the savepoint is a correctness trade to be argued,
-not assumed.
+`search` is implemented and verified exactly over the sweep corpus, and is
+NOT armed. It started 1.4 to 1.6 times slower than Python and is at parity now
+(0.93 to 1.09 across transaction lengths, within a noisy machine's margin):
+the kernel reports the flush set, the watermark is read once per transaction
+or not at all when Python's registry agrees, and a compile runs inside a
+savepoint only when it needs the database. At the seam alone it is about a
+third faster; the remaining cost is `optimize_full`, which runs in `_search`
+before the port is asked. So the next gain for `search` is not in the port:
+it is the kernel taking over the domain optimisation that precedes it, which
+is the method-level question the shim already answers for its RPC calls.
 
 Not started: `fetch`, which with `search` is the great majority of what the
 port delegates.

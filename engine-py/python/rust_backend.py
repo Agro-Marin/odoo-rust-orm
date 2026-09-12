@@ -462,109 +462,37 @@ def _walk(node):
         yield from _walk(node.value)
 
 
-#: Rule-domain dependencies by (model, the rule Domain object). Optimizing a
-#: rule domain is what makes its columns knowable, and on a comodel that can
-#: mean running searches -- `ir.attachment` and the mail access checks search
-#: while they optimize -- so it was two thirds of a native search's cost when
-#: done per call. `_get_domain_accessible_records` is an ormcache, and it hands
-#: back the SAME object until the rules or the user's groups change, when the
-#: cache is cleared and a new object comes back; so the object's identity is
-#: the invalidation, and the entry keeps the object alive so an id is never
-#: reused under it.
-_RULE_DEPENDENCIES = {}
-_RULE_DEPENDENCIES_MAX = 4096
+def _security_written(env):
+    """Why this transaction's security cannot be trusted to the kernel, or None.
 
-
-def _rule_dependencies(records, rules):
-    if rules.is_true() or rules.is_false():
-        return {}, set()
-    key = (records._name, id(rules))
-    hit = _RULE_DEPENDENCIES.get(key)
-    if hit is not None and hit[0] is rules:
-        return hit[1]
-    from odoo.orm.runtime._search_flush import _DependencyCollector
-
-    sudo = records.sudo().with_context(active_test=False)
-    collector = _DependencyCollector()
-    collector.collect_domain(sudo, rules.optimize_full(sudo))
-    collected = (
-        None
-        if collector.opaque
-        else (
-            {name: frozenset(f) for name, f in collector.fields_by_model.items()},
-            frozenset(collector.seen),
-        )
-    )
-    if len(_RULE_DEPENDENCIES) >= _RULE_DEPENDENCIES_MAX:
-        _RULE_DEPENDENCIES.clear()
-    _RULE_DEPENDENCIES[key] = (rules, collected)
-    return collected
-
-
-def _flush_fields(model, domain, check_access):
-    """The fields a native WHERE must flush before it runs, or None to delegate.
-
-    Odoo's `domain._to_sql` returns an `SQL` whose `to_flush` names the fields
-    the statement reads, and the cursor flushes them when the query EXECUTES --
-    not when `search` returns. A native fragment has to carry the same, or a
-    search following a write in the same transaction reads the old row.
-
-    The fork's dependency collector gives the fields a domain NAMES. A
-    sub-query reads more than that, and the first sweep over the corpus found
-    every kind: its comodel's `active` column, the relational field's own
-    `domain=`, and the comodel's record rules. So every relational field the
-    collection traverses is expanded with those three, and the walk runs to a
-    fixed point, because a rule or a field domain can traverse further.
-
-    The result is a superset of Odoo's set, which costs a flush and never a
-    stale row; the search harness checks it covers Odoo's case by case. A
-    collector that reports the domain opaque means only a flush of everything
-    would be safe, which is not a fragment's to carry.
+    The kernel compiles record rules, group membership and company access from
+    a snapshot keyed by Odoo's signalling watermark, and the watermark moves on
+    COMMIT. A transaction that wrote an `ir.rule`, a group or a user sees its
+    own change in Python and not in the kernel, so a native WHERE there would
+    apply the rules as they were. The method shim already tracks exactly that
+    per cursor (`DIRTY_CRS`, set by its create/write/unlink wrappers and
+    cleared on commit and rollback); the port reads the same set. Without the
+    shim nothing records the writes, and that is a delegation too.
     """
-    from odoo.fields import Domain
-    from odoo.orm.runtime._search_flush import _DependencyCollector
+    try:
+        import rust_orm_shim
+    except ImportError:
+        return "the method shim is not installed, so security writes are not tracked"
+    if rust_orm_shim._INSTALLED is None:
+        return "the method shim is not installed, so security writes are not tracked"
+    try:
+        if env.cr in rust_orm_shim.DIRTY_CRS:
+            return "this transaction wrote a security model"
+    except TypeError:
+        return "the cursor cannot be tracked for security writes"
+    return None
 
-    env = model.env
-    collector = _DependencyCollector()
-    collector.collect_domain(model, domain)
 
-    def rules_of(records):
-        rules = env["ir.rule"]._get_domain_accessible_records(records._name, "read")
-        collected = _rule_dependencies(records, rules)
-        if collected is None:
-            collector.opaque = True
-            return
-        fields_by_model, seen = collected
-        for name, fnames in fields_by_model.items():
-            collector.fields_by_model[name].update(fnames)
-        collector.seen.update(seen)
-
-    if check_access:
-        rules_of(model)
-    expanded = set()
-    while pending := [key for key in collector.seen if key not in expanded]:
-        for name, expression in pending:
-            expanded.add((name, expression))
-            field = env[name]._fields.get(expression.split(".", 1)[0])
-            if field is None or not field.relational:
-                continue
-            comodel = env[field.comodel_name]
-            if comodel._active_name:
-                collector.collect_field(comodel, comodel._active_name)
-            if isinstance(field.domain, (list, tuple)) and field.domain:
-                collector.collect_domain(comodel, Domain(field.domain))
-            if not env.su:
-                rules_of(comodel)
-    if collector.opaque:
-        return None
-    return sorted(
-        (
-            env[name]._fields[fname]
-            for name, fnames in collector.fields_by_model.items()
-            for fname in fnames
-        ),
-        key=lambda f: (f.model_name, f.name),
-    )
+def _python_signals(registry):
+    signals = {"orm_signaling_registry": registry.registry_sequence}
+    for name, sequence in registry.cache_sequences.items():
+        signals["orm_signaling_%s" % name] = sequence
+    return signals
 
 
 def _search_native(model, domain, offset, limit, order, check_access):
@@ -588,6 +516,10 @@ def _search_native(model, domain, offset, limit, order, check_access):
         # neither is this.
         _delegated("search", "bypass_access without superuser")
         return None
+    why = _security_written(env)
+    if why:
+        _delegated("search", why)
+        return None
     kernel = _kernel(env)
     if kernel is None:
         _delegated("search", "no kernel in this process")
@@ -602,10 +534,6 @@ def _search_native(model, domain, offset, limit, order, check_access):
         domain_json = _domain_json(domain)
     except _NoWireForm as exc:
         _delegated("search", "the domain carries %s" % exc)
-        return None
-    to_flush = _flush_fields(model, domain, check_access)
-    if to_flush is None:
-        _delegated("search", "the flush dependencies are opaque")
         return None
 
     context = env.context
@@ -622,6 +550,12 @@ def _search_native(model, domain, offset, limit, order, check_access):
             "tz": context.get("tz") or None,
             "root_active_test": False,
             "trusted_domain": True,
+            # What this environment's registry processed at the start of the
+            # request. Equal to the kernel's snapshot on the registry and
+            # security tables, it lets the first compile of a transaction skip
+            # reading the watermark -- and therefore the savepoint -- because
+            # Python itself answers from caches at exactly these sequences.
+            "python_signals": _python_signals(env.registry),
         }
     )
     request = request[:-1] + ', "domain": ' + domain_json + "}"
@@ -629,19 +563,44 @@ def _search_native(model, domain, offset, limit, order, check_access):
         import rust_orm_shim
 
         conn = rust_orm_shim._rust_conn(env)
-        # The kernel reads the signalling watermark, the user and the rules
-        # on the caller's connection; a database error there must roll back
-        # to here rather than abort the transaction Python would have
-        # finished.
-        with env.cr.savepoint(flush=False):
-            fragment, params = kernel.search_where(conn, request)
+        # Offline first: with the watermark checked earlier in this
+        # transaction and the identity and rules cached, the compile sends no
+        # statement, so nothing can fail on the server and no savepoint is
+        # needed. Only a compile that has to ask the database runs online, and
+        # that one does need the savepoint -- a database error in it must roll
+        # back to here rather than abort the transaction Python would finish.
+        answer = kernel.search_where(conn, request, offline=True)
+        if answer is None:
+            _count("native", "search.online")
+            with env.cr.savepoint(flush=False):
+                answer = kernel.search_where(conn, request, offline=False)
+        fragment, payload = answer
     except (KernelRefused, KernelRegistryStale) as exc:
         _delegated("search", str(exc))
         return None
 
+    payload = json.loads(payload)
+    # Odoo's WHERE carries `to_flush`, the fields the cursor writes before the
+    # statement runs; without them a search after a write in the same
+    # transaction reads the old row. The kernel reports every column its SQL
+    # reads -- the domain's, its sub-queries' `active` and field domains, the
+    # comodels' rules -- which is that set by construction rather than by a
+    # walk that predicts it. A field the Python registry does not know is a
+    # disagreement about the model, and not one to flush around.
+    to_flush = []
+    for name, fname in payload["touched"]:
+        field = env[name]._fields.get(fname) if name in env else None
+        if field is None:
+            _delegated(
+                "search",
+                "the kernel read %s.%s, which python does not know" % (name, fname),
+            )
+            return None
+        to_flush.append(field)
+
     query = Query(env, model._table, model._table_sql)
     if fragment != "TRUE":
-        query.add_where(SQL(fragment, *_revive(json.loads(params)), to_flush=to_flush))
+        query.add_where(SQL(fragment, *_revive(payload["params"]), to_flush=to_flush))
     if order:
         query.order = model._order_to_sql(order, query) or SQL.identifier(
             model._table, "id"

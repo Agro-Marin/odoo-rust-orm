@@ -16,6 +16,18 @@ use crate::sqlgen::{Compiler, ExprCtx, col};
 
 pub use crate::error::RegistryStale;
 
+/// What `Orm::compile_where` hands back.
+pub struct CompiledWhere {
+    pub fragment: String,
+    pub params: Vec<Json>,
+    /// (model, field) for every column the fragment reads: the fields a caller
+    /// must flush before running it.
+    pub touched: Vec<(String, String)>,
+    /// The signalling snapshot the compile ran against, for reuse later in the
+    /// same transaction.
+    pub snapshot: Arc<crate::registry::Dynamic>,
+}
+
 fn collect_leaves(node: &domain::Node, out: &mut Vec<(String, Json)>) {
     match node {
         domain::Node::And(v) | domain::Node::Or(v) => v.iter().for_each(|n| collect_leaves(n, out)),
@@ -184,6 +196,13 @@ pub struct Request {
     /// one. Only the port sets it; `dispatch` never reads it.
     #[serde(default)]
     pub trusted_domain: bool,
+
+    /// The caller's Python registry sequences by signalling table name. When
+    /// they agree with this kernel's snapshot on the registry and security
+    /// tables, `compile_where` skips reading the watermark: see
+    /// `registry::signals_agree`.
+    #[serde(default)]
+    pub python_signals: Option<HashMap<String, i64>>,
 }
 
 impl Request {
@@ -251,6 +270,10 @@ pub struct Env {
     pub dynamic: Arc<crate::registry::Dynamic>,
 
     pub groups: Arc<std::collections::HashSet<i32>>,
+
+    /// The columns every compile under this environment read; see
+    /// `ExprCtx::touched`.
+    pub touched: Arc<std::sync::Mutex<BTreeSet<(String, String)>>>,
 }
 
 impl std::fmt::Debug for Env {
@@ -278,6 +301,13 @@ impl<'a> Orm<'a> {
             db: Db::new(client, stmts),
             caches,
         }
+    }
+
+    /// The same kernel on the same connection, but raising `NeedsRoundTrip`
+    /// where it would send a statement.
+    pub fn offline(mut self) -> Self {
+        self.db.offline = true;
+        self
     }
 
     async fn check_signaling(&self) -> Result<Arc<crate::registry::Dynamic>> {
@@ -493,6 +523,7 @@ impl<'a> Orm<'a> {
             week_start,
             groups,
             dynamic,
+            touched: Default::default(),
         })
     }
 
@@ -617,7 +648,18 @@ impl<'a> Orm<'a> {
                     );
                     rules.mark_unrestricted(model_name)
                 }
-                Err(e) if e.downcast_ref::<tokio_postgres::Error>().is_some() => return Err(e),
+                // Neither of these says anything about the rule, and the set
+                // built here is CACHED for the identity: marking the model
+                // unevaluated would refuse it for every later request too.
+                // An offline compile that needs the database is exactly that
+                // -- the first sweep with offline compiles cached 786 refusals
+                // of res.users this way.
+                Err(e)
+                    if e.downcast_ref::<tokio_postgres::Error>().is_some()
+                        || crate::error::needs_round_trip(&e) =>
+                {
+                    return Err(e);
+                }
                 Err(e) => rules.mark_unevaluated(model_name, format!("{e:#}")),
             }
         }
@@ -1257,8 +1299,37 @@ impl<'a> Orm<'a> {
     /// `search_count` around it, a sub-select inside another domain -- so what
     /// the kernel owns is exactly what `domain._to_sql` and the rule domain's
     /// `_to_sql` would have contributed, and nothing the query does after.
-    pub async fn compile_where(&self, req: &Request) -> Result<(String, Vec<Json>)> {
-        let dynamic = self.check_signaling().await?;
+    ///
+    /// `checked` is the snapshot a previous compile on this TRANSACTION already
+    /// verified against the signalling watermark. The caller's transaction is
+    /// REPEATABLE READ, so the watermark it can see does not move inside it, and
+    /// checking again reads the same row; passing the snapshot back is what
+    /// removes that round trip from every search after the first. It must be
+    /// the snapshot that check produced and not `registry.dynamic()`, which
+    /// another connection may have refreshed from a commit this transaction
+    /// cannot see. The snapshot used is returned so the caller can keep it.
+    pub async fn compile_where(
+        &self,
+        req: &Request,
+        checked: Option<Arc<crate::registry::Dynamic>>,
+    ) -> Result<CompiledWhere> {
+        let dynamic = match checked {
+            Some(dynamic) => dynamic,
+            None => {
+                let current = self.registry.dynamic();
+                match &req.python_signals {
+                    Some(python) if self.registry.agrees_with_python(python, &current.signals) => {
+                        tracing::trace!(
+                            target: "odoo_kernel::signal",
+                            "the caller's Python registry sees this snapshot's watermark; not reading it"
+                        );
+                        current
+                    }
+                    _ => self.check_signaling().await?,
+                }
+            }
+        };
+        let snapshot = dynamic.clone();
         let env = self.build_env(req, dynamic).await?;
         let model = self.registry.get(&req.model)?;
         let rules = if env.su {
@@ -1288,7 +1359,18 @@ impl<'a> Orm<'a> {
             None => refuse!("compile_where: unexpected clause after FROM: {rest}"),
         };
         let values: Vec<sea_query::Value> = values.0.into_iter().map(|v| v.0).collect();
-        crate::write::to_odoo_dialect(fragment, &values)
+        let (fragment, params) = crate::write::to_odoo_dialect(fragment, &values)?;
+        let touched = env
+            .touched
+            .lock()
+            .map(|set| set.iter().cloned().collect())
+            .unwrap_or_default();
+        Ok(CompiledWhere {
+            fragment,
+            params,
+            touched,
+            snapshot,
+        })
     }
 
     fn validate_shape(req: &Request) -> Result<()> {
@@ -1380,7 +1462,8 @@ impl<'a> Orm<'a> {
             env.company_id,
             env.active_test,
         );
-        let ctx = ctx.with_tz(env.comparand_tz.clone());
+        let mut ctx = ctx.with_tz(env.comparand_tz.clone());
+        ctx.touched = env.touched.clone();
         if env.su {
             ctx
         } else {
@@ -1429,6 +1512,7 @@ impl<'a> Orm<'a> {
             // the field itself; a domain that does opts out of active_test
             if !referenced.iter().any(|f| f == active_name) {
                 implicit_active = true;
+                ctx.touch(&model.name, active_name);
                 cond = cond.add(col(&model.table, active_name).is_in([true]));
             }
         }
