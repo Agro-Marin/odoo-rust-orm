@@ -771,6 +771,9 @@ def test_web_spec_plan() -> None:
         (["name", "partner_id", "user_id", "tag_ids"], ["partner_id", "user_id"]),
     )
     check("unknown field refuses", plan(M(), {"nope": {}}), None)
+    # a refused plan says why, or the gate log reads it as "call shape"
+    check("...and records why", orm_shim._GATE_TL.reason, "unknown field nope")
+    orm_shim._GATE_TL.reason = None
     check(
         "m2o with extra sub-field refuses",
         plan(M(), {"partner_id": {"fields": {"display_name": {}, "email": {}}}}),

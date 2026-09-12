@@ -852,31 +852,35 @@ def _web_clean(model):
     return ok
 
 
+def _no_plan(reason) -> None:
+    _refuse(reason)
+
+
 def _web_spec_plan(model, specification):
     fields, many2ones = [], []
     for name, spec in specification.items():
         f = model._fields.get(name)
         if f is None:
-            return None
+            return _no_plan(f"unknown field {name}")
         spec = spec or {}
         if not isinstance(spec, dict):
-            return None
+            return _no_plan(f"{name}: specification is not a dict")
         if f.type in READ_SKIP_TYPES:
-            return None
+            return _no_plan(f"{name}: {f.type} is read in python")
         if name != "display_name" and not (f.store or f.related):
-            return None
+            return _no_plan(f"{name} is computed and not stored")
         if f.type == "many2one":
             if "context" in spec:
-                return None
+                return _no_plan(f"{name}: specification carries a context")
             sub = spec.get("fields")
             if sub is not None and not (
                 isinstance(sub, dict) and set(sub) == {"display_name"}
             ):
-                return None
+                return _no_plan(f"{name}: sub-fields other than display_name")
             many2ones.append(name)
         elif f.type in ("one2many", "many2many"):
             if spec:
-                return None
+                return _no_plan(f"{name}: x2many with a sub-specification")
         fields.append(name)
     return fields, many2ones
 
@@ -987,17 +991,19 @@ def _read_reorder(ids, records, load):
 
 def _name_search_clean(model):
     key = _cache_key(model, "ns")
-    cached = _GATE_CACHE.get(key)
-    if cached is not None:
-        return cached
-    cls = type(model.sudo())
-    ok = (
-        cls.name_search is _BASE_METHODS["name_search"]
-        and cls._search_display_name is _BASE_METHODS["_search_display_name"]
-        and _display_ok(model)
-    )
-    _GATE_CACHE[key] = ok
-    return ok
+    reason = _GATE_CACHE.get(key)
+    if reason is None:
+        cls = type(model.sudo())
+        if cls.name_search is not _BASE_METHODS["name_search"]:
+            reason = "name_search overridden in python"
+        elif cls._search_display_name is not _BASE_METHODS["_search_display_name"]:
+            reason = "_search_display_name overridden in python"
+        elif not _display_ok(model):
+            reason = "display_name computed in python"
+        else:
+            reason = ""
+        _GATE_CACHE[key] = reason
+    return not reason or _refuse(reason)
 
 
 def _restamp(new, orig):
@@ -1356,7 +1362,11 @@ def install():
             count_limit=None,
         ):
             plan = None
-            if _web_clean(self):
+            if not _web_clean(self):
+                _refuse("web read hooks overridden in python")
+            elif not specification:
+                _refuse("empty specification")
+            else:
                 plan = _web_spec_plan(self, specification)
             if (
                 plan
