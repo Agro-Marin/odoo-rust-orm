@@ -379,12 +379,12 @@ fi
 # The statement the port composes, against the statement the FORK composes,
 # with no database involved: `test_shims.py` and `kernel/tests/pure.rs` each
 # derive the contract file independently, and this is the half that asks Odoo.
-out=$("${T[@]}" "$PY" "$ROOT/harness/update_sql_contract.py" 2>&1); rc=$?
+out=$("${T[@]}" "$PY" "$ROOT/harness/write_sql_contract.py" 2>&1); rc=$?
 if [ "$rc" = 0 ]; then
-  stage "update sql contract" OK "$(printf '%s' "$out" | grep -E '^CONTRACT' | head -1)"
-elif timed_out "$rc"; then stage "update sql contract" FAIL "$expired"
+  stage "write sql contract" OK "$(printf '%s' "$out" | grep -E '^CONTRACT' | head -1)"
+elif timed_out "$rc"; then stage "write sql contract" FAIL "$expired"
 else
-  stage "update sql contract" FAIL "$(printf '%s' "$out" | grep -E '^CONTRACT' | head -1)"
+  stage "write sql contract" FAIL "$(printf '%s' "$out" | grep -E '^CONTRACT' | head -1)"
 fi
 
 # The only stage that compares what the SERVER SENDS rather than what a

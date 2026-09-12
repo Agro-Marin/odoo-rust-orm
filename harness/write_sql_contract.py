@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Compose `update_rows`' statement with the FORK's backend, for the contract.
+"""Compose the port's write statements with the FORK's backend, for the contract.
 
-`update_sql_contract.json` is read by two tests -- `test_shims.py` here and
-`kernel/tests/pure.rs` in the kernel -- so that the statement the kernel
-composes and the statement Odoo composes are pinned to one literal rather than
-to copies of each other. This module is the half that asks Odoo.
+`write_sql_contract.json` is read by two tests -- `test_shims.py` here and
+`kernel/tests/pure.rs` in the kernel -- so that the statements the kernel
+composes for `update_rows` and `create_rows` and the statements Odoo composes
+are pinned to one literal rather than to copies of each other. This module is
+the half that asks Odoo.
 
-    harness/update_sql_contract.py            print what the fork composes now
-    harness/update_sql_contract.py --update   rewrite the contract file
+    harness/write_sql_contract.py            print what the fork composes now
+    harness/write_sql_contract.py --update   rewrite the contract file
 
 `--update` is for an INTENDED change to the fork's composition: it makes the
 Python test green again and the Rust one red until the kernel is taught the
@@ -23,7 +24,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _env
 
-CONTRACT = pathlib.Path(_env.harness_dir()) / "update_sql_contract.json"
+CONTRACT = pathlib.Path(_env.harness_dir()) / "write_sql_contract.json"
 
 
 def load():
@@ -32,11 +33,19 @@ def load():
 
 
 class _Cursor:
+    # `create_rows` takes the COPY strategy for ten rows or more unless the
+    # cursor is in a pipeline; the contract is about its INSERT, so it says it
+    # is, and the row count stops deciding which statement is composed.
+    in_pipeline = True
+
     def __init__(self):
         self.seen = []
 
     def execute(self, sql):
         self.seen.append((sql.code, sql.params))
+
+    def fetchall(self):
+        return []
 
 
 class _Env:
@@ -69,8 +78,13 @@ class _Field:
     def __repr__(self):
         return "Field(%s)" % self.name
 
+    def convert_to_column_insert(self, value, *_args, **_kwargs):
+        return value
+
 
 class _Model:
+    _name = "res.partner"
+
     def __init__(self, table, fields):
         self._table = table
         self._fields = fields
@@ -97,6 +111,21 @@ def compose(contract, case):
     return model.env.cr.seen[-1][0]
 
 
+def compose_insert(contract, case):
+    from odoo.orm.runtime.backend import PostgresBackend
+
+    fields = {
+        name: _Field(name, spec["cast"], spec["translate"])
+        for name, spec in contract["fields"].items()
+    }
+    model = _Model(contract["table"], fields)
+    columns = list(case["columns"])
+    col_fields = [fields[name] for name in columns]
+    stored_list = [dict.fromkeys(columns, "?") for _ in range(case["rows"])]
+    PostgresBackend().create_rows(model, stored_list, columns, col_fields)
+    return model.env.cr.seen[-1][0]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -107,11 +136,12 @@ def main():
     sys.path.insert(0, str(pathlib.Path(_env.workspace()) / "odoo"))
     contract = load()
     drift = []
-    for case in contract["cases"]:
-        got = compose(contract, case)
-        if got != case["sql"]:
-            drift.append(case["name"])
-        case["sql"] = got
+    for key, composer in (("cases", compose), ("insert_cases", compose_insert)):
+        for case in contract[key]:
+            got = composer(contract, case)
+            if got != case["sql"]:
+                drift.append(case["name"])
+            case["sql"] = got
     if args.update:
         with CONTRACT.open("w") as fh:
             json.dump(contract, fh, indent=2, ensure_ascii=False)
@@ -127,7 +157,10 @@ def main():
             "the fork composes something else now; --update after deciding it is intended"
         )
         return 1
-    print("CONTRACT OK (%d cases)" % len(contract["cases"]))
+    print(
+        "CONTRACT OK (%d cases)"
+        % (len(contract["cases"]) + len(contract["insert_cases"]))
+    )
     return 0
 
 

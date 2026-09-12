@@ -113,7 +113,7 @@ class RustBackend:
     #: Methods this backend may answer without the delegate. Adding a name
     #: here is the arming step, and it is deliberately separate from writing
     #: the implementation: an implementation with no verification stays off.
-    NATIVE: frozenset = frozenset({"update_rows"})
+    NATIVE: frozenset = frozenset({"update_rows", "create_rows"})
 
     __slots__ = ("_delegate",)
 
@@ -152,7 +152,13 @@ class RustBackend:
         return self._delegate.supports_translation_terms
 
     def create_rows(self, model, stored_list, columns, col_fields):
-        _delegated("create_rows", "not implemented natively")
+        if "create_rows" not in self.NATIVE:
+            _delegated("create_rows", "not armed")
+        else:
+            ids = _create_rows_native(model, stored_list, columns, col_fields)
+            if ids is not None:
+                _count("native", "create_rows")
+                return ids
         return self._delegate.create_rows(model, stored_list, columns, col_fields)
 
     def update_rows(self, model, fnames, rows) -> None:
@@ -318,6 +324,84 @@ def _update_rows_native(model, fnames, rows) -> bool:
         env.cr.execute(sql, params)
         _count("native", shape)
     return True
+
+
+def _create_rows_native(model, stored_list, columns, col_fields):
+    """Run the kernel's `INSERT` for these rows, or return None to delegate.
+
+    Only the INSERT strategy. `PostgresBackend.create_rows` sends ten rows or
+    more as a binary `COPY` unless the cursor is in a pipeline, and that path
+    is the cursor's: it preallocates the ids, resolves the column type OIDs and
+    streams the rows, all through `RustCopy`, which already encodes the stream
+    in Rust and is verified by `harness/copy_path.py`. The decision is taken
+    with the fork's own constants so the two strategies split exactly where
+    Python splits them.
+
+    The values are converted by the fork's own `_prepare_insert_rows`: a
+    translated or company-dependent column's jsonb is decided by
+    `convert_to_column_insert`, which reads the environment's language and
+    company, and that is Python's to decide.
+    """
+    from odoo.libs.sql.builder import SQL
+    from odoo.orm.runtime.backend import (
+        COPY_DISABLED,
+        COPY_THRESHOLD,
+        PostgresBackend,
+    )
+
+    env = model.env
+    cr = env.cr
+    if (
+        not COPY_DISABLED
+        and col_fields
+        and len(stored_list) >= COPY_THRESHOLD
+        and not cr.in_pipeline
+    ):
+        _delegated("create_rows", "COPY strategy: the cursor owns it")
+        return None
+    kernel = _kernel(env)
+    if kernel is None:
+        _delegated("create_rows", "no kernel in this process")
+        return None
+    if getattr(env.registry, "registry_sequence", None) not in (
+        None,
+        kernel.registry_sequence,
+    ):
+        _delegated("create_rows", "the registry moved under this kernel")
+        return None
+
+    if col_fields:
+        rows = PostgresBackend._prepare_insert_rows(
+            model, stored_list, columns, col_fields
+        )
+        params = []
+        for row in rows:
+            for value in row:
+                # `SQL` inlines an `SQL` value as code and expands a tuple
+                # into a parenthesised list, so neither is ONE parameter. No
+                # column converter returns either today; one that starts to
+                # would change the statement's shape, which is the delegate's.
+                if isinstance(value, (SQL, tuple)):
+                    _delegated(
+                        "create_rows",
+                        "a converted value is %s, not a parameter"
+                        % type(value).__name__,
+                    )
+                    return None
+                params.append(value)
+        insert_columns = list(columns)
+    else:
+        params = []
+        insert_columns = []
+
+    try:
+        sql = kernel.insert_rows_sql(model._name, insert_columns, len(stored_list))
+    except (KernelRefused, KernelRegistryStale) as exc:
+        _delegated("create_rows", str(exc))
+        return None
+
+    cr.execute(sql, params or None)
+    return [id_ for (id_,) in cr.fetchall()]
 
 
 _INSTALLED = None

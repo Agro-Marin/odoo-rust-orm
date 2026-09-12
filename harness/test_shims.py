@@ -1650,21 +1650,28 @@ def test_the_port_only_arms_for_the_database_it_was_built_for() -> None:
         backend.DBNAME = None
 
 
-def test_the_fork_still_composes_the_update_the_contract_pins() -> None:
+def test_the_fork_still_composes_the_writes_the_contract_pins() -> None:
     # The other half of `kernel/tests/pure.rs::the_kernel_composes_the_update_
     # the_forks_backend_composes`. That one asks the kernel; this one asks the
     # FORK, so the statement is derived twice and neither derivation is
     # checked against a copy of itself. A fork that starts composing something
     # else fails HERE, and stays failing in Rust until the kernel is taught it.
     _odoo()
-    import update_sql_contract
+    import write_sql_contract
 
-    contract = update_sql_contract.load()
-    check("the contract names cases", bool(contract["cases"]), True)
+    contract = write_sql_contract.load()
+    check("the contract names update cases", bool(contract["cases"]), True)
+    check("the contract names insert cases", bool(contract["insert_cases"]), True)
     for case in contract["cases"]:
         check(
             "the fork composes %r" % case["name"],
-            update_sql_contract.compose(contract, case),
+            write_sql_contract.compose(contract, case),
+            case["sql"],
+        )
+    for case in contract["insert_cases"]:
+        check(
+            "the fork composes %r" % case["name"],
+            write_sql_contract.compose_insert(contract, case),
             case["sql"],
         )
 
@@ -1676,7 +1683,8 @@ def test_the_port_arms_only_what_the_contract_covers() -> None:
     # it; a method armed without one fails this.
     backend = _backend()
     verified_by = {
-        "update_rows": "harness/update_sql_contract.json, both derivations",
+        "update_rows": "harness/write_sql_contract.json, both derivations",
+        "create_rows": "write_sql_contract.json insert_cases; write_path.py creates",
     }
     unverified = sorted(set(backend.RustBackend.NATIVE) - set(verified_by))
     check(
@@ -1721,6 +1729,163 @@ def test_a_column_group_the_kernel_refuses_falls_through_to_the_delegate() -> No
         "no kernel in this process" in stats["reasons"],
         True,
     )
+
+
+class _InsertField:
+    def __init__(self, name, convert=None) -> None:
+        self.name = name
+        self._convert = convert
+
+    def convert_to_column_insert(self, value, *_args, **_kwargs):
+        return self._convert(value) if self._convert else value
+
+
+class _InsertCursor:
+    def __init__(self, in_pipeline=False) -> None:
+        self.in_pipeline = in_pipeline
+        self.executed = []
+
+    def execute(self, sql, params=None) -> None:
+        self.executed.append((sql, params))
+
+    def fetchall(self):
+        return []
+
+
+class _InsertModel:
+    _name = "res.partner"
+
+    def __init__(self, cr) -> None:
+        class _Env:
+            pass
+
+        self.env = _Env()
+        self.env.cr = cr
+        self.env.registry = type("R", (), {"registry_sequence": 7})()
+
+
+class _InsertKernel:
+    registry_sequence = 7
+
+    def __init__(self) -> None:
+        self.asked = []
+
+    def insert_rows_sql(self, model, columns, row_count):
+        self.asked.append((model, list(columns), row_count))
+        return "INSERT %d" % row_count
+
+
+def test_create_rows_splits_its_strategies_where_the_fork_does() -> None:
+    # Ten rows or more outside a pipeline are COPY, which the cursor owns and
+    # the port delegates; the same ten inside a pipeline are INSERT, which the
+    # kernel composes. The split reads the fork's own constants, so a change to
+    # COPY_THRESHOLD moves both sides together -- this pins that it does.
+    backend = _backend()
+    _odoo()
+    from odoo.orm.runtime.backend import COPY_DISABLED, COPY_THRESHOLD
+
+    if COPY_DISABLED:
+        raise unittest.SkipTest(
+            "ODOO_DISABLE_COPY is set, so there is no COPY strategy"
+        )
+    kernel = _InsertKernel()
+    backend.KERNEL_FOR = lambda _env: kernel
+    columns = ["name"]
+    fields = [_InsertField("name")]
+    try:
+        for in_pipeline, count, want in (
+            (False, COPY_THRESHOLD, "delegated"),
+            (True, COPY_THRESHOLD, "native"),
+            (False, COPY_THRESHOLD - 1, "native"),
+        ):
+            backend.reset_stats()
+            kernel.asked.clear()
+            cr = _InsertCursor(in_pipeline)
+            got = backend._create_rows_native(
+                _InsertModel(cr), [{"name": "x"}] * count, columns, fields
+            )
+            label = "%d rows, in_pipeline=%s" % (count, in_pipeline)
+            if want == "delegated":
+                check(label + " delegates", got, None)
+                check(label + " never asks the kernel", kernel.asked, [])
+                check(
+                    label + " says why",
+                    backend.stats()["reasons"],
+                    {"COPY strategy: the cursor owns it": 1},
+                )
+            else:
+                check(
+                    label + " asks the kernel",
+                    kernel.asked,
+                    [("res.partner", columns, count)],
+                )
+                check(label + " runs one statement", len(cr.executed), 1)
+                check(label + " binds one value per row", len(cr.executed[0][1]), count)
+    finally:
+        backend.KERNEL_FOR = None
+
+
+def test_create_rows_delegates_a_value_that_is_not_one_parameter() -> None:
+    # `SQL` inlines an SQL value as code and expands a tuple into a list, so
+    # neither is a single `%s`. The kernel's statement assumes one per value,
+    # and a converter returning either would change the statement's shape.
+    backend = _backend()
+    _odoo()
+    from odoo.libs.sql.builder import SQL
+
+    kernel = _InsertKernel()
+    backend.KERNEL_FOR = lambda _env: kernel
+    try:
+        for odd in (SQL("DEFAULT"), (1, 2)):
+            backend.reset_stats()
+            cr = _InsertCursor()
+            got = backend._create_rows_native(
+                _InsertModel(cr),
+                [{"name": "x"}],
+                ["name"],
+                [_InsertField("name", convert=lambda _v, odd=odd: odd)],
+            )
+            name = type(odd).__name__
+            check("a %s value delegates" % name, got, None)
+            check("and nothing ran", cr.executed, [])
+            check(
+                "and the reason names it",
+                any(name in reason for reason in backend.stats()["reasons"]),
+                True,
+            )
+    finally:
+        backend.KERNEL_FOR = None
+
+
+def test_an_extension_older_than_the_port_does_not_stop_the_engine_arming() -> None:
+    # The addon and the engine_py extension are versioned apart, and the venv
+    # carries a build that predates the port. Arming used to call
+    # install_backend() unguarded between installing the shims and arming the
+    # registry hook, so that extension left a server half armed. Every case
+    # below must return normally and leave the port uninstalled.
+    addon = _addon()
+
+    class _Config(dict):
+        pass
+
+    class _OrmShim:
+        KERNEL = None
+
+    class _NoPort:
+        __file__ = "old/engine_py.so"
+
+    class _BrokenPort:
+        def install_backend(self):
+            raise RuntimeError("the embedded port source failed to import")
+
+    for label, engine, config in (
+        ("an extension without the port", _NoPort(), _Config()),
+        ("a port that raises while installing", _BrokenPort(), _Config()),
+        ("the port switched off", _NoPort(), _Config(rust_engine_port="off")),
+    ):
+        addon._STATE["port"] = None
+        addon._arm_port(engine, _OrmShim(), config, "db")
+        check("%s leaves the port uninstalled" % label, addon._STATE["port"], None)
 
 
 if __name__ == "__main__":

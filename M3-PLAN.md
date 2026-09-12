@@ -1450,7 +1450,15 @@ it cost — a `threading.Lock` around the delegation counter, which serialised
 every `fetch` and `search` in the process and surfaced as an intermittent
 browser-tour failure rather than as a slow number.
 
-Not started, and the order the port's own counters suggest: `create_rows`
-(the other half of the write path), then `fetch` and `search`, which between
-them are the great majority of what the port currently delegates and are the
-two that would let the method-level shim retire.
+Landed the same day: `create_rows` on its INSERT strategy. The COPY strategy
+stays delegated on purpose -- it is the cursor's, already encoded by
+`RustCopy` -- so the write path's two statements are both kernel-composed and
+the third way rows arrive is Rust end to end already. `unlink_rows` is the
+remaining write, and it is not a statement: it collects `ir.model.data` and
+`ir.attachment` rows and runs the company-dependent `ir.default` cleanup,
+which is ORM work the port would have to call back into.
+
+Not started, and the order the port's own counters suggest: `fetch` and
+`search`, which between them are the great majority of what the port
+currently delegates and are the two that would let the method-level shim
+retire.

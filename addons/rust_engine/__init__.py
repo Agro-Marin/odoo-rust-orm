@@ -404,6 +404,47 @@ def _apply_config(orm_shim, config) -> None:
         orm_shim.BREAKER = DEFAULT_BREAKER
 
 
+def _arm_port(engine_py, orm_shim, config, db_name) -> None:
+    """Install the persistence port, or leave `env.backend` as the fork built it.
+
+    Nothing here may abort `start()`. By the time it runs the db shim and the
+    method routing are already installed, and the registry hook is armed only
+    AFTER it: an exception here once left a server with the shims in and no
+    hook to publish a kernel -- half armed, and reported only as a CRITICAL
+    "Couldn't load module rust_engine" line. It was reached through an
+    `engine_py` older than this addon, the venv's copy predating the port,
+    which every odoo-bin run without `PYTHONPATH` on the fresh build imports.
+    The addon and the extension are versioned apart, so an older extension is
+    a state to serve through, not an error.
+    """
+    if str(config.get("rust_engine_port", "on")).strip().lower() == "off":
+        return
+    install_backend = getattr(engine_py, "install_backend", None)
+    if install_backend is None:
+        _logger.warning(
+            "rust_engine: the engine_py extension at %s predates the persistence "
+            "port; env.backend stays the fork's own. Rebuild it to serve writes "
+            "natively",
+            getattr(engine_py, "__file__", "?"),
+        )
+        return
+    try:
+        port = install_backend()
+        port.KERNEL_FOR = lambda env: (
+            orm_shim.KERNEL
+            if orm_shim._bound_db(env) and orm_shim._ensure_kernel(env)
+            else None
+        )
+        port.install(dbname=db_name)
+    except Exception:
+        _logger.exception(
+            "rust_engine: could not install the persistence port; env.backend "
+            "stays the fork's own and the rest of the engine is armed as usual"
+        )
+        return
+    _STATE["port"] = port
+
+
 def start() -> None:
     from odoo.tools import config
 
@@ -472,15 +513,7 @@ def start() -> None:
         _apply_config(orm_shim, config)
         orm_shim.install()
 
-        if str(config.get("rust_engine_port", "on")).strip().lower() != "off":
-            port = engine_py.install_backend()
-            port.KERNEL_FOR = lambda env: (
-                orm_shim.KERNEL
-                if orm_shim._bound_db(env) and orm_shim._ensure_kernel(env)
-                else None
-            )
-            port.install(dbname=db_name)
-            _STATE["port"] = port
+        _arm_port(engine_py, orm_shim, config, db_name)
 
         capture_path = config.get("rust_engine_capture") or os.environ.get(
             "RUSTORM_CAPTURE"

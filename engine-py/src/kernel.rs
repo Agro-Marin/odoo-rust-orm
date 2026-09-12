@@ -125,6 +125,25 @@ impl RustKernel {
         Ok((sql, repeats))
     }
 
+    /// The `INSERT` `PostgresBackend.create_rows` would run on its INSERT
+    /// strategy, composed from this kernel's registry. Returned, not executed,
+    /// for the same reason as `update_rows_sql`.
+    #[pyo3(signature = (model, columns, row_count))]
+    fn insert_rows_sql(
+        &self,
+        model: &str,
+        columns: Vec<String>,
+        row_count: usize,
+    ) -> PyResult<String> {
+        if self.stale.load(Ordering::Acquire) {
+            return Err(KernelRegistryStale::new_err(
+                odoo_kernel::orm::RegistryStale.to_string(),
+            ));
+        }
+        odoo_kernel::write::insert_rows_sql(&self.registry, model, &columns, row_count)
+            .map_err(from_kernel)
+    }
+
     /// The registry sequence this kernel was built from, so a caller can
     /// refuse to use it against a Python registry that has moved.
     #[getter]

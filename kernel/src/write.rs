@@ -10,7 +10,7 @@
 //!
 //! The contract is BYTE equality with Python's composition, not equivalence:
 //! an equivalent statement that read differently in `--log-sql` would be a
-//! second dialect to keep in step. `harness/update_sql_contract.json` holds
+//! second dialect to keep in step. `harness/write_sql_contract.json` holds
 //! the text and two tests derive it independently -- `tests/pure.rs` from
 //! here, `harness/test_shims.py` from the fork's own `PostgresBackend` -- so
 //! neither side is checked against a copy of itself.
@@ -160,4 +160,56 @@ pub fn update_rows_sql(
             ))
         }
     }
+}
+
+/// The `INSERT` `PostgresBackend.create_rows` runs when it does not take the
+/// `COPY` strategy, with `%s` where Python's `SQL` leaves a parameter.
+///
+/// The values are converted in Python (`convert_to_column_insert` decides a
+/// translated or company-dependent column's jsonb), so nothing here depends on
+/// what a column holds; what the kernel decides is that every column NAMED is
+/// a column this registry knows the table to have. A column added by an
+/// upgrade the kernel was not rebuilt for refuses instead of reaching
+/// PostgreSQL as an error mid-create.
+///
+/// No columns is the shape Odoo gives a record created with nothing stored:
+/// one `DEFAULT` per row in the id column.
+pub fn insert_rows_sql(
+    registry: &Registry,
+    model_name: &str,
+    columns: &[String],
+    row_count: usize,
+) -> Result<String> {
+    let model = registry.get(model_name)?;
+    if row_count == 0 {
+        refuse!("create_rows: no rows");
+    }
+    let table = ident(&model.table);
+    if columns.is_empty() {
+        let values = vec!["(DEFAULT)"; row_count].join(", ");
+        return Ok(format!(
+            "INSERT INTO {table} (\"id\") VALUES {values} RETURNING \"id\""
+        ));
+    }
+    for column in columns {
+        let field = model.fields.get(column).ok_or_else(|| {
+            refusal!("create_rows: {model_name} has no field {column} in this registry")
+        })?;
+        if !field.has_column || field.column_cast.is_none() {
+            refuse!(
+                "create_rows: {} has no declared column cast in this registry",
+                field.name
+            );
+        }
+    }
+    let names = columns
+        .iter()
+        .map(|c| ident(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let row = format!("({})", vec!["%s"; columns.len()].join(", "));
+    let values = vec![row; row_count].join(", ");
+    Ok(format!(
+        "INSERT INTO {table} ({names}) VALUES {values} RETURNING \"id\""
+    ))
 }

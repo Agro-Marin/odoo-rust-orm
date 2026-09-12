@@ -13,7 +13,7 @@ against Python's answer, and runtime contracts check the effects a response-JSON
 comparison cannot see.
 
 The read path is the stage that is built, measured and serving; the write path
-has started, at the fork's own persistence port and with one statement on it
+has started, at the fork's own persistence port, with the update and the insert on it
 (see "The persistence port" below). **Coexistence is the migration mechanism,
 not the destination**: while it lasts Python stays authoritative for registry
 metadata, extension hooks, cache/compute state and write orchestration, Rust
@@ -2634,6 +2634,19 @@ is delegated without ever being asked, so an implementation with nothing
 verifying it stays off. `rust_engine_port = off` leaves `env.backend` exactly
 as the fork built it.
 
+**The addon and the extension are versioned apart, and the first commit of the
+port forgot it.** It called `engine_py.install_backend()` unguarded, after the
+method shims were installed and before the registry hook was armed. The venv
+carries an `engine_py.so` built before the port existed, and every `odoo-bin`
+run without `PYTHONPATH` on a fresh build imports that one -- which includes
+every session using the shared workspace conf. Those servers logged
+`CRITICAL Couldn't load module rust_engine` and ran half armed. A peer session
+reported the `AttributeError` and was told it was a rebuild in progress; it
+was this. Two battery stages that generate their corpora through plain
+`odoo-bin` failed on it later, which is what found it. An extension without
+the port, or a port that raises while installing, now logs one warning and
+the rest of the engine arms as before.
+
 ### `update_rows`
 
 The first armed method is a write, and it is the bottom of every `write()` in
@@ -2669,14 +2682,14 @@ see the first's row locks in the order Python takes them.
 
 ### How a write is verified, given that a wrong one does not raise
 
-`harness/update_sql_contract.json` holds the statement text, and two tests
+`harness/write_sql_contract.json` holds the statement text, and two tests
 derive it independently: `kernel/tests/pure.rs` asserts the kernel composes
 it, and `harness/test_shims.py` drives the **fork's own** `PostgresBackend`
 against a stub model and asserts it composes the same thing. One literal,
 derived twice -- so neither derivation is checked against a copy of itself. A
 fork that starts composing something else fails on the Python side and stays
 failing on the Rust side until the kernel is taught it, which is the order
-the two should move in; `update_sql_contract.py --update` is the
+the two should move in; `write_sql_contract.py --update` is the
 regeneration step for an intended change.
 
 The contract is BYTE equality, not equivalence. An equivalent statement that
@@ -2700,6 +2713,62 @@ holding one can never BE uniform, because its update value is a
 path on which that three-parameter binding runs is a NULL on every row, which
 the harness reaches by clearing a column. Built for one occurrence instead,
 the id array lands inside the `CASE`.
+
+### `create_rows`
+
+The second armed method is the other half of the write path, and it is
+narrower than `update_rows` on purpose. `PostgresBackend.create_rows` has two
+strategies. Ten rows or more, outside a pipeline, go as a binary `COPY`: the
+cursor preallocates the ids, resolves each column's type OID and streams the
+rows, and with the db shim installed that stream is already encoded by
+`RustCopy` and verified by `harness/copy_path.py`. Everything else is one
+`INSERT ... VALUES ... RETURNING "id"`, and that statement is what the kernel
+now composes.
+
+So the port delegates the `COPY` strategy and says so, with the reason
+`COPY strategy: the cursor owns it`. The split is taken from the fork's own
+`COPY_THRESHOLD`, `COPY_DISABLED` and `cr.in_pipeline`, so a change to the
+threshold moves both sides together rather than leaving the kernel composing
+creates Python sends as `COPY`. The one create above the threshold the kernel
+does compose is the one inside a pipeline, where `COPY` cannot run.
+
+The values are still converted by the fork: `_prepare_insert_rows` runs
+`convert_to_column_insert`, which decides a translated or company-dependent
+column's jsonb from the environment's language and company. What the kernel
+decides is that every column named is one this registry knows the table to
+have, so a column added by an upgrade it was not rebuilt for refuses instead
+of failing mid-create. A converted value that is an `SQL` object or a tuple is
+delegated too. `SQL` inlines the first as code and expands the second into a
+list, so neither is the single parameter the statement binds. No converter
+returns either today, and a check costs nothing against the day one does.
+
+A record created with nothing stored is `INSERT INTO t ("id") VALUES
+(DEFAULT), ...`, and the contract pins that form alongside the others.
+
+Its verification is the same pair. `write_sql_contract.json`, renamed from
+the update-only file it started as, carries insert cases the fork's
+`create_rows` and the kernel each derive. `harness/write_path.py` gained
+creates, and they check something the update legs never had to: **the id
+pairing.** `create()` pairs the ids `RETURNING` hands back with the values it
+sent, in order, and fills the cache from that pairing. An id list in the
+wrong order would give every record its neighbour's values in the cache while
+the table stayed right, and no read-back over an id range would see it. So
+each created record is read back by its own id and compared with the case it
+came from, on the columns a create stores verbatim.
+
+The first run of that check reported fourteen mismatches, and every one was
+the check. `comment` on `res.partner` is Html, so the sanitizer wraps it in
+`<p>`; `partner_latitude` is a rounded numeric that reads back as a `Decimal`.
+The `COPY` leg, which the kernel never touches, showed the identical
+fourteen, and that is what said so: a difference present on the path the
+change does not reach is not the change's. Those two columns are now compared
+against the Python control, where both legs went through the same conversion.
+
+```
+create of 5                 INSERT   native
+create of 12                COPY     delegated, reason reported
+create of 12 in a pipeline  INSERT   native
+```
 
 ### Counting every call cost a browser tour
 
@@ -2740,8 +2809,12 @@ Every delegated call is counted with its reason, so the port reports its own
 coverage. One `write_path` run, which is a handful of creates and writes:
 
 ```
-native     update_rows 6
-delegated  fetch 40   search 39   create_rows 4   as_query 1
+before create_rows   native     update_rows 6
+                     delegated  fetch 40   search 39   create_rows 4   as_query 1
+
+after                native     update_rows 6   create_rows (every INSERT)
+                     delegated  fetch 40   search 39   as_query 1
+                                create_rows only on the COPY strategy
 ```
 
 That is the map for what moves next, and it is a different map from the
@@ -2765,7 +2838,7 @@ between here and there, in the order the evidence says to take it:
 4. The write path, flush and the dependency graph — the remaining half of the
    ORM, and the one that makes Python's copy removable rather than merely
    bypassed. **Started**: `update_rows`, the statement every `write()` ends
-   in, is composed by the kernel and runs through the fork's own
+   in, and the `INSERT` strategy of `create_rows` are composed by the kernel and runs through the fork's own
    `StorageBackend` port rather than through a patched method. The section
    below says what that port is and why it is the seam the rest of this step
    should arrive on.

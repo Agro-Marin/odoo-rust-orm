@@ -297,6 +297,160 @@ else:
         if langs is not None
     )
 
+# --------------------------------------------------------------------------
+# create_rows
+#
+# The same comparison for creates, and here the ids matter as much as the
+# values: `create()` pairs the ids `INSERT ... RETURNING "id"` hands back with
+# the values it sent, in order, and fills the cache from that pairing. An id
+# list in the wrong order gives every record its neighbour's values in the
+# cache while the table is right, which no read-back by id range would see.
+# So each record is read back BY ITS OWN ID and compared with the case it was
+# created from.
+#
+# Five rows take the INSERT strategy, which the kernel composes. Twelve take
+# COPY, which the cursor owns: that leg must DELEGATE, and says so, because a
+# create_rows counted native for a COPY would mean the strategy split moved.
+# --------------------------------------------------------------------------
+
+
+def create_leg(tag, count):
+    model = env["res.partner"]  # noqa: F821
+    vals = [
+        dict(CASES[i % len(CASES)], name="%s-%s-%d" % (RUN, tag, i))
+        for i in range(count)
+    ]
+    recs = model.create(vals)
+    env.cr.flush()  # noqa: F821
+    env.cr.commit()  # noqa: F821
+    return vals, recs
+
+
+def by_id(recs):
+    import psycopg
+
+    cols = ", ".join(COLUMNS)
+    with psycopg.connect(conninfo) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, %s FROM res_partner WHERE id = ANY(%%s)" % cols,
+            (list(recs.ids),),
+        )
+        return {row[0]: row[1:] for row in cur.fetchall()}
+
+
+# The columns a create stores exactly as given. `comment` is Html, so the
+# sanitizer wraps it, and `partner_latitude` is a rounded numeric that reads
+# back as a Decimal: both are converted by the ORM before either strategy sees
+# them, so comparing them to the INPUT tests the converter, not the write.
+# They are compared against the python control below instead, where both legs
+# went through the same conversion. `name` is unique per record, which is what
+# makes this the check on the id pairing.
+VERBATIM = ("name", "ref", "color", "is_company")
+
+
+def check_created(label, vals, recs):
+    stored = by_id(recs)
+    if len(stored) != len(vals):
+        failures.append(
+            "%s: %d rows stored for %d created" % (label, len(stored), len(vals))
+        )
+        return
+    for id_, want in zip(recs.ids, vals, strict=True):
+        got = stored.get(id_)
+        if got is None:
+            failures.append("%s: id %d was returned and not stored" % (label, id_))
+            continue
+        got = dict(zip(COLUMNS, got, strict=True))
+        failures.extend(
+            "%s: id %d column %s holds %r, created from %r"
+            % (label, id_, col, got[col], want[col])
+            for col in VERBATIM
+            if got[col] != want[col]
+        )
+
+
+for small, strategy in ((5, "INSERT"), (12, "COPY")):
+    port.reset_stats()
+    vals, recs = create_leg("create%d" % small, small)
+    after = port.stats()
+    native = after["native"].get("create_rows", 0)
+    print(
+        "WRITE create of %d (%s): native create_rows %d, reasons %r"
+        % (
+            small,
+            strategy,
+            native,
+            {k: v for k, v in after["reasons"].items() if "COPY" in k or "create" in k},
+        )
+    )
+    check_created("create of %d" % small, vals, recs)
+    if strategy == "INSERT" and not native:
+        failures.append(
+            "a create of %d rows never reached the kernel's INSERT: %r"
+            % (small, after["reasons"])
+        )
+    if strategy == "COPY":
+        if native:
+            failures.append(
+                "a create of %d rows was answered natively instead of by COPY" % small
+            )
+        if not after["reasons"].get("COPY strategy: the cursor owns it"):
+            failures.append(
+                "a create of %d rows did not report the COPY delegation: %r"
+                % (small, after["reasons"])
+            )
+
+# Twelve rows INSIDE a pipeline: the fork takes the INSERT strategy there
+# whatever the row count, because COPY cannot run in pipeline mode. It is the
+# one create above the threshold the kernel composes, and the one place the
+# strategy split is decided by the cursor's state rather than the row count.
+port.reset_stats()
+model = env["res.partner"]  # noqa: F821
+piped_vals = [
+    dict(CASES[i % len(CASES)], name="%s-piped-%d" % (RUN, i)) for i in range(12)
+]
+with env.cr.pipeline():  # noqa: F821
+    piped = model.create(piped_vals)
+env.cr.flush()  # noqa: F821
+env.cr.commit()  # noqa: F821
+after_piped = port.stats()
+print(
+    "WRITE create of 12 in a pipeline: native create_rows %d, reasons %r"
+    % (after_piped["native"].get("create_rows", 0), after_piped["reasons"])
+)
+check_created("create of 12 in a pipeline", piped_vals, piped)
+if not after_piped["native"].get("create_rows"):
+    failures.append(
+        "a create of 12 rows in a pipeline did not reach the kernel's INSERT: %r"
+        % (after_piped["reasons"],)
+    )
+
+# the same creates with the port disarmed, compared row for row with the armed
+# ones -- the control for anything the by-id check above cannot see, such as a
+# column the ORM fills in on its own
+armed = port.RustBackend.NATIVE
+port.RustBackend.NATIVE = frozenset()
+try:
+    port.reset_stats()
+    control_vals, control_recs = create_leg("control", 5)
+finally:
+    port.RustBackend.NATIVE = armed
+port.reset_stats()
+native_vals, native_recs2 = create_leg("armed", 5)
+if not port.stats()["native"].get("create_rows"):
+    failures.append("the armed control leg never reached the kernel")
+armed_rows = [by_id(native_recs2)[i] for i in native_recs2.ids]
+control_rows = [by_id(control_recs)[i] for i in control_recs.ids]
+for index, (a, b) in enumerate(zip(armed_rows, control_rows, strict=True)):
+    for col, x, y in zip(COLUMNS, a, b, strict=True):
+        if col == "name":
+            x, y = x.replace("-armed-", "-"), y.replace("-control-", "-")
+        if x != y:
+            failures.append(
+                "created row %d column %s: native %r python %r" % (index, col, x, y)
+            )
+print("WRITE created rows compared with the python control: %d" % len(armed_rows))
+
 print("WRITE %s" % ("OK" if not failures else "FAILED (%d)" % len(failures)))
 for line in failures:
     print("  WRITE MISMATCH %s" % line)

@@ -2930,7 +2930,7 @@ fn ordering_by_a_company_dependent_many2one_reads_it_out_of_its_jsonb() {
 // ---------------------------------------------------------------------------
 // The write path's statement composition
 //
-// `harness/update_sql_contract.json` holds the statement text, and TWO tests
+// `harness/write_sql_contract.json` holds the statement text, and TWO tests
 // read it: this one asserts the kernel composes it, and `test_shims.py`
 // asserts the fork's own `PostgresBackend` composes the same thing from a stub
 // model. One literal, derived twice -- so a change to either composer fails
@@ -2967,8 +2967,8 @@ fn write_registry() -> Registry {
 }
 
 fn contract() -> serde_json::Value {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../harness/update_sql_contract.json");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../harness/write_sql_contract.json");
     serde_json::from_str(&std::fs::read_to_string(&path).expect("the contract file")).unwrap()
 }
 
@@ -2998,6 +2998,50 @@ fn the_kernel_composes_the_update_the_forks_backend_composes() {
             case["sql"].as_str().unwrap(),
             "{}",
             case["name"].as_str().unwrap()
+        );
+    }
+}
+
+#[test]
+fn the_kernel_composes_the_insert_the_forks_backend_composes() {
+    let reg = write_registry();
+    let contract = contract();
+    let cases = contract["insert_cases"].as_array().unwrap();
+    assert!(!cases.is_empty(), "the contract file names no insert case");
+    for case in cases {
+        let columns: Vec<String> = case["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        let rows = case["rows"].as_u64().unwrap() as usize;
+        let got = odoo_kernel::write::insert_rows_sql(&reg, "res.partner", &columns, rows).unwrap();
+        assert_eq!(
+            got,
+            case["sql"].as_str().unwrap(),
+            "{}",
+            case["name"].as_str().unwrap()
+        );
+    }
+}
+
+#[test]
+fn an_insert_naming_a_column_this_registry_lacks_is_refused() {
+    // A column added by an upgrade the kernel was not rebuilt for: refusing
+    // here hands the create to the delegate instead of an error mid-create.
+    let reg = write_registry();
+    for (column, want) in [
+        ("nonesuch", "has no field nonesuch"),
+        ("legacy", "no declared column cast"),
+    ] {
+        let err =
+            odoo_kernel::write::insert_rows_sql(&reg, "res.partner", &[column.to_string()], 1)
+                .unwrap_err()
+                .to_string();
+        assert!(
+            err.contains(want),
+            "{column}: {err} does not mention {want}"
         );
     }
 }
