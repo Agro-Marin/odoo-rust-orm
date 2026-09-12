@@ -27,6 +27,8 @@ fn engine_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(install_shims, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(install_backend, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(export_registry, m)?)?;
+    m.add("__source_crc__", env!("ENGINE_PY_SOURCE_CRC"))?;
+    m.add("__profile__", env!("ENGINE_PY_PROFILE"))?;
     let _ = py;
     Ok(())
 }

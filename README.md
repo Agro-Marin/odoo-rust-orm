@@ -2759,6 +2759,59 @@ bound what they can save at a few percent of a request. The gain is in whole
 calls leaving Python, which is what the method shim does -- once its own
 round trips are paid for.
 
+**The totals hid that routed calls already win.** Each method's line mixed
+the calls the shim served with the calls it refused and handed to Python, so
+a refusal's cost read as the kernel's. The bench now records, per call,
+whether the routed leg reached the kernel, and splits every method into its
+routed and fallback calls; it names the five slowest fallbacks too. On
+committed worktrees:
+
+```
+                     calls   all     routed           fallback
+web_search_read        584   0.93x   484   0.56x      100   1.03x
+web_read_group         286   1.01x   254   1.01x       32   1.04x
+search_read            292   0.62x   252   0.51x       40   1.16x
+web_read               138   1.07x   110   1.04x       28   1.16x
+name_search            230   0.95x   140   0.71x       90   1.08x
+search_count           292   1.00x   260   0.93x       32   1.06x
+all                   1822   0.94x
+```
+
+Four `iap.account.web_search_read` calls of about half a second each are
+most of the `web_search_read` total on both legs. They fall back, and their
+time is `iap.account`'s own `web_read` override, not the ORM's. A fallback
+pays the refused dispatch on top of Python's call, 3 to 16 percent.
+
+## An extension built before its sources is refused
+
+The same bench, run from a shell that imported the venv's `engine_py`, read
+routed `web_read_group` at 4.48x again: the defect fixed two sections above.
+The shims are compiled into the extension with `include_str!`, so a build that
+predates a change to them imports cleanly and serves the old code. The venv's
+copy was a day older than the prefetch fix, and the workspace conf arms routing
+with it.
+
+`engine-py/build.rs` now checksums the sources the extension is built from --
+the workspace manifest and lock, `kernel/src`, `engine-py/src` and the
+embedded Python modules -- into `engine_py.__source_crc__`, with the cargo
+profile in `__profile__`. At startup `rust_engine` computes the same checksum
+over its own checkout and, on a mismatch, an unstamped build or a debug build,
+logs why at ERROR and leaves the server entirely on Python. This is the check
+the fork applies to `odoo_rust`, and for the same reason: an absent extension
+is slow, a stale one is wrong. An addon deployed without its checkout has
+nothing to compare with and arms as before; `RUSTORM_SKIP_FRESHNESS_CHECK=1`
+bypasses it.
+
+```
+venv engine_py.so    refusing to arm for rustorm_o31: ... predates the source stamp
+target/release       rust_engine armed for rustorm_o31 in mode 'on'
+```
+
+Two shim tests pin it. One requires the extension under test to carry the
+checkout's checksum, so the battery's first stage fails by name when
+`target/release` is older than the tree. The other copies the inputs, edits an
+embedded module and requires the build to be refused.
+
 ## A write to `res.users` taints a cursor only through Odoo's own invalidation fields
 
 "Cursor wrote a security model" is the most frequent reason a browser-tour

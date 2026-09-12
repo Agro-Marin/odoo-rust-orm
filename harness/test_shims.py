@@ -1888,6 +1888,84 @@ def test_an_extension_older_than_the_port_does_not_stop_the_engine_arming() -> N
         check("%s leaves the port uninstalled" % label, addon._STATE["port"], None)
 
 
+def test_the_extension_under_test_was_built_from_this_checkout() -> None:
+    # The shims are compiled into engine_py, so every other test here checks
+    # whatever sources the loaded build embedded. build.rs and the addon
+    # checksum the same files two ways; this is where they must agree.
+    if engine_py is None:
+        raise unittest.SkipTest("engine_py is not importable (%s)" % IMPORT_ERROR)
+    addon = _addon()
+    check(
+        "the build's stamp is the checkout's checksum",
+        getattr(engine_py, "__source_crc__", None),
+        addon.source_crc(pathlib.Path(ROOT)),
+    )
+    check("the addon arms this build", addon.stale_extension(engine_py), None)
+
+
+def test_a_stale_extension_is_refused() -> None:
+    import shutil
+    import tempfile
+
+    addon = _addon()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        for name, _suffix in addon.SOURCE_INPUTS:
+            source = pathlib.Path(ROOT) / name
+            if source.is_dir():
+                shutil.copytree(
+                    source, root / name, ignore=shutil.ignore_patterns("__pycache__")
+                )
+            elif source.is_file():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(source, root / name)
+        shutil.copy(
+            pathlib.Path(ROOT) / "engine-py/build.rs", root / "engine-py/build.rs"
+        )
+
+        class _Built:
+            __file__ = "engine_py.so"
+            __source_crc__ = addon.source_crc(root)
+            __profile__ = "release"
+
+        class _Unstamped:
+            __file__ = "engine_py.so"
+
+        class _Debug(_Built):
+            __profile__ = "debug"
+
+        check(
+            "a matching release build arms", addon.stale_extension(_Built, root), None
+        )
+        for label, engine in (
+            ("an unstamped build", _Unstamped),
+            ("a debug build", _Debug),
+        ):
+            check(
+                "%s is refused" % label,
+                addon.stale_extension(engine, root) is not None,
+                True,
+            )
+        shim = root / "engine-py/python/rust_orm_shim.py"
+        shim.write_text(shim.read_text() + "\n")
+        check(
+            "an edit to an embedded Python module refuses the build",
+            "was built from" in (addon.stale_extension(_Built, root) or ""),
+            True,
+        )
+        os.environ[addon.SKIP_FRESHNESS_ENV] = "1"
+        try:
+            check("the bypass arms it", addon.stale_extension(_Built, root), None)
+        finally:
+            del os.environ[addon.SKIP_FRESHNESS_ENV]
+        (root / "engine-py/build.rs").unlink()
+        check(
+            "an addon deployed without its checkout compares nothing",
+            addon.stale_extension(_Unstamped, root),
+            None,
+        )
+
+
 def test_search_is_implemented_and_not_armed() -> None:
     # Native search answers the sweep corpus exactly (harness/search_path.py)
     # and runs slower than the Python it would replace

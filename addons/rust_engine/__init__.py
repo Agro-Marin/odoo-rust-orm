@@ -5,6 +5,7 @@ import os
 import pathlib
 import threading
 import time
+import zlib
 
 _logger = logging.getLogger(__name__)
 
@@ -142,6 +143,68 @@ def _connection_specs(db_name):
 
 
 DEFAULT_TICK = 60
+
+CHECKOUT = pathlib.Path(__file__).resolve().parents[2]
+# the files `engine-py/build.rs` checksums into `__source_crc__`, in its order
+SOURCE_INPUTS = (
+    ("Cargo.toml", ""),
+    ("Cargo.lock", ""),
+    ("kernel/Cargo.toml", ""),
+    ("kernel/src", ".rs"),
+    ("engine-py/Cargo.toml", ""),
+    ("engine-py/src", ".rs"),
+    ("engine-py/python", ".py"),
+)
+SKIP_FRESHNESS_ENV = "RUSTORM_SKIP_FRESHNESS_CHECK"
+
+
+def source_crc(root: pathlib.Path) -> str:
+    files = []
+    for name, suffix in SOURCE_INPUTS:
+        path = root / name
+        if not suffix:
+            files += [path] if path.is_file() else []
+        elif path.is_dir():
+            files += [p for p in path.rglob("*" + suffix) if p.is_file()]
+    blob = b"".join(
+        rel.encode() + b"\0" + path.read_bytes() + b"\0"
+        for rel, path in sorted((p.relative_to(root).as_posix(), p) for p in files)
+    )
+    return f"{zlib.crc32(blob):08x}"
+
+
+def stale_extension(engine_py, root: pathlib.Path = CHECKOUT) -> str | None:
+    """Why this `engine_py` must not serve this checkout, or None.
+
+    The shims are compiled into the extension, so an extension built before a
+    change to them imports cleanly and serves the old code: the workspace
+    venv's copy once routed `web_read_group` at 3.96x Python, a defect its
+    checkout had already fixed. An addon deployed without its checkout has
+    nothing to compare against and is not refused.
+    """
+    if (
+        os.environ.get(SKIP_FRESHNESS_ENV)
+        or not (root / "engine-py/build.rs").is_file()
+    ):
+        return None
+    built = getattr(engine_py, "__source_crc__", None)
+    current = source_crc(root)
+    where = getattr(engine_py, "__file__", "?")
+    rebuild = (
+        f"rebuild with `cargo build --release -p odoo-engine-py` in {root} and "
+        f"install target/release/libengine_py.so as engine_py.so, or set "
+        f"{SKIP_FRESHNESS_ENV}=1"
+    )
+    if built != current:
+        was = (
+            "predates the source stamp" if built is None else f"was built from {built}"
+        )
+        return f"the engine_py at {where} {was}, but {root} is {current}; {rebuild}"
+    profile = getattr(engine_py, "__profile__", None)
+    if profile != "release":
+        return f"the engine_py at {where} is a {profile} build; {rebuild}"
+    return None
+
 
 # The kernel logs below DEBUG, where Python has no level. `engine_py` registers
 # the name, but too late to be selected: Odoo resolves a `--log-handler
@@ -466,6 +529,16 @@ def start() -> None:
             _logger.exception(
                 "rust_engine: the engine_py extension is not importable; "
                 "this server will run entirely on python"
+            )
+            return
+
+        stale = stale_extension(engine_py)
+        if stale:
+            _logger.error(
+                "rust_engine: refusing to arm for %s: %s; "
+                "this server will run entirely on python",
+                db_name,
+                stale,
             )
             return
 
