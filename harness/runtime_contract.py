@@ -497,6 +497,40 @@ print(
     flush=True,
 )
 
+# A write to res.users taints the cursor only through the fields Odoo itself
+# invalidates its user caches for. A preference or an avatar leaves the cursor
+# routable and the answer Python's; a group change still gates it.
+shim.reset_breaker()
+previous_mode, previous_sample = shim.MODE, shim.SAMPLE
+shim.MODE, shim.SAMPLE = "on", 0.0
+try:
+    with env_for() as e:
+        me = e["res.users"].browse(uid)
+        assert "odoobot_state" not in me._get_fields_invalidation()
+        assert "group_ids" in me._get_fields_invalidation()
+        me.write({"signature": "<p>runtime contract</p>"})
+        assert e.cr not in shim.DIRTY_CRS, "a signature write tainted the cursor"
+        routed = shim.STATS["kernel"]
+        answer = e["res.country"].search_read([("code", "=", "BE")], ["name"])
+        assert shim.STATS["kernel"] == routed + 1, (
+            "the read after a harmless write did not route"
+        )
+        shim.MODE = "off"
+        assert answer == e["res.country"].search_read([("code", "=", "BE")], ["name"])
+        shim.MODE = "on"
+        me.write({"group_ids": [(4, e.ref("base.group_partner_manager").id)]})
+        assert e.cr in shim.DIRTY_CRS, "a group write did not taint the cursor"
+        routed = shim.STATS["kernel"]
+        e["res.country"].search_read([("code", "=", "BE")], ["name"])
+        assert shim.STATS["kernel"] == routed, "a read after a group write routed"
+        e.cr.rollback()
+finally:
+    shim.MODE, shim.SAMPLE = previous_mode, previous_sample
+print(
+    "CONTRACT a res.users write taints only through Odoo's own invalidation fields",
+    flush=True,
+)
+
 # Release committed rule/field policy changes before the rest of the corpus.
 with env_for() as e:
     e["ir.rule"].browse(rule_id).unlink()

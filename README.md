@@ -2759,6 +2759,38 @@ bound what they can save at a few percent of a request. The gain is in whole
 calls leaving Python, which is what the method shim does -- once its own
 round trips are paid for.
 
+## A write to `res.users` taints a cursor only through Odoo's own invalidation fields
+
+"Cursor wrote a security model" is the most frequent reason a browser-tour
+read falls back to Python. Every write to `res.users` set it. With the taint's
+cause logged at debug, one run of the eight tour tags read:
+
+```
+28  res.users (group_ids)             6  res.users (company_ids)
+13  res.users (odoobot_state)         6  res.groups (implied_ids)
+12  res.users (image_1920)            6  ir.default (create/unlink)
+12  res.users (create/unlink)         3  res.users (tz)
+ 8  res.company (alias_domain_id)     ... and a tail of name, email, lang
+```
+
+Odoo names the fields whose change invalidates what it caches about a user --
+`res.users._get_fields_invalidation()`: groups, active, lang, tz, companies,
+and the session-token fields, extendable by addons -- and clears its caches on
+exactly those. A write outside that set leaves the rule domains Python answers
+from unchanged, so the kernel's snapshot of the user stays in step with
+Python's. The shim now taints a `res.users` write only when it touches that
+set; creates, unlinks and every other security model taint as before. A
+runtime contract writes a signature and requires the next read to route with
+Python's answer, then writes a group and requires the next read to fall back.
+
+**The tours did not move** (routed 186, share 0.29, before and after), and the
+reason is worth stating: a tour runs its requests inside one test transaction,
+and the test's own setup writes groups and companies, so the cursor is tainted
+by genuine security writes before the harmless ones arrive. In production a
+request is its own transaction; what this changes there is a request that
+writes a preference, an avatar or a presence state and then reads, which a tour
+cannot show.
+
 ## The persistence port, and the first write the kernel owns
 
 Everything above reaches Odoo the same way: `rust_orm_shim` replaces eight

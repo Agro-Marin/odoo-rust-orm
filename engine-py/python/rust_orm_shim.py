@@ -239,6 +239,37 @@ SECURITY_MODELS = frozenset(
 )
 DIRTY_CRS = weakref.WeakSet()
 
+
+def _harmless_user_write(records, vals) -> bool:
+    """A write to res.users that changes nothing Python's security caches read.
+
+    Every write to res.users used to taint the cursor, and in the browser tours
+    that was the largest single reason a read fell back to Python -- through
+    `odoobot_state`, `image_1920`, a notification preference. Odoo itself
+    names the fields whose change invalidates what it caches about a user:
+    `_get_fields_invalidation()` (groups, active, lang, tz, companies, the
+    session-token fields), overridable by addons, and a write outside that set
+    leaves the rule domains Python answers from as they were. The kernel's
+    snapshot of that user can stay in step with it. Creates and unlinks, and
+    every other security model, still taint.
+    """
+    if records._name != "res.users" or not isinstance(vals, dict) or not vals:
+        return False
+    invalidating = getattr(records, "_get_fields_invalidation", None)
+    if invalidating is None:
+        return False
+    touched = set(vals) & set(invalidating())
+    if touched:
+        return False
+    if _gate_logger.isEnabledFor(logging.DEBUG):
+        _gate_logger.debug(
+            "a write to res.users (%s) touches none of its invalidation fields; "
+            "the cursor stays routable",
+            ", ".join(sorted(vals)),
+        )
+    return True
+
+
 _BASE_METHODS = {}
 _GATE_CACHE = {}
 
@@ -1219,6 +1250,8 @@ def install():
     orig_unlink = BaseModel.unlink
 
     def _taint(self, vals=None) -> None:
+        if _harmless_user_write(self, vals):
+            return
         if self._name in SECURITY_MODELS:
             if _gate_logger.isEnabledFor(logging.DEBUG):
                 _gate_logger.debug(
