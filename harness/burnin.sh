@@ -76,6 +76,7 @@ leg() {
   } > "$OUT/leg.conf"
   PYTHONPATH="$OUT/pymod" setsid nohup "$PY" "$ODOO/odoo-bin" -c "$OUT/leg.conf" -d "$DB" \
       > "$log" 2>&1 < /dev/null &
+  local master=$!
   for _ in $(seq 1 120); do ss -ltn | grep -q ":$PORT " && break; sleep 1; done
   # a prefork worker loads the registry on its first request: on a whole-tree
   # database that is a minute, and a bench started before it answers only
@@ -90,8 +91,12 @@ leg() {
   "$PY" "$ROOT/harness/http_bench.py" --port "$PORT" --db "$DB" --password "$PASSWORD" --profile "$PROFILE" \
       --threads "$THREADS" --seconds 30 --warmup 5 --label "warm-$mode" > /dev/null 2>&1 || true
 
+  # The prefork master's children: the HTTP workers, and a cron worker that
+  # reports nothing and is not counted as reporting. These were read out of
+  # werkzeug's per-request log lines, which the fork no longer writes, and a
+  # burn-in that routed 85,000 calls read as one that routed none.
   local workers_pids
-  workers_pids=$(grep -a "werkzeug: 127.0.0.1" "$log" | awk '{print $3}' | sort -u | awk -v n="$WORKERS" 'NR<=n' | paste -sd' ' || true)
+  workers_pids=$(pgrep -P "$master" | paste -sd' ' || true)
   rss() { local t=0 v; for p in $workers_pids; do
             v=$(awk '/VmRSS/{print $2}' "/proc/$p/status" 2>/dev/null); t=$((t + ${v:-0})); done; echo "$t"; }
   conns() { psql -U "${USER:-marin}" -d "$DB" -tAc \
