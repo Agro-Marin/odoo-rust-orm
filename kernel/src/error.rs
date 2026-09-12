@@ -80,6 +80,25 @@ macro_rules! refusal {
         anyhow::Error::new($crate::error::Refusal(reason))
     }};
 }
+/// A refusal whose SITE is supplied by the caller.
+///
+/// A helper that reports why it stopped to a caller that decides whether that
+/// is a refusal cannot use `refusal!`: the site would be the line that wrapped
+/// the message, so every cause the helper has collapses onto one row of the
+/// census. The helper passes `concat!(file!(), ":", line!())` from where it
+/// actually gave up.
+macro_rules! refusal_at {
+    ($site:expr, $($arg:tt)*) => {{
+        let reason = format!($($arg)*);
+        ::tracing::debug!(
+            target: "odoo_kernel::refusal",
+            site = $site,
+            %reason,
+            "refused"
+        );
+        anyhow::Error::new($crate::error::Refusal(reason))
+    }};
+}
 macro_rules! refuse {
     ($($arg:tt)*) => {
         return Err($crate::error::refusal!($($arg)*))
@@ -97,7 +116,7 @@ macro_rules! deny_access {
         return Err(anyhow::Error::new($crate::error::AccessDenied(reason)))
     }};
 }
-pub(crate) use {deny_access, refusal, refuse};
+pub(crate) use {deny_access, refusal, refusal_at, refuse};
 
 #[cfg(test)]
 mod tests {

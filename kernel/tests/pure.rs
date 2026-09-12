@@ -2719,3 +2719,135 @@ fn an_equality_on_a_translated_trigram_field_is_accelerated_too() {
         );
     }
 }
+
+// The reachability walk asks questions the request never asked, and answering
+// them through a form that REFUSES files a refusal per question -- which is
+// what a campaign reads as a capability the kernel lacks. Each question has a
+// non-refusing form, and these pin that the pair agree on every answer: a
+// divergence would either re-fill the census with noise or silently narrow the
+// walk, and the walk deciding fewer comodels means record rules left uncompiled.
+#[test]
+fn the_quiet_registry_lookup_agrees_with_the_demanding_one() {
+    let reg = registry(vec![model(
+        "res.partner",
+        "id",
+        vec![field("name", FieldType::Char)],
+    )]);
+    for name in ["res.partner", "res.users", "", "nope.nope"] {
+        assert_eq!(
+            reg.lookup(name).is_some(),
+            reg.get(name).is_ok(),
+            "the two readers disagree on {name:?}"
+        );
+    }
+    assert_eq!(
+        reg.lookup("res.partner").map(|m| m.name.as_str()),
+        Some("res.partner")
+    );
+}
+
+#[test]
+fn the_quiet_path_walk_agrees_with_the_demanding_one() {
+    let mut partner = model(
+        "res.partner",
+        "id",
+        vec![
+            field("name", FieldType::Char),
+            field("parent_id", FieldType::Many2one),
+        ],
+    );
+    partner.fields.get_mut("parent_id").unwrap().relation = Some("res.partner".into());
+    // a computed field with no column and no related is the shape the walk
+    // meets on `display_name` and on every python-computed field
+    let mut computed = field("is_member", FieldType::Boolean);
+    computed.has_column = false;
+    computed.stored = false;
+    partner.fields.insert("is_member".into(), computed);
+    let reg = registry(vec![partner]);
+    let ctx = ExprCtx::new(&reg, "en_US", 1);
+    let m = reg.get("res.partner").unwrap();
+
+    let paths: Vec<Vec<String>> = [
+        vec!["name"],
+        vec!["parent_id"],
+        vec!["parent_id", "name"],
+        vec!["parent_id", "display_name"],
+        vec!["display_name"],
+        vec!["is_member"],
+        vec!["nope"],
+        vec!["name", "nope"],
+    ]
+    .into_iter()
+    .map(|p| p.into_iter().map(str::to_string).collect())
+    .collect();
+
+    let (mut resolved, mut refused) = (0, 0);
+    for path in &paths {
+        let quiet = ctx.normalize_path_seen(m, path);
+        let demanding = ctx.normalize_path(m, path);
+        if quiet.is_some() {
+            resolved += 1
+        } else {
+            refused += 1
+        }
+        assert_eq!(
+            quiet.is_some(),
+            demanding.is_ok(),
+            "the two readers disagree on {path:?}"
+        );
+        if let (Some(q), Ok(d)) = (quiet, demanding) {
+            assert_eq!(q, d, "they resolved {path:?} differently");
+        }
+    }
+    // a test where every path resolves, or none does, compares nothing
+    assert!(
+        resolved >= 3 && refused >= 2,
+        "resolved {resolved}, refused {refused}"
+    );
+}
+
+#[test]
+fn a_request_naming_no_groupby_is_answered_not_refused() {
+    use odoo_kernel::orm::Request;
+
+    let req = |groupby: serde_json::Value| Request {
+        id: None,
+        registry_sequence: None,
+        model: "res.partner".into(),
+        method: "search_read".into(),
+        domain: json!([]),
+        fields: vec!["name".into()],
+        limit: None,
+        offset: None,
+        order: None,
+        groupby,
+        aggregates: Vec::new(),
+        uid: None,
+        su: false,
+        lang: None,
+        allowed_company_ids: None,
+        groupby_labels: None,
+        active_test: None,
+        x2many_active_test: None,
+        tz: None,
+    };
+
+    // the demanding form refuses a missing groupby because read_group needs
+    // one; the walk is only asking which fields the request mentions
+    assert!(req(json!(null)).groupby_names().is_err());
+    assert!(req(json!(null)).groupby_names_seen().is_empty());
+
+    // and where the demanding form answers, the two must agree
+    for groupby in [
+        json!("country_id"),
+        json!(["country_id", "state_id"]),
+        json!([]),
+    ] {
+        let r = req(groupby.clone());
+        assert_eq!(
+            r.groupby_names().unwrap(),
+            r.groupby_names_seen(),
+            "the two readers disagree on {groupby}"
+        );
+    }
+}

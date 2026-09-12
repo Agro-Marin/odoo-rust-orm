@@ -48,6 +48,26 @@ ODOO="${RUSTORM_ODOO_ROOT:-$WORKSPACE/odoo}"
 PY="${RUSTORM_PYTHON:-$WORKSPACE/p314o19m/bin/python}"
 mkdir -p "$OUT"
 
+# The addon arms for the ONE database `rust_engine_db` names, and a workspace
+# conf that has been armed for a deployment names THAT one -- not the database
+# this battery was pointed at. Every stage needing a routed call then gates on
+# "another database" and reports routed=0: measured on p314o19m.conf armed for
+# `rustorm_5e_scale`, that is `replay gate controls`, `load into odoo` and
+# `copy encoder` failing for a reason that has nothing to do with the code.
+# The tours stage already derived its own conf for exactly this; the rest of
+# the battery gets the same treatment here rather than five stages on.
+if grep -qE '^rust_engine_db *=' "$RUSTORM_ODOO_CONF"; then
+  armed_db=$(sed -nE 's/^rust_engine_db *= *//p' "$RUSTORM_ODOO_CONF" | head -1)
+  if [ "$armed_db" != "$DB" ]; then
+    {
+      grep -vE '^rust_engine_db *=' "$RUSTORM_ODOO_CONF"
+      printf 'rust_engine_db = %s\n' "$DB"
+    } > "$OUT/verify.conf"
+    echo "  note: the conf arms rust_engine for '$armed_db'; this run uses a copy armed for '$DB'"
+    export RUSTORM_ODOO_CONF="$OUT/verify.conf"
+  fi
+fi
+
 # every stage runs under a deadline; rc 124 is what `timeout` returns on expiry
 T=(timeout -k 15 "$STAGE_TIMEOUT")
 timed_out() { [ "$1" = 124 ] || [ "$1" = 137 ]; }

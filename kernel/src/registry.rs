@@ -731,6 +731,16 @@ impl Registry {
             .ok_or_else(|| refusal!("unknown or table-less model {model}"))
     }
 
+    /// `get` as a QUESTION rather than a demand.
+    ///
+    /// The reachability walk asks whether a comodel is in the registry and
+    /// carries on when it is not; that is an answer, not a refusal, and
+    /// routing it through `get` files an `odoo_kernel::refusal` per miss.
+    /// Same reason `domain::parse_nested` exists.
+    pub fn lookup(&self, model: &str) -> Option<&Model> {
+        self.models.get(model)
+    }
+
     /// Every capability flag the routing decision reads, for one model.
     ///
     /// A refused request usually names one of these; printing them together

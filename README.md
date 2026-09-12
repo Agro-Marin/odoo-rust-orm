@@ -375,6 +375,23 @@ harness/verify.sh --db <any odoo database>          # or --quick to skip the swe
 harness/verify.sh --db newdb --build base,mail,account   # create it first
 ```
 
+**A conf that has been armed for a deployment names a DIFFERENT database, and
+the battery used to fail three stages over it.** `rust_engine_db` arms the
+addon for exactly one database; a workspace conf carrying a deployment block
+names that one, not the database `--db` was pointed at. Every stage needing a
+routed call then gates on "another database" and reports `routed=0`, and
+`replay gate controls`, `load into odoo` and `copy encoder` fail for a reason
+that has nothing to do with the code. Measured on `p314o19m.conf` armed for
+`rustorm_5e_scale`. The battery now derives a copy armed for its own database
+and says so on the first line:
+
+```
+note: the conf arms rust_engine for 'rustorm_5e_scale'; this run uses a copy armed for 'rustorm_probe_odoo6b'
+```
+
+The tours stage had always derived its own conf for exactly this reason; the
+rest of the battery does it now too.
+
 | stage | what it proves |
 |---|---|
 | fork contract | every Odoo symbol the shims, the addon and the harness import or patch still exists in the checkout -- no database, no extension, seconds |
@@ -1595,6 +1612,51 @@ net that records what this transaction wrote so the gate can refuse a stale
 read; they swallowed a `TypeError` from an unhashable cursor, which records
 nothing and leaves the gate seeing a clean transaction. That failure now warns,
 because it is more serious than the thing it guards.
+
+### The refusal census, and what it took to make it mean something
+
+`odoo_kernel::refusal` carries the source line, so the backlog is a group-by
+rather than a set of hand-written regexes. Over the 8,254-case sweep on
+base+mail:
+
+```sh
+RUSTORM_LOG=odoo_kernel::refusal=debug,odoo_kernel::access=debug \
+  ./target/release/odoo-poc --db <db> --export <export.json> \
+  run-corpus --file <sweep_corpus.json> 2> census.log
+```
+
+```
+  refusal=1241  access=3464  over 17 sites
+   368  kernel/src/orm.rs      <model> overrides the read path in Python (_search)
+   314  kernel/src/sqlgen.rs   <model> lets an exact match take precedence over display_name
+   176  kernel/src/sqlgen.rs   cannot traverse non-stored <field>
+   138  kernel/src/sqlgen.rs   <model> defines its display name in Python
+    62  kernel/src/sqlgen.rs   the subquery traverses <model>, which defines `_search` in Python
+    …
+```
+
+**The first census read 5,726 refusals and 4,700 of them were not refusals.**
+The reachability walk asks *"does this request name groupby fields?"* and
+*"does this leaf path resolve?"* by calling the demanding form and discarding
+the error — so a plain `search_read` filed one refusal for having no groupby
+(62% of the census) and every `display_name` leaf filed one for not being a
+registry field (19%). The two loudest rows of the work list were the engine
+asking itself questions.
+
+A question gets its own form next to the demand, and neither refuses: `lookup`
+beside `get`, `groupby_names_seen` beside `groupby_names`, `normalize_path_seen`
+beside `normalize_path`, `parse_nested` beside `parse`. 1,241 then, against the
+**1,233** the harness counts through a completely separate path — that agreement
+is what makes the number worth acting on.
+
+Two rules fall out of it, and they are the ones to keep:
+
+- **A corpus that is fully handled must log zero refusals.** That is the null
+  hypothesis, and checking it is what finds a speculative caller.
+- **A helper that reports why it stopped must report WHERE**, as
+  `concat!(file!(), ":", line!())`, and let the caller decide whether that is a
+  refusal (`refusal_at!`). Wrapping it in one `map_err` collapses every cause
+  the helper has onto one row and the census silently loses resolution.
 
 ### Removing the campaign logging
 

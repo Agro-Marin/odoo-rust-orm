@@ -1,4 +1,4 @@
-use crate::error::{deny_access, refusal, refuse};
+use crate::error::{deny_access, refusal, refusal_at, refuse};
 use anyhow::{Context, Result};
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use sea_query::{Alias, Cond, Condition, Expr, ExprTrait, Func, JoinType, Order, Value};
@@ -217,6 +217,29 @@ impl<'a> ExprCtx<'a> {
     }
 
     pub fn normalize_path(&self, model: &Model, path: &[String]) -> Result<Vec<String>> {
+        self.normalize_path_inner(model, path)
+            .map_err(|(site, why)| refusal_at!(site, "{why}"))
+    }
+
+    /// `normalize_path` as a QUESTION: a path that does not resolve is an
+    /// answer, not a refusal.
+    ///
+    /// The reachability walk asks which comodels a domain's leaves traverse
+    /// and skips a leaf it cannot resolve -- `display_name` is not a registry
+    /// field, and a non-stored one cannot be traversed. Routing that through
+    /// the demanding form filed a refusal per such leaf, 19% of a census over
+    /// 8,254 sweep cases. Same reason `domain::parse_nested` exists.
+    pub fn normalize_path_seen(&self, model: &Model, path: &[String]) -> Option<Vec<String>> {
+        self.normalize_path_inner(model, path).ok()
+    }
+
+    /// The walk both forms share. It reports why it stopped as a plain
+    /// message so the caller decides whether that is a refusal.
+    fn normalize_path_inner(
+        &self,
+        model: &Model,
+        path: &[String],
+    ) -> std::result::Result<Vec<String>, (&'static str, String)> {
         let mut out: Vec<String> = path.to_vec();
         let mut model_name = model.name.clone();
         let mut i = 0usize;
@@ -224,18 +247,24 @@ impl<'a> ExprCtx<'a> {
         while i < out.len() {
             guard += 1;
             if guard > 64 {
-                refuse!("related expansion loop at {}.{:?}", model.name, path);
+                return Err((
+                    concat!(file!(), ":", line!()),
+                    format!("related expansion loop at {}.{:?}", model.name, path),
+                ));
             }
-            let m = self.registry.get(&model_name)?;
+            let m = self.registry.lookup(&model_name).ok_or((
+                concat!(file!(), ":", line!()),
+                format!("unknown or table-less model {model_name}"),
+            ))?;
             // display_name is no registry field: as the last segment it is the
             // comodel's own display-name search, compiled by the sub-compiler
             if i + 1 == out.len() && out[i] == "display_name" && i > 0 {
                 break;
             }
-            let field = m
-                .fields
-                .get(&out[i])
-                .ok_or_else(|| refusal!("unknown field {}.{}", model_name, out[i]))?;
+            let field = m.fields.get(&out[i]).ok_or((
+                concat!(file!(), ":", line!()),
+                format!("unknown field {}.{}", model_name, out[i]),
+            ))?;
             if !field.has_column {
                 if let Some(rel) = &field.related {
                     let expansion: Vec<String> = rel.split('.').map(str::to_string).collect();
@@ -248,14 +277,17 @@ impl<'a> ExprCtx<'a> {
                     continue;
                 }
                 if !matches!(field.ttype, FieldType::One2many | FieldType::Many2many) {
-                    refuse!("cannot traverse non-stored {}.{}", model_name, out[i]);
+                    return Err((
+                        concat!(file!(), ":", line!()),
+                        format!("cannot traverse non-stored {}.{}", model_name, out[i]),
+                    ));
                 }
             }
             if i + 1 < out.len() {
-                model_name = field
-                    .relation
-                    .clone()
-                    .ok_or_else(|| refusal!("{}.{} is not relational", model_name, out[i]))?;
+                model_name = field.relation.clone().ok_or((
+                    concat!(file!(), ":", line!()),
+                    format!("{}.{} is not relational", model_name, out[i]),
+                ))?;
             }
             i += 1;
         }

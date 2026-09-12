@@ -171,6 +171,24 @@ pub struct Request {
 }
 
 impl Request {
+    /// The groupby names the request carries, as a QUESTION: none is an answer.
+    ///
+    /// `groupby_names` refuses a missing groupby because `read_group` needs
+    /// one. The reachability walk is asking which fields the request mentions,
+    /// and a `search_read` mentioning none is not a refusal -- routing it
+    /// through the demanding form filed one refusal per non-grouped request,
+    /// 62% of a census over 8,254 sweep cases.
+    pub fn groupby_names_seen(&self) -> Vec<String> {
+        match &self.groupby {
+            Json::String(s) => vec![s.clone()],
+            Json::Array(items) => items
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     pub fn groupby_names(&self) -> Result<Vec<String>> {
         match &self.groupby {
             Json::String(s) => Ok(vec![s.clone()]),
@@ -534,7 +552,7 @@ impl<'a> Orm<'a> {
                     pending.push(parent.clone());
                 }
             }
-            let Ok(model) = self.registry.get(&model_name) else {
+            let Some(model) = self.registry.lookup(&model_name) else {
                 continue;
             };
             let built =
@@ -610,7 +628,7 @@ impl<'a> Orm<'a> {
 
     fn reachable_seeds(&self, req: &Request, env: &Env) -> Result<Vec<String>> {
         let mut out = vec![req.model.clone()];
-        let Ok(model) = self.registry.get(&req.model) else {
+        let Some(model) = self.registry.lookup(&req.model) else {
             tracing::trace!(
                 target: "odoo_kernel::rules",
                 model = %req.model,
@@ -622,12 +640,7 @@ impl<'a> Orm<'a> {
         let bare = |spec: &str| spec.split(':').next().unwrap_or(spec).to_string();
         let mut named: Vec<String> = req.fields.iter().map(|f| bare(f)).collect();
         named.extend(req.aggregates.iter().map(|a| bare(a)));
-        named.extend(
-            req.groupby_names()
-                .unwrap_or_default()
-                .iter()
-                .map(|g| bare(g)),
-        );
+        named.extend(req.groupby_names_seen().iter().map(|g| bare(g)));
         for fname in named {
             if let Some(f) = model.fields.get(&fname)
                 && let Some(co) = &f.relation
@@ -658,7 +671,7 @@ impl<'a> Orm<'a> {
         let mut out = Vec::new();
         for (field_expr, value) in paths {
             let raw: Vec<String> = field_expr.split('.').map(str::to_string).collect();
-            let Ok(path) = ctx.normalize_path(model, &raw) else {
+            let Some(path) = ctx.normalize_path_seen(model, &raw) else {
                 continue;
             };
             let mut m = model;
@@ -666,14 +679,15 @@ impl<'a> Orm<'a> {
                 let Some(f) = m.fields.get(seg) else { break };
                 let Some(co) = &f.relation else { break };
                 out.push(co.clone());
-                let Ok(next) = self.registry.get(co) else {
+                let Some(next) = self.registry.lookup(co) else {
                     break;
                 };
                 m = next;
             }
 
             if let Some(last) = out.last()
-                && let (Ok(co), Some(sub)) = (self.registry.get(last), domain::parse_nested(&value))
+                && let (Some(co), Some(sub)) =
+                    (self.registry.lookup(last), domain::parse_nested(&value))
                 && !matches!(sub, domain::Node::True)
             {
                 out.extend(self.comodels_of_with(ctx, co, &sub));
