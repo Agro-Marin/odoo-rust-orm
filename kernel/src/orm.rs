@@ -1177,11 +1177,14 @@ impl<'a> Orm<'a> {
         let signal_ms = t_signal.elapsed().as_secs_f64() * 1000.0;
         let t_env = std::time::Instant::now();
         let env = self.build_env(req, dynamic).await?;
-        tracing::trace!(
+        // one line per dispatch, so `debug` like the phases in the reader it
+        // precedes -- at `trace` a debug-level run saw the scan phases and not
+        // these, and the two do not add up to the total without them
+        tracing::debug!(
             target: "odoo_kernel::dispatch",
             signal_ms,
             env_ms = t_env.elapsed().as_secs_f64() * 1000.0,
-            "preamble"
+            "preamble: checked the signalling watermark and resolved the identity"
         );
 
         // `_search` checks the ACL before anything else, so a denial on a model

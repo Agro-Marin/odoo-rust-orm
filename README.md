@@ -1550,6 +1550,22 @@ INFO odoo_kernel::export: registry booted             db=… ms=1534.9
 INFO odoo_kernel::export: exported the live registry  bytes=893027 ms=32.5
 ```
 
+**The phases account for the dispatch.** At `debug`, one `search_read` prints
+its whole time budget and the parts sum to the total, so a slow read is
+attributable without a profiler:
+
+```
+dispatch: preamble …                signal_ms=0.251 env_ms=0.768
+scan:     search_read plan …        rules_ms=0.016 cond_ms=0.004
+scan:     search_read read …        main_ms=0.801 decode_ms=0.279 labels_ms=0.001
+                                    x2many_ms=0.012 serialise_ms=0.110
+dispatch: ok                        ms=2.487
+```
+
+2.24 of 2.49 ms named; the remainder is span overhead and the registry lookups.
+Adding a phase to the reader without adding it to that line is what makes the
+sum stop working, so keep them together.
+
 Levels are used consistently: `info` is lifecycle, `debug` is one line per
 operation or decision, `trace` is per-item (per leaf, per name hop, per
 statement). A disabled callsite is an atomic load and a branch, and the field

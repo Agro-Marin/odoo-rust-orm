@@ -352,6 +352,7 @@ impl<'a> Orm<'a> {
         let rows = self.db.query(&sql, &values.as_params()).await?;
         let main_ms = t_main.elapsed().as_secs_f64() * 1000.0;
 
+        let t_decode = std::time::Instant::now();
         let mut cells: Vec<Vec<Json>> = Vec::with_capacity(rows.len());
         for row in &rows {
             let mut rec = Vec::with_capacity(kinds.len() + x2many.len());
@@ -376,6 +377,7 @@ impl<'a> Orm<'a> {
             }
             cells.push(rec);
         }
+        let decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
 
         let mut m2o_columns: std::collections::BTreeMap<String, Vec<usize>> =
             std::collections::BTreeMap::new();
@@ -430,18 +432,27 @@ impl<'a> Orm<'a> {
             .map(|k| k.0.as_str())
             .chain(x2many.iter().map(|f| f.name.as_str()))
             .collect();
+        // The phases account for the whole read: main query, decoding its rows
+        // into JSON, one label query per comodel, one query per x2many, then
+        // the serialisation below. A phase missing from this line is a phase
+        // nobody can attribute a slow read to.
+        let t_serialise = std::time::Instant::now();
+        let json = records_to_json(&names, &cells)?;
         tracing::debug!(
             target: "odoo_kernel::scan",
             model = %model_name,
             rows = cells.len(),
+            bytes = json.len(),
             main_ms,
+            decode_ms,
             labels_ms,
             comodels_labelled,
             x2many_ms,
             x2many_queries = x2many.len(),
+            serialise_ms = t_serialise.elapsed().as_secs_f64() * 1000.0,
             "search_read read"
         );
-        records_to_json(&names, &cells)
+        Ok(json)
     }
 
     async fn display_names(
@@ -1002,6 +1013,7 @@ impl<'a> Orm<'a> {
             "read_group aggregated"
         );
 
+        let t_decode = std::time::Instant::now();
         let mut result: Vec<Vec<Json>> = Vec::new();
         for row in &rows {
             let mut item = Vec::new();
@@ -1058,6 +1070,13 @@ impl<'a> Orm<'a> {
             }
             result.push(item);
         }
+        tracing::debug!(
+            target: "odoo_kernel::scan",
+            model = %model_name,
+            groups = result.len(),
+            ms = t_decode.elapsed().as_secs_f64() * 1000.0,
+            "decoded the group keys and aggregates"
+        );
 
         if labels {
             let t_labels = std::time::Instant::now();
