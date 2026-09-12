@@ -421,7 +421,7 @@ rest of the battery does it now too.
 | concurrency | several identities interleaved across threads, no cache cross-talk |
 | replay | the web tours' own traffic (captured by `rust_engine_capture` during that stage; `RUSTORM_REPLAY` names another file) fed back through the shim in shadow mode: routed share and divergences per (model, method); SKIP only when the tours did not run, FAIL when nothing was compared or an unexpected native/shim error occurred; rolled-back tour identities are reported separately and are not counted as replayed |
 | runtime contracts | real native connections check cache fidelity, SQL-failure recovery and breaker classification, stale exports, and the registry reload hook; required even under `--quick` |
-| many2one access (web) | every user reads stored many2ones through `web_search_read`, `search_read` and `read(load=None)` routed and not; an unreadable target must keep Python's value |
+| every user | every user of the database, archived and other companies' included, reads every table-backed model through each routed method, routed and not: many2ones and x2manys, counts, names, groups |
 | web tours (shadow) | the mail, web and base tours run by `odoo-bin` carrying `rust_engine` in shadow mode against the database: FAIL on a failed tour or a live divergence; reports the routed share and the gate count; SKIP under `--quick` or without `mail` installed (`RUSTORM_TOUR_TAGS` picks another set) |
 | soak | sustained load against `serve` behind a per-run token: the shadow corpus's baseline (`expected.json`) re-asked at every identity it names, plus self-consistency probes at the seeded `other` identity; RSS growth after a warm-up bounded (`RUSTORM_SOAK_RSS_GROWTH`, default 20 %), still healthy after. `--uids` is refused against a server that pins its identity, because the uids would be silently ignored |
 
@@ -2857,12 +2857,21 @@ Handing every many2one to web's resolver was correct and cost the speed:
 routed `web_search_read` went from 0.56x to 1.06x Python. Keeping visible
 labels brings it back to 0.56x.
 
-`harness/web_many2one.py` runs the probe as the battery stage "many2one
-access (web)", `read(load=None)` included. It takes about 22 seconds:
+`harness/web_many2one.py` ran the probe as a battery stage; on the previous
+build it compared 1,778 calls and failed on `res.users` at uid 9 and
+`res.country` at uid 4, and on this build it compared 1,966 with none
+mismatching. It is now `harness/every_user.py`, the stage "every user": the
+same users read every table-backed model through every routed method --
+many2ones and x2manys through `web_search_read`, `search_read` and
+`read(load=None)`, `search_count`, `display_name`, `name_search`,
+`_read_group` and `web_read_group`. In about 40 seconds:
 
 ```
-this build        compared 1,966 over 9 users   0 mismatching
-previous build    compared 1,778 over 9 users   fails: res.users at uid 9, res.country at uid 4, ...
+EVERY USER compared 5053 over 9 users   0 mismatching
+  search_count 588, display_name 426, name_search 397,
+  web_search_read many2one 582, named 582, x2many 254,
+  search_read many2one 509, x2many 258, read load=None 293,
+  _read_group 582, web_read_group 582
 ```
 
 A runtime contract reads Belgium's currency, which a committed
