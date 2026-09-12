@@ -2864,14 +2864,18 @@ mismatching. It is now `harness/every_user.py`, the stage "every user": the
 same users read every table-backed model through every routed method --
 many2ones and x2manys through `web_search_read`, `search_read` and
 `read(load=None)`, `search_count`, `display_name`, `name_search`,
-`_read_group` and `web_read_group`. In about 40 seconds:
+`_read_group` and `web_read_group`. Each user reads in its default context,
+with `active_test=False` and in every other installed language, and a user of
+several companies reads with each allowed alone and all of them in both
+orders, since the first allowed company is `env.company`. In about two and a
+half minutes:
 
 ```
-EVERY USER compared 5053 over 9 users   0 mismatching
-  search_count 588, display_name 426, name_search 397,
-  web_search_read many2one 582, named 582, x2many 254,
-  search_read many2one 509, x2many 258, read load=None 293,
-  _read_group 582, web_read_group 582
+EVERY USER compared 19802 over 9 users in 31 contexts   0 mismatching
+  search_count 2316, display_name 1678, name_search 1579,
+  web_search_read many2one 2286, named 2286, x2many 972,
+  search_read many2one 1983, x2many 984, read load=None 1146,
+  _read_group 2286, web_read_group 2286
 ```
 
 A runtime contract reads Belgium's currency, which a committed

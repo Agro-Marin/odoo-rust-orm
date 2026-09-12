@@ -15,6 +15,11 @@ through `web_search_read`, `search_read` and `read(load=None)`, then
 `web_read_group` on a many2one. Each call runs routing on and then off, in a
 transaction rolled back after each leg, and counts only when the routed leg
 reached the kernel. A stage that compared too little fails.
+
+Each user reads in its default context, with `active_test=False`, and in every
+other installed language; a user of several companies also reads with each
+company allowed alone and with all of them in both orders, since the first is
+`env.company`.
 """
 
 import collections
@@ -24,7 +29,7 @@ import rust_orm_shim
 
 from odoo.exceptions import AccessError, UserError
 
-MIN_COMPARED = 2000
+MIN_COMPARED = 5000
 MANY2ONES = 4
 X2MANYS = 3
 ROWS = 40
@@ -96,18 +101,39 @@ try:
         for name in env.registry  # noqa: F821
         if env[name]._auto and not env[name]._abstract and not env[name]._transient  # noqa: F821
     ]
-    for uid in users:
+    companies = env["res.company"].search([]).ids  # noqa: F821
+    langs = [code for code, _name in env["res.lang"].get_installed()]  # noqa: F821
+    contexts = [
+        (uid, ctx)
+        for uid in users
+        for ctx in (
+            {},
+            {"active_test": False},
+            *({"lang": lang} for lang in langs if lang != "en_US"),
+        )
+    ]
+    # a user of several companies, with each one allowed and in both orders:
+    # the first allowed company is env.company, which rules read
+    for user in env["res.users"].browse(users):  # noqa: F821
+        mine = [c for c in companies if c in user.company_ids.ids]
+        if len(mine) > 1:
+            contexts += [
+                (user.id, {"allowed_company_ids": allowed})
+                for allowed in ([mine[0]], [mine[-1]], mine, mine[::-1])
+            ]
+    for uid, ctx in contexts:
         for name in models:
-            for shape, call in shapes(env(user=uid)[name]).items():  # noqa: F821
+            model = env(user=uid, context=ctx)[name]  # noqa: F821
+            for shape, call in shapes(model).items():
                 routed_answer, routed = leg("on", call)
                 if not routed:
                     continue
                 python_answer, _ = leg("off", call)
                 compared[shape] += 1
                 if routed_answer != python_answer:
-                    mismatched[shape, name] += 1
+                    mismatched[shape, name, repr(ctx)] += 1
                     example.setdefault(
-                        (shape, name),
+                        (shape, name, repr(ctx)),
                         (uid, str(routed_answer)[:200], str(python_answer)[:200]),
                     )
 finally:
@@ -115,7 +141,10 @@ finally:
     rust_orm_shim.set_sample(previous[1])
 
 total = sum(compared.values())
-print("EVERY USER compared %d over %d users: %s" % (total, len(users), dict(compared)))
+print(
+    "EVERY USER compared %d over %d users in %d contexts: %s"
+    % (total, len(users), len(contexts), dict(compared))
+)
 for key, n in mismatched.most_common(20):
     uid, routed_answer, python_answer = example[key]
     print(
