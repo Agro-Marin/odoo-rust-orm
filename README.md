@@ -2977,6 +2977,40 @@ failing only under routing: the cursor-parity residuals -- two pipeline-mode che
 binary COPY type probe, and a KeyboardInterrupt during connection construction
 ```
 
+## The cursor parity gate reaches zero, and could not tell a fixed test from a missing one
+
+Odoo's own cursor suite run against both cursors had three tests failing only
+under the Rust cursor. Two of them were already passing, and the gate could not
+say so. The suite recorded only failures, errors and skips, so a baseline test
+that passed on both legs looked exactly like one the fixture never ran, and the
+branch that reports a fixed entry could never fire. It printed "not exercised by
+this fixture" for a run in which both pipeline tests had passed under both
+cursors. Every test the suite loads is now recorded as ok before failures are
+overlaid.
+
+The pipeline tests pass because the fork changed what they assert. Its
+382726182c1d made `description` and `rowcount` sync inside an entered pipeline,
+so a block's results are answerable from the second statement on. The Rust
+cursor runs every statement immediately and always answered. Pipeline mode is
+still not built, and no test distinguishes that from psycopg any more.
+
+The third was a real disagreement, and wider than the test showed. COPY
+`set_types` asked the encoder whether it could encode a NULL of each type, and
+every type accepts a NULL. Over every base type in `pg_catalog` the Rust copy
+accepted 89 types for which psycopg has no dumper, identically in text and
+binary format, so Odoo's `_can_dump_binary` guard disagreed with the cursor it
+guards. The copy wrapper now asks psycopg's own dumper lookup for the copy's
+format first, which is what psycopg's `Copy.set_types` does.
+
+The Rust leg also broke on the shared conf. It pointed the shim at the test
+database but kept the connection identity the conf had armed for another one,
+so no pool was intercepted and the vacuity guard stopped the run. The battery
+passes a Python-only conf and never saw it.
+
+```
+cursor parity   ran psycopg=382 rust=382   not-ok both=19   ONLY-RUST 3 -> 0
+```
+
 ## `web_read` routes, and labels visible many2one targets in the kernel
 
 A form view loads its record through `web_read`, and only the `read` inside it

@@ -42,6 +42,14 @@ def _keep(suite):
     return out
 
 
+def _cases(suite):
+    for t in suite:
+        if isinstance(t, unittest.TestSuite):
+            yield from _cases(t)
+        else:
+            yield t
+
+
 MODE = os.environ.get("RUSTORM_CURSOR", "psycopg")
 OUT = os.environ.get("RUSTORM_CURSOR_OUT", "/tmp/rustorm_cursor_%s.json" % MODE)
 
@@ -61,6 +69,7 @@ if MODE == "rust":
     rust_db = engine_py.RustDb(conninfo)
     db_shim.RUST_DB = rust_db
     db_shim.CONNINFO = conninfo
+    db_shim.PSYCOPG_CONNINFO = None
     db_shim.install()
 
 import importlib
@@ -75,8 +84,10 @@ detail = {}
 for modname in MODULES:
     mod = importlib.import_module(modname)
     suite = _keep(unittest.TestLoader().loadTestsFromModule(mod))
-    result = unittest.TextTestRunner(verbosity=0, stream=io.StringIO()).run(suite)
     short = modname.rsplit(".", 1)[-1]
+    for case in _cases(suite):
+        outcomes["%s.%s" % (short, case.id().split(".", 3)[-1])] = "ok"
+    result = unittest.TextTestRunner(verbosity=0, stream=io.StringIO()).run(suite)
     # The last traceback line is kept, not the whole trace: it is what
     # classifies a difference as a cursor defect or as a test asserting
     # psycopg's own internals, and a gate that reports only names makes

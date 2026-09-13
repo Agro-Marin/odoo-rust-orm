@@ -2441,6 +2441,11 @@ impl RustCopy {
     fn rowcount(&self) -> i64 {
         self.rows
     }
+
+    #[getter]
+    fn binary(&self) -> bool {
+        self.binary
+    }
 }
 
 const DEFAULT_DB_THREADS: usize = 4;

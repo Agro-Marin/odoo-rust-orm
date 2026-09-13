@@ -249,7 +249,7 @@ class FakeCursor:
             raise NotImplementedError("COPY with parameters")
         INSTALLED["copies"] += 1
         try:
-            return _Copy(self._cnx._rust.copy(sql_text))
+            return _Copy(self._cnx._rust.copy(sql_text), self.connection)
         except RuntimeError as e:
             _raise_pg(e)
 
@@ -267,10 +267,13 @@ class _Copy:
     therefore booked as one that never reached it.
     """
 
-    def __init__(self, rust_copy):
+    def __init__(self, rust_copy, connection=None):
         self._copy = rust_copy
+        self._connection = connection
 
     def set_types(self, types):
+        fmt = psycopg.pq.Format.BINARY if self._copy.binary else psycopg.pq.Format.TEXT
+        psycopg.adapt.Transformer(self._connection).set_dumper_types(types, fmt)
         try:
             return self._copy.set_types(types)
         except RuntimeError as e:
