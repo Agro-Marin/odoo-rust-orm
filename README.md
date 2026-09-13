@@ -2814,6 +2814,11 @@ checkout's checksum, so the battery's first stage fails by name when
 `target/release` is older than the tree. The other copies the inputs, edits an
 embedded module and requires the build to be refused.
 
+`harness/install_engine.sh` builds the extension and installs it into the
+workspace venv by rename, so a running server keeps the file it mapped, then
+asks the addon's own check whether the installed build is fresh. Every change
+to the engine's sources needs it, or servers on the venv serve from Python.
+
 ## Routed `web_search_read` redacted many2one targets `web_read` keeps
 
 `read()` and `web_read` answer a many2one whose target the user may not read

@@ -195,9 +195,8 @@ def stale_extension(engine_py, root: pathlib.Path = CHECKOUT) -> str | None:
     current = source_crc(root)
     where = getattr(engine_py, "__file__", "?")
     rebuild = (
-        f"rebuild with `cargo build --release -p odoo-engine-py` in {root} and "
-        f"install target/release/libengine_py.so as engine_py.so, or set "
-        f"{SKIP_FRESHNESS_ENV}=1"
+        f"run {root}/harness/install_engine.sh, which builds it and installs it "
+        f"into this interpreter, or set {SKIP_FRESHNESS_ENV}=1"
     )
     if built != current:
         was = (
