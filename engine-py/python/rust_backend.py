@@ -37,11 +37,7 @@ _port_logger = logging.getLogger("odoo.rust_kernel.port")
 PROTOCOL_FLAGS = (
     "sequences",
     "columns",
-    "supports_parent_store",
-    "supports_record_rules",
-    "supports_joined_m2m_read",
     "supports_column_scan",
-    "supports_translation_terms",
     "supports_recursive_queries",
 )
 
@@ -51,15 +47,19 @@ PROTOCOL_METHODS = (
     "fetch",
     "search",
     "as_query",
+    "ancestors",
     "descendants",
     "read_group_rows",
     "get_existing_ids",
     "lock_for_update",
     "try_lock_for_update",
     "unlink_rows",
-    "read_m2m_pairs",
     "link_m2m_pairs",
     "unlink_m2m_pairs",
+    "read_m2m_groups",
+    "set_parent_paths",
+    "move_parent_paths",
+    "records_with_parent_changed",
 )
 
 STATS = {
@@ -131,12 +131,6 @@ class RustBackend:
     def delegate(self):
         return self._delegate
 
-    # The support flags describe what the STORAGE can do, and the storage is
-    # the delegate's. Answering differently here would change ORM behaviour
-    # (`supports_parent_store` gates whether `parent_path` is maintained at
-    # all) for a reason that has nothing to do with who computes the SQL.
-    # Sequence storage is a port of its own beside this one, and the port a
-    # transaction uses is the one its row storage lives in.
     @property
     def sequences(self):
         return self._delegate.sequences
@@ -156,24 +150,8 @@ class RustBackend:
         return getattr(self._delegate, name)
 
     @property
-    def supports_parent_store(self) -> bool:
-        return self._delegate.supports_parent_store
-
-    @property
-    def supports_record_rules(self) -> bool:
-        return self._delegate.supports_record_rules
-
-    @property
-    def supports_joined_m2m_read(self) -> bool:
-        return self._delegate.supports_joined_m2m_read
-
-    @property
     def supports_column_scan(self) -> bool:
         return self._delegate.supports_column_scan
-
-    @property
-    def supports_translation_terms(self) -> bool:
-        return self._delegate.supports_translation_terms
 
     def create_rows(self, model, stored_list, columns, col_fields):
         if "create_rows" not in self.NATIVE:
@@ -239,10 +217,6 @@ class RustBackend:
         _delegated("unlink_rows", "not implemented natively")
         return self._delegate.unlink_rows(*args, **kwargs)
 
-    def read_m2m_pairs(self, *args, **kwargs):
-        _delegated("read_m2m_pairs", "not implemented natively")
-        return self._delegate.read_m2m_pairs(*args, **kwargs)
-
     def link_m2m_pairs(self, *args, **kwargs):
         _delegated("link_m2m_pairs", "not implemented natively")
         return self._delegate.link_m2m_pairs(*args, **kwargs)
@@ -250,6 +224,26 @@ class RustBackend:
     def unlink_m2m_pairs(self, *args, **kwargs):
         _delegated("unlink_m2m_pairs", "not implemented natively")
         return self._delegate.unlink_m2m_pairs(*args, **kwargs)
+
+    def read_m2m_groups(self, *args, **kwargs):
+        _delegated("read_m2m_groups", "not implemented natively")
+        return self._delegate.read_m2m_groups(*args, **kwargs)
+
+    def set_parent_paths(self, *args, **kwargs):
+        _delegated("set_parent_paths", "not implemented natively")
+        return self._delegate.set_parent_paths(*args, **kwargs)
+
+    def move_parent_paths(self, *args, **kwargs):
+        _delegated("move_parent_paths", "not implemented natively")
+        return self._delegate.move_parent_paths(*args, **kwargs)
+
+    def records_with_parent_changed(self, *args, **kwargs):
+        _delegated("records_with_parent_changed", "not implemented natively")
+        return self._delegate.records_with_parent_changed(*args, **kwargs)
+
+    def ancestors(self, *args, **kwargs):
+        _delegated("ancestors", "not implemented natively")
+        return self._delegate.ancestors(*args, **kwargs)
 
 
 #: Set by the addon to the same callable `rust_orm_shim` uses, so the port

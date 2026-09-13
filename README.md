@@ -2977,6 +2977,38 @@ failing only under routing: the cursor-parity residuals -- two pipeline-mode che
 binary COPY type probe, and a KeyboardInterrupt during connection construction
 ```
 
+## `web_read` routes, and labels visible many2one targets in the kernel
+
+A form view loads its record through `web_read`, and only the `read` inside it
+was routed: web's `_web_read_resolve_many2one` then ran Python access checks and
+name reads for every many2one, and routed `web_read` stayed at 0.97x Python on
+recorded traffic. The shim now routes `web_read` the way it routes
+`web_search_read`: the kernel reads the ids with active_test off, plain
+many2ones raw, named ones labelled where the target is visible and returned as
+the bare id where it is not, and only those go to web's resolver. A record the
+kernel does not return -- deleted, or hidden by a rule -- falls back, so Python
+raises its own MissingError or AccessError. It is gated like `read`, so a model
+overriding `read` or `_check_access` falls back, and it keeps
+`@api.readonly` and `@versioned_envelope`, whose stamp the fork's
+`web_search_read` now relies on.
+
+```
+recorded traffic       routing off    routing on
+web_read               0.270 s        0.138 s    0.51x   (was 0.97x)
+all 1822 calls         2.721 s        2.049 s    0.75x   (was 0.82x)
+```
+
+The every-user stage reads `web_read` plain, named and on x2manys at every user
+and context: 2,995 of its 23,216 comparisons, none differing.
+
+The same sync added `ancestors`, `read_m2m_groups`, `set_parent_paths`,
+`move_parent_paths` and `records_with_parent_changed` to `StorageBackend`,
+removed `read_m2m_pairs`, and dropped four support flags
+(`supports_parent_store`, `supports_record_rules`, `supports_joined_m2m_read`,
+`supports_translation_terms`). The port's pass-through delegated the new methods
+from the first call; the conformance test named them, and the port now lists
+exactly the fork's protocol again.
+
 ## The fork contract pins behaviour, not only names
 
 `harness/fork_contract.py` checked that every fork name the engine imports or

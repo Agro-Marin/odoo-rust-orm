@@ -1613,6 +1613,72 @@ def install():
 
         WebBase.web_search_read = _api.model(_api.readonly(_versioned(web_search_read)))
 
+        orig_web_read = WebBase.web_read
+
+        def web_read(self, specification):
+            ids = list(self._ids)
+            plan = None
+            if not ids or set(specification) <= {"id"}:
+                _refuse("empty recordset or id-only specification")
+            elif not all(isinstance(i, int) and i > 0 for i in ids):
+                _refuse("unsaved records")
+            elif not _web_clean(self):
+                _refuse("web read hooks overridden in python")
+            else:
+                plan = _web_spec_plan(self, specification)
+            if plan and plan[0] and _gate(self, plan[0], method="read"):
+                fields, many2ones = plan
+                raw, unredacted = _web_split_many2ones(self, specification, many2ones)
+                try:
+                    if not _flush_if_needed(
+                        self.env, self, [("id", "in", ids)], "id", fields
+                    ):
+                        raise KernelRefused("flush failed; not routing")
+                    recs = _dispatch(
+                        self.with_context(active_test=False),
+                        "search_read",
+                        domain=[("id", "in", sorted(set(ids)))],
+                        fields=fields,
+                        offset=0,
+                        limit=None,
+                        order="id",
+                        x2many_active_test=bool(
+                            self.env.context.get("active_test", True)
+                        ),
+                        raw_many2one=raw,
+                        unredacted_many2one=unredacted,
+                    )
+                    STATS["kernel"] += 1
+                    ordered = _read_reorder(
+                        ids, _revive_records(self, recs), "_classic_read"
+                    )
+                    if ordered is None:
+                        raise KernelRefused(
+                            "web_read of records the kernel did not return"
+                        )
+                    result = _web_resolve_many2ones(
+                        self, ordered, specification, raw, unredacted
+                    )
+                    if MODE != "shadow" and not _verify_this_one():
+                        _warm_cache(self, result)
+                        return result
+                except Exception as e:
+                    _record_error(self, e)
+                else:
+                    original = _verified_baseline(
+                        self, "web_read", result, orig_web_read, self, specification
+                    )
+                    _shadow(self, "web_read", result, original)
+                    return original
+            else:
+                _gated(self, "web_read")
+            return orig_web_read(self, specification)
+
+        from odoo.tools.cache_version import versioned_envelope as _versioned_envelope
+
+        WebBase.web_read = _api.readonly(_versioned_envelope(web_read))
+        _WEB_METHODS["web_read"] = WebBase.web_read
+
     orig_read = _BASE_METHODS["read"]
 
     def read(self, fields=None, load="_classic_read"):

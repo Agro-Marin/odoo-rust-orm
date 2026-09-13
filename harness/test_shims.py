@@ -1711,11 +1711,8 @@ def test_the_ports_signatures_match_the_delegates() -> None:
 
 
 class _RecordingDelegate:
-    supports_parent_store = True
-    supports_record_rules = True
-    supports_joined_m2m_read = True
     supports_column_scan = True
-    supports_translation_terms = True
+    supports_recursive_queries = True
 
     def __init__(self) -> None:
         self.calls = []
@@ -1774,9 +1771,13 @@ def test_an_unarmed_port_is_its_delegate() -> None:
         "lock_for_update": (("model",), {"allow_referencing": True}),
         "try_lock_for_update": (("model",), {"allow_referencing": True, "limit": 3}),
         "unlink_rows": (("model", (1,), "Defaults", "Attachment"), {}),
-        "read_m2m_pairs": (("model", "rel", "c1", "c2", [1]), {}),
         "link_m2m_pairs": (("model", "rel", "c1", "c2", [(1, 2)]), {}),
         "unlink_m2m_pairs": (("model", "rel", "c1", "c2", [(1, 2)]), {}),
+        "read_m2m_groups": (("records", "rel", "c1", "c2", "query"), {}),
+        "set_parent_paths": (("model", [1]), {}),
+        "move_parent_paths": (("model", [1], "1/"), {}),
+        "ancestors": (("model", "parent_id", [1]), {}),
+        "records_with_parent_changed": (("model", {1: [2]}), {}),
     }
     check(
         "every protocol method is exercised",
@@ -1810,10 +1811,6 @@ def test_an_unarmed_port_is_its_delegate() -> None:
 
 
 def test_the_port_mirrors_its_delegates_support_flags() -> None:
-    # `supports_parent_store` decides whether the ORM maintains parent_path at
-    # all, and `supports_record_rules` whether it applies them. These describe
-    # the STORAGE, so a port that answered for itself would change ORM
-    # behaviour for a reason unrelated to who builds the SQL.
     backend = _backend()
     _methods, flags = _protocol_members()
     delegate = _RecordingDelegate()

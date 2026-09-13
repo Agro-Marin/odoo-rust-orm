@@ -73,6 +73,10 @@ def shapes(model):
             )["records"],
             "search_read many2one": lambda: model.search_read([], m2o, limit=ROWS),
             "read load=None": lambda: model.browse(ids).read(m2o, load=None),
+            "web_read many2one": lambda: model.browse(ids).web_read(
+                {n: {} for n in m2o}
+            ),
+            "web_read named": lambda: model.browse(ids).web_read(named),
             "_read_group": lambda: [
                 (tuple(row[:-1]), row[-1])
                 for row in model._read_group([], [m2o[0]], ["__count"])
@@ -85,6 +89,9 @@ def shapes(model):
                 [], {n: {} for n in x2m}, limit=ROWS
             )["records"],
             "search_read x2many": lambda: model.search_read([], x2m, limit=ROWS),
+            "web_read x2many": lambda: model.browse(
+                model.sudo().search([], limit=ROWS).ids
+            ).web_read({n: {} for n in x2m}),
         }
     return out
 
