@@ -32,9 +32,13 @@ failures() {
     | sed -E 's/^[^:]+: //' | sort -u
 }
 
+free_port() {
+  "$PY" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'
+}
+
 for leg in off on; do
   PYTHONPATH="$OUT/pymod" "$PY" "$ODOO/odoo-bin" -c "$OUT/$leg.conf" -d "$DB" --test-tags "$TAGS" \
-    --stop-after-init --no-http --db_maxconn=8 > "$OUT/$leg.log" 2>&1
+    --stop-after-init --http-port "$(free_port)" --db_maxconn=16 > "$OUT/$leg.log" 2>&1
   failures "$OUT/$leg.log" > "$OUT/$leg.failures"
 done
 
@@ -50,6 +54,10 @@ if [ -z "$off_line" ] || [ -z "$on_line" ]; then
 fi
 if [ "$refusing" != 0 ] || [ "${routed:-0}" = 0 ]; then
   echo "ORM TESTS FAILED: the routing leg did not route; it ran python twice"; exit 1
+fi
+unavailable=$(grep -ac "INFRASTRUCTURE UNAVAILABLE" "$OUT/on.log")
+if [ "$unavailable" != 0 ]; then
+  echo "ORM TESTS FAILED: $unavailable test class(es) could not run in the routing leg"; exit 1
 fi
 if [ -n "$only_on" ]; then
   echo "ORM TESTS FAILED: failing only under routing:"
