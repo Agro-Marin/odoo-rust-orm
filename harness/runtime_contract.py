@@ -666,6 +666,35 @@ with psycopg.connect(**conninfo, autocommit=True) as watcher:
     assert not alive, "a closed rust connection kept its backend %s open" % backend_pid
 print("CONTRACT closing a rust connection disconnects its backend", flush=True)
 
+pool = dbshim._RustPool(
+    max_size=1, check=lambda conn: conn.execute("SELECT 1").fetchone()
+)
+pool._new_connection = lambda: dbshim.FakeConnection(rust_db.connect())
+with psycopg.connect(**conninfo, autocommit=True) as watcher:
+    victim = pool.getconn()
+    victim_pid = victim.execute("SELECT pg_backend_pid()").fetchone()[0]
+    victim.rollback()
+    pool.putconn(victim)
+    watcher.execute("SELECT pg_terminate_backend(%s)", [victim_pid])
+    for _ in range(50):
+        if victim.closed:
+            break
+        __import__("time").sleep(0.1)
+    assert victim.closed, (
+        "a rust connection whose backend %s was terminated still reads as open"
+        % victim_pid
+    )
+    replacement = pool.getconn(timeout=5)
+    assert replacement is not victim, "the pool lent a connection whose backend is gone"
+    assert replacement.execute("SELECT 1").fetchone()[0] == 1
+    replacement.rollback()
+    pool.putconn(replacement)
+    pool.close()
+print(
+    "CONTRACT a rust connection whose backend dies reads as closed and is not lent again",
+    flush=True,
+)
+
 # Release committed rule/field policy changes before the rest of the corpus.
 with env_for() as e:
     e["ir.rule"].browse(rule_id).unlink()

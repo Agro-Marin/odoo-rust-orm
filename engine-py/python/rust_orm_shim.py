@@ -3,6 +3,8 @@ import contextlib
 import datetime
 import json
 import logging
+import math
+import operator
 import os
 import random
 import threading
@@ -203,12 +205,78 @@ def _verify_this_one():
     return SAMPLE > 0 and _RNG.random() < SAMPLE
 
 
-def _shadow(model, method, kernel_result, python_result) -> None:
-    if kernel_result == python_result:
+def _shadow(model, method, kernel_result, python_result, same=operator.eq) -> None:
+    if same(kernel_result, python_result):
         STATS["shadow_ok"] += 1
         _call_logger.debug("%s.%s verified against python", model._name, method)
         return
     _quarantine(model, method, kernel_result, python_result)
+
+
+ORDER_DEPENDENT_AGGREGATES = frozenset({"sum", "avg"})
+
+
+def _order_dependent_aggregates(model, aggregates):
+    positions = set()
+    for i, spec in enumerate(aggregates):
+        fname, _sep, func = spec.rpartition(":")
+        f = model._fields.get(fname)
+        column_type = getattr(f, "column_type", None)
+        if (
+            func in ORDER_DEPENDENT_AGGREGATES
+            and column_type
+            and column_type[0] == "float8"
+        ):
+            positions.add(i)
+    return positions
+
+
+def _float_aggregates_agree(kernel_value, python_value):
+    if isinstance(kernel_value, float) and isinstance(python_value, float):
+        return math.isclose(kernel_value, python_value, rel_tol=1e-12, abs_tol=1e-9)
+    return kernel_value == python_value
+
+
+def _group_rows_agree(model, groupby, aggregates):
+    order_dependent = {
+        len(groupby) + i for i in _order_dependent_aggregates(model, aggregates)
+    }
+    if not order_dependent:
+        return operator.eq
+
+    def same(kernel_rows, python_rows):
+        return len(kernel_rows) == len(python_rows) and all(
+            len(k) == len(p)
+            and all(
+                _float_aggregates_agree(kv, pv) if i in order_dependent else kv == pv
+                for i, (kv, pv) in enumerate(zip(k, p, strict=True))
+            )
+            for k, p in zip(kernel_rows, python_rows, strict=True)
+        )
+
+    return same
+
+
+def _formatted_groups_agree(model, aggregates):
+    order_dependent = {
+        aggregates[i] for i in _order_dependent_aggregates(model, aggregates)
+    }
+    if not order_dependent:
+        return operator.eq
+
+    def same(kernel_groups, python_groups):
+        return len(kernel_groups) == len(python_groups) and all(
+            k.keys() == p.keys()
+            and all(
+                _float_aggregates_agree(v, p[key])
+                if key in order_dependent
+                else v == p[key]
+                for key, v in k.items()
+            )
+            for k, p in zip(kernel_groups, python_groups, strict=True)
+        )
+
+    return same
 
 
 def _quarantine(model, method, kernel_result, python_result) -> None:
@@ -1401,7 +1469,13 @@ def install():
                     limit=limit,
                     order=order,
                 )
-                _shadow(self, "_read_group", out, original)
+                _shadow(
+                    self,
+                    "_read_group",
+                    out,
+                    original,
+                    _group_rows_agree(self, groupby, aggregates),
+                )
                 return original
         else:
             _gated(self, "_read_group")
@@ -1678,6 +1752,190 @@ def install():
 
         WebBase.web_read = _api.readonly(_versioned_envelope(web_read))
         _WEB_METHODS["web_read"] = WebBase.web_read
+
+        from odoo.addons.web.models import web_read_group as _wrg_mod
+        from odoo.addons.web.models import web_read_group_helpers as _wrg_helpers
+
+        GroupBase = _wrg_mod.Base
+        orig_formatted_read_group = GroupBase.formatted_read_group
+        group_hooks = {
+            name: getattr(holder, name)
+            for holder, names in (
+                (
+                    GroupBase,
+                    ("_web_read_group_format",),
+                ),
+                (
+                    _wrg_helpers.Base,
+                    (
+                        "_web_read_group_get_groupby_formatter",
+                        "_web_read_group_get_field_expand",
+                        "_web_read_group_expand",
+                        "_web_read_group_fill_temporal",
+                    ),
+                ),
+            )
+            for name in names
+        }
+
+        def _group_hooks_clean(model):
+            cls = type(model)
+            return getattr(
+                cls, "formatted_read_group", None
+            ) is GroupBase.formatted_read_group and all(
+                getattr(cls, name, None) is method
+                for name, method in group_hooks.items()
+            )
+
+        def _formatted_group_plan(model, groupby, aggregates, having):
+            if having:
+                return _refuse("having")
+            if not groupby:
+                return _refuse("no groupby")
+            if not _group_hooks_clean(model):
+                return _refuse("read_group formatting hooks overridden in python")
+            fill_temporal = model.env.context.get("fill_temporal")
+            if fill_temporal or isinstance(fill_temporal, dict):
+                return _refuse("fill_temporal")
+            if model._web_read_group_get_field_expand(groupby):
+                return _refuse("group_expand")
+            for aggregate in aggregates:
+                if (
+                    aggregate != "__count"
+                    and aggregate.rsplit(":", 1)[-1] not in AGGREGATE_FUNCS
+                ):
+                    return _refuse(f"aggregate {aggregate}")
+            fields = []
+            for spec in groupby:
+                if ":" in spec or "." in spec or spec == "id":
+                    return _refuse(f"groupby {spec}")
+                field = model._fields.get(spec)
+                if field is None or field.type in (
+                    "many2many",
+                    "date",
+                    "datetime",
+                    "properties",
+                ):
+                    return _refuse(f"groupby {spec}")
+                if field.type == "many2one" and not _kernel_labels(
+                    model.env[field.comodel_name]
+                ):
+                    return _refuse(f"groupby {spec}: labels decided in python")
+                fields.append(field)
+            return fields
+
+        def formatted_read_group(
+            self,
+            domain,
+            groupby=(),
+            aggregates=(),
+            having=(),
+            offset=0,
+            limit=None,
+            order=None,
+        ):
+            groupby = tuple(groupby)
+            aggregates = tuple(
+                agg.replace(":recordset", ":array_agg") for agg in aggregates
+            )
+            if not order:
+                order = ", ".join(groupby)
+            gb_fields = _formatted_group_plan(self, groupby, aggregates, having)
+            if gb_fields and _gate(
+                self, list(groupby), order=order, domain=domain, method="_read_group"
+            ):
+                try:
+                    if not _flush_if_needed(
+                        self.env,
+                        self,
+                        domain,
+                        order,
+                        list(groupby)
+                        + [a.rsplit(":", 1)[0] for a in aggregates if a != "__count"],
+                    ):
+                        raise KernelRefused("flush failed; not routing")
+                    rows = _dispatch(
+                        self,
+                        "read_group",
+                        domain=domain or [],
+                        groupby=list(groupby),
+                        aggregates=list(aggregates),
+                        order=order,
+                        offset=offset or 0,
+                        limit=limit,
+                        groupby_labels=True,
+                        groupby_hidden_labels_empty=True,
+                    )
+                    STATS["kernel"] += 1
+                    agg_fields = [
+                        None
+                        if a == "__count" or a.rsplit(":", 1)[-1] in COUNT_AGGREGATES
+                        else self._fields.get(a.rsplit(":", 1)[0])
+                        for a in aggregates
+                    ]
+                    result = []
+                    for row in rows:
+                        group = {}
+                        extra_domains = []
+                        for spec, field, value in zip(
+                            groupby, gb_fields, row, strict=False
+                        ):
+                            if field.type == "many2one":
+                                value = (value[0], value[1]) if value else False
+                                extra_domains.append(
+                                    [(spec, "=", value[0] if value else False)]
+                                )
+                            else:
+                                value = _revive_temporal(field, value)
+                                extra_domains.append([(spec, "=", value)])
+                            group[spec] = value
+                        group["__extra_domain"] = _wrg_helpers.AND(extra_domains)
+                        for spec, field, value in zip(
+                            aggregates, agg_fields, row[len(groupby) :], strict=False
+                        ):
+                            group[spec] = _revive_temporal(field, value)
+                        result.append(group)
+                    if MODE != "shadow" and not _verify_this_one():
+                        return result
+                except Exception as e:
+                    _record_error(self, e)
+                else:
+                    original = _verified_baseline(
+                        self,
+                        "formatted_read_group",
+                        result,
+                        orig_formatted_read_group,
+                        self,
+                        domain,
+                        groupby,
+                        aggregates,
+                        having=having,
+                        offset=offset,
+                        limit=limit,
+                        order=order,
+                    )
+                    _shadow(
+                        self,
+                        "formatted_read_group",
+                        result,
+                        original,
+                        _formatted_groups_agree(self, aggregates),
+                    )
+                    return original
+            else:
+                _gated(self, "formatted_read_group")
+            return orig_formatted_read_group(
+                self,
+                domain,
+                groupby,
+                aggregates,
+                having=having,
+                offset=offset,
+                limit=limit,
+                order=order,
+            )
+
+        GroupBase.formatted_read_group = _api.model(_api.readonly(formatted_read_group))
 
     orig_read = _BASE_METHODS["read"]
 

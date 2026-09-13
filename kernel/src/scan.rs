@@ -395,10 +395,10 @@ impl<'a> Orm<'a> {
             std::collections::BTreeMap::new();
         let mut keep_hidden_ids: BTreeSet<usize> = BTreeSet::new();
         for (fi, f) in sel_fields.iter().enumerate() {
-            if req.raw_many2one.iter().any(|raw| *raw == f.name) {
+            if req.raw_many2one.contains(&f.name) {
                 continue;
             }
-            if req.unredacted_many2one.iter().any(|name| *name == f.name) {
+            if req.unredacted_many2one.contains(&f.name) {
                 keep_hidden_ids.insert(fi + 1);
             }
             if let ColKind::M2o { comodel } = &kinds[fi + 1].1 {
@@ -638,7 +638,7 @@ impl<'a> Orm<'a> {
         let mut select = Query::select();
         match field.ttype {
             FieldType::One2many => {
-                let inverse = field.o2m_inverse()?;
+                let inverse = field.o2m_inverse_column(&owner.name, comodel)?;
                 select
                     .from(Alias::new(&comodel.table))
                     .expr(col(&comodel.table, inverse))
@@ -1120,9 +1120,20 @@ impl<'a> Orm<'a> {
                     .overridden_for("labels")
                     .is_none();
                 let ids: BTreeSet<i64> = result.iter().filter_map(|r| r[i].as_i64()).collect();
+                if req.groupby_hidden_labels_empty && !pure {
+                    refuse!(
+                        "{comodel} defines its read path in Python, so the kernel cannot \
+                         tell which group labels uid {} may see",
+                        env.uid
+                    );
+                }
                 let names = self.display_names(comodel, &ids, env, &rules).await?;
                 for r in &mut result {
                     let Some(id) = r[i].as_i64() else { continue };
+                    if req.groupby_hidden_labels_empty && !names.contains_key(&id) {
+                        r[i] = json!([id, ""]);
+                        continue;
+                    }
                     let Some(name) = names.get(&id) else {
                         let tail = if pure {
                             "; Python raises AccessError rendering its display name".to_string()

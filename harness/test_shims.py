@@ -458,6 +458,113 @@ def test_breaker_counts_only_unexpected_errors() -> None:
     orm_shim.STATS["errors"].pop("probe.breaker", None)
 
 
+def test_float8_sums_agree_up_to_summation_order_and_nothing_else() -> None:
+    orm_shim = _shims()[1]
+
+    def column(type_, column_type):
+        f = F(type_)
+        f.column_type = (column_type, column_type)
+        return f
+
+    class M:
+        _name = "probe.aggregates"
+        _fields = {
+            "hours": column("float", "float8"),
+            "amount": column("float", "numeric"),
+            "stage_id": column("many2one", "int4"),
+        }
+
+    groupby = ["stage_id"]
+    aggregates = ["hours:sum", "hours:max", "amount:sum", "hours:avg"]
+    same = orm_shim._group_rows_agree(M(), groupby, aggregates)
+    python = [(7, 16.8, 8.4, 16.8, 5.6)]
+    check(
+        "0.1 + 0.2 + 0.3 depends on the order",
+        (repr((0.1 + 0.2) + 0.3), repr(0.1 + (0.2 + 0.3))),
+        ("0.6000000000000001", "0.6"),
+    )
+    check(
+        "a float8 sum and average differing by summation order agree",
+        same([(7, 16.799999999999997, 8.4, 16.8, 5.6000000000000005)], python),
+        True,
+    )
+    check(
+        "a float8 sum off by a whole value does not",
+        same([(7, 17.8, 8.4, 16.8, 5.6)], python),
+        False,
+    )
+    check(
+        "a numeric sum compares exactly",
+        same([(7, 16.8, 8.4, 16.799999999999997, 5.6)], python),
+        False,
+    )
+    check(
+        "max is not order dependent",
+        same([(7, 16.8, 8.400000000000002, 16.8, 5.6)], python),
+        False,
+    )
+    check(
+        "group keys compare exactly", same([(8, 16.8, 8.4, 16.8, 5.6)], python), False
+    )
+    check("a missing group does not agree", same([], python), False)
+    check(
+        "no float8 sum keeps plain equality",
+        orm_shim._group_rows_agree(M(), groupby, ["amount:sum"])
+        is orm_shim.operator.eq,
+        True,
+    )
+
+    formatted = orm_shim._formatted_groups_agree(M(), ["hours:sum", "__count"])
+    python = [
+        {"stage_id": (7, "New"), "__extra_domain": [], "hours:sum": 16.8, "__count": 3}
+    ]
+    check(
+        "formatted groups agree up to summation order",
+        formatted(
+            [
+                {
+                    "stage_id": (7, "New"),
+                    "__extra_domain": [],
+                    "hours:sum": 16.799999999999997,
+                    "__count": 3,
+                }
+            ],
+            python,
+        ),
+        True,
+    )
+    check(
+        "formatted groups compare counts exactly",
+        formatted(
+            [
+                {
+                    "stage_id": (7, "New"),
+                    "__extra_domain": [],
+                    "hours:sum": 16.8,
+                    "__count": 4,
+                }
+            ],
+            python,
+        ),
+        False,
+    )
+    check(
+        "formatted groups compare labels exactly",
+        formatted(
+            [
+                {
+                    "stage_id": (7, ""),
+                    "__extra_domain": [],
+                    "hours:sum": 16.8,
+                    "__count": 3,
+                }
+            ],
+            python,
+        ),
+        False,
+    )
+
+
 def test_native_error_categories_and_shadow_quarantine() -> None:
     orm_shim = _shims()[1]
     from rust_engine_errors import (
@@ -1570,6 +1677,32 @@ def test_pool_drain_retires_borrowed_connections() -> None:
     pool.putconn(fresh)
     pool.close()
     check("close retires idle connections", fresh.closed, True)
+
+
+def test_an_idle_connection_failing_its_check_is_replaced_not_raised() -> None:
+    import psycopg
+
+    shim = _shims()[0]
+    checked = []
+
+    def check_connection(conn):
+        checked.append(conn)
+        if len(checked) == 1:
+            raise psycopg.OperationalError("connection closed")
+
+    pool = shim._RustPool(max_size=1, check=check_connection)
+    pool._new_connection = lambda: shim.FakeConnection(_RustConn())
+    dead = pool.getconn()
+    pool.putconn(dead)
+    replacement = pool.getconn(timeout=1)
+    check("the idle connection was checked", checked[:1], [dead])
+    check("the connection that failed its check is closed", dead.closed, True)
+    check("a fresh connection is handed out instead", replacement is dead, False)
+    check("its slot was not leaked", pool._out, 1)
+    pool.putconn(replacement)
+    check("a connection that passes is reused", pool.getconn() is replacement, True)
+    pool.putconn(replacement)
+    pool.close()
 
 
 def test_a_refused_connection_waits_like_psycopg_pool_then_times_out() -> None:

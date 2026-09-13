@@ -1580,3 +1580,14 @@ The fetches move into the query rather than disappear, and the remaining time
 is web's formatting over the groups. What would move grouped views is routing
 `web_read_group` whole, as `web_search_read` is, which is a larger step than
 the label check.
+
+**Routing it whole did move it** (README, "`web_read_group` routes whole"):
+routed calls went from 0.95x to 0.39x Python, with 0 differences in replay and
+every-user. But the traffic that capture held grouped every model by one
+many2one, and real kanban views do not look like that. Twelve tour classes
+route 0.09 of their calls. What stands in the way is `group_expand` on stage
+columns and `fill_temporal` on graphs, which are the grouping work left, and
+two overrides that rewrite arguments -- `project.task._read_group` renames a
+`triage_id` groupby, `helpdesk.ticket._search` rewrites a `ticket_ref` order --
+which refuse every grouped call on those models because the gate keys on the
+method, not on what the override touches.

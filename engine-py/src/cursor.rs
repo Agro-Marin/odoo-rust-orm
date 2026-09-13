@@ -1939,6 +1939,11 @@ impl RustConn {
     #[getter]
     fn closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
+            || self
+                .client
+                .read()
+                .map(|slot| slot.as_ref().is_none_or(|client| client.is_closed()))
+                .unwrap_or(true)
     }
 }
 

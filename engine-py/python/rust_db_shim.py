@@ -420,7 +420,14 @@ class FakeConnection:
         return contextlib.nullcontext()
 
 
-INSTALLED = {"count": 0, "connects": 0, "reused": 0, "delegated": 0, "copies": 0}
+INSTALLED = {
+    "count": 0,
+    "connects": 0,
+    "reused": 0,
+    "failed_checks": 0,
+    "delegated": 0,
+    "copies": 0,
+}
 
 _IDLE = []
 _IDLE_LOCK = threading.Lock()
@@ -862,8 +869,11 @@ class _RustPool:
                     INSTALLED["count"] += 1
                 else:
                     INSTALLED["reused"] += 1
-                    if self._check is not None:
-                        self._check(conn)
+                    if self._check is not None and not self._passes_check(conn):
+                        with self._cond:
+                            self._out -= 1
+                            self._cond.notify()
+                        continue
                 # psycopg's pool stamps the connection with the pool that
                 # lent it, and Odoo reads it back off `cr._cnx._pool`.
                 conn._pool = self
@@ -876,6 +886,16 @@ class _RustPool:
                     _close_quietly(conn, "checkout failed")
                 raise
             return conn
+
+    def _passes_check(self, conn):
+        try:
+            self._check(conn)
+        except Exception as exc:
+            INSTALLED["failed_checks"] += 1
+            _logger.debug("an idle rust connection failed its check: %s", exc)
+            _close_quietly(conn, "failed its check")
+            return False
+        return True
 
     def putconn(self, conn):
         keep = True

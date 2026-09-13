@@ -172,6 +172,9 @@ pub struct Request {
     #[serde(default)]
     pub groupby_labels: Option<bool>,
 
+    #[serde(default)]
+    pub groupby_hidden_labels_empty: bool,
+
     /// Many2one fields `search_read` returns as the bare foreign key, with no
     /// label query. `web_search_read` resolves a many2one with rules of its
     /// own -- an unreadable target is still its id, not `False` -- and the

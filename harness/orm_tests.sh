@@ -38,7 +38,9 @@ free_port() {
 
 for leg in off on; do
   PYTHONPATH="$OUT/pymod" "$PY" "$ODOO/odoo-bin" -c "$OUT/$leg.conf" -d "$DB" --test-tags "$TAGS" \
-    --stop-after-init --http-port "$(free_port)" --db_maxconn=16 > "$OUT/$leg.log" 2>&1
+    --stop-after-init --http-port "$(free_port)" --db_maxconn=16 \
+    --log-handler odoo.debug.logic.base.ir_qweb_assets_esbuild_circuit:DEBUG \
+    --log-handler odoo.debug.logic.db.errors:DEBUG > "$OUT/$leg.log" 2>&1
   failures "$OUT/$leg.log" > "$OUT/$leg.failures"
 done
 

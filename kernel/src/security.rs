@@ -458,14 +458,8 @@ async fn resolve_name(
         };
         match field.ttype {
             FieldType::One2many if field.stored => {
-                let inverse = field.o2m_inverse()?;
                 let co = registry.get(field.comodel()?)?;
-                if !co.fields.get(inverse).is_some_and(|f| f.has_column) {
-                    refuse!(
-                        "cannot traverse {model_name}.{attr}: its inverse {}.{inverse} is not stored",
-                        co.name
-                    );
-                }
+                let inverse = field.o2m_inverse_column(&model_name, co)?;
                 let sql = format!(
                     "SELECT co.id FROM {} co WHERE co.{} = ANY($1){}",
                     crate::db::ident(&co.table),

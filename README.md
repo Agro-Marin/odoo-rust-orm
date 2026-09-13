@@ -3279,6 +3279,129 @@ request is its own transaction; what this changes there is a request that
 writes a preference, an avatar or a presence state and then reads, which a tour
 cannot show.
 
+## `web_read_group` routes whole
+
+Routed `web_read_group` read 0.95x Python on recorded traffic because only its
+`_read_group` was routed: web then formatted the groups in Python, and a third
+of the call went to deciding which group labels the user may see. The shim now
+answers `formatted_read_group`, the step `web_read_group` builds on, in one
+kernel dispatch: the groups, their aggregates and their many2one labels come
+back together, and the shim assembles web's group dicts -- the value, the
+`__extra_domain` web ANDs from each groupby, the aggregates -- without
+browsing a record.
+
+Python labels a group whose target the user cannot read with `""`, not with an
+error, and names only the visible ones under sudo. The kernel's label step
+refused any id it could not name; `groupby_hidden_labels_empty` asks it for
+Python's answer instead, and it still refuses when the comodel decides its
+read path in Python, where it cannot tell which ids are visible.
+
+What still goes to Python, each for a reason the shim names: `having`; no
+groupby; a model overriding any of web's five formatting hooks;
+`fill_temporal`; a groupby with `group_expand`; date, datetime, many2many,
+properties, dotted or granularity groupbys; a many2one whose comodel's labels
+are decided in Python.
+
+Recorded traffic, best of three rounds, on odoo `3fe945ee5eee`:
+
+```
+                          calls   python    routed
+all traffic                1802   4.265 s   2.639 s   0.62x
+web_read_group              282   0.899 s   0.535 s   0.60x
+  routed                    246   0.632 s   0.247 s   0.39x   (0.95x before)
+```
+
+The shadow replay of the same capture compares 1,502 calls with 0 differences,
+and "every user" compares 4,474 `web_read_group` calls across 6 users and 24
+contexts with 0 mismatches.
+
+**Real grouped views barely route yet, and the capture says why.** The
+capture recorded only the methods the replay already covered, so it now also
+records `formatted_read_group`, `formatted_read_grouping_sets` and
+`read_progress_bar`. Twelve tour classes over project, helpdesk, planning,
+account, hr and knowledge made 26 `web_read_group`, 20 `formatted_read_group`
+and 32 `read_progress_bar` calls -- kanban columns with `auto_unfold`, a stage
+groupby with `group_expand`, progress bars, a burndown graph by `date:week` --
+and the replay of that capture routes 0.09 of its calls, with 0 differences.
+The grouped calls fall back for two reasons in about equal measure:
+
+```
+project.task       web_read_group / formatted_read_group  group_expand; _read_group overridden
+helpdesk.ticket    web_read_group / formatted_read_group  group_expand; _search overridden
+knowledge.article  web_read_group                          group_expand
+burndown report    formatted_read_group date:week          fill_temporal; _read_group overridden
+```
+
+`group_expand` and `fill_temporal` are grouping, and the next steps here. The
+overrides are not access decisions but argument rewrites the gate cannot see
+through: `project.task._read_group` renames a `triage_id` groupby to
+`triage_ids`, and `helpdesk.ticket._search` turns an order by `ticket_ref`
+into one by `id`. Each refuses every grouped call on its model, whatever it
+groups by.
+
+## A computed x2many was read as its inverse
+
+Every-user on the enterprise database found routed `search_read` answering
+`resource.calendar.attendance_ids_1st_week` with every attendance of the
+calendar, where Python answers `[]` for a calendar that is not a two-week one.
+The field is a non-stored one2many computed in Python, and it names
+`calendar_id` as its inverse. The kernel's read planner accepted every x2many,
+and `o2m_inverse()` refused a computed field only when it had no inverse to
+name, so the name alone was enough to read it as the plain relation.
+`m2m_columns()` had the same shape for a computed many2many naming a relation
+table. Both accessors now refuse a non-stored field before looking at its
+relation, so every path that reaches an x2many -- the read, the domain, the
+access traversal -- refuses it.
+
+The same run found `sign.template.web_search_read` failing in PostgreSQL:
+`column sign_item.template_id does not exist`. `sign_item_ids` is a stored
+one2many whose inverse, `sign.item.template_id`, is a non-stored related
+field. `o2m_inverse_column` exists for exactly that case and the domain path
+asked it, but the x2many read path asked `o2m_inverse()`. The read and the
+access traversal now ask `o2m_inverse_column` too, and security.rs's own copy
+of that check is gone.
+
+## A float8 sum is defined only up to summation order
+
+The grouped-view tours quarantined `planning.slot`: `_read_group` summing
+`allocated_hours` per sale line answered 16.8 in Python and
+16.799999999999997 in the kernel. It did not reproduce on a rerun, nor on
+controlled data with the same domain, where both sides agree; Python's
+statement is a plain LEFT JOIN. The difference is PostgreSQL's: `SUM` over
+`float8` adds in the order rows reach the aggregate, SQL does not fix that
+order, and float addition is not associative:
+
+```
+SELECT SUM(h) FROM t                                   0.6
+SELECT SUM(h) FROM (SELECT h FROM t ORDER BY h ASC) s  0.6000000000000001
+```
+
+So Python's own answer is defined only up to the plan, and the shadow check's
+`==` quarantined a model for a difference a changed plan makes in Python alone.
+The routed `_read_group` and `formatted_read_group` now compare `sum` and
+`avg` over a `float8` column within `rel_tol=1e-12, abs_tol=1e-9`. Everything
+else stays exact: numeric columns, `min`, `max`, counts, group keys and
+labels, so the earlier numeric-average defect would still be caught.
+
+## A rust connection whose backend died read as open
+
+The /web differential failed 17 `web_tour` HOOT tests only under the engine.
+The server answered `/web/bundle/web_tour.recorder` with 500: an asset save
+opens an autonomous cursor, the pool lent it an idle rust connection whose
+backend was gone, and the pool's health check raised `connection closed` to
+the request. Two defects lined up. `RustConn.closed` reported an explicit
+`close()` and nothing else, so a tokio-postgres client that had died still
+read as open and `putconn` kept it idle; it now asks the client too, as
+psycopg's `closed` reflects a broken connection. And the shim's pool raised a
+failed check, where `psycopg_pool` closes the connection and hands out another;
+it now does the same and counts `failed_checks`.
+
+A runtime contract lends a connection, terminates its backend from another
+session, and requires the connection to read as closed and the next checkout
+to be a different, working one. The build before this change fails it: `a rust
+connection whose backend 1580705 was terminated still reads as open`. A shim
+unit test covers the check path alone.
+
 ## The persistence port, and the first write the kernel owns
 
 Everything above reaches Odoo the same way: `rust_orm_shim` replaces eight

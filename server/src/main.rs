@@ -304,6 +304,7 @@ async fn main() -> Result<()> {
                 groupby_labels: None,
                 raw_many2one: Vec::new(),
                 unredacted_many2one: Vec::new(),
+                groupby_hidden_labels_empty: false,
                 active_test: no_active_test.then_some(false),
                 x2many_active_test: None,
                 tz: None,

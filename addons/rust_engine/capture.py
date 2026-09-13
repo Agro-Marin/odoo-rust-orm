@@ -13,6 +13,9 @@ CAPTURE_METHODS = frozenset(
         "web_read",
         "read_group",
         "web_read_group",
+        "formatted_read_group",
+        "formatted_read_grouping_sets",
+        "read_progress_bar",
         "name_search",
         "web_name_search",
     }

@@ -159,23 +159,28 @@ impl Field {
             .ok_or_else(|| refusal!("field {} has no comodel", self.name))
     }
 
+    fn computed_x2many_refusal(&self, kind: &str, reads: &str) -> Result<()> {
+        if self.stored {
+            return Ok(());
+        }
+        refuse!(
+            "{kind} {} is computed in Python{}, so its {reads} does not hold its value",
+            self.name,
+            match &self.related {
+                Some(r) => format!(" (related: {r})"),
+                None => String::new(),
+            }
+        )
+    }
+
     pub fn m2m_columns(&self) -> Result<(&str, &str, &str)> {
+        self.computed_x2many_refusal("many2many", "relation table")?;
         match (
             self.relation_table.as_deref(),
             self.column1.as_deref(),
             self.column2.as_deref(),
         ) {
             (Some(t), Some(c1), Some(c2)) => Ok((t, c1, c2)),
-
-            _ if !self.stored => refuse!(
-                "many2many {} is computed in Python{}, so it has no relation \
-                 table to read",
-                self.name,
-                match &self.related {
-                    Some(r) => format!(" (related: {r})"),
-                    None => String::new(),
-                }
-            ),
             _ => refuse!(
                 "many2many {} is stored but its relation table/columns are \
                  missing from the registry",
@@ -243,19 +248,10 @@ impl Field {
     }
 
     pub fn o2m_inverse(&self) -> Result<&str> {
-        match self.relation_field.as_deref() {
-            Some(inv) => Ok(inv),
-            None if !self.stored => refuse!(
-                "one2many {} is computed in Python{}, so it has no inverse \
-                 column to read",
-                self.name,
-                match &self.related {
-                    Some(r) => format!(" (related: {r})"),
-                    None => String::new(),
-                }
-            ),
-            None => refuse!("one2many {} has no inverse field", self.name),
-        }
+        self.computed_x2many_refusal("one2many", "inverse column")?;
+        self.relation_field
+            .as_deref()
+            .ok_or_else(|| refusal!("one2many {} has no inverse field", self.name))
     }
 }
 

@@ -2646,6 +2646,50 @@ fn a_one2many_whose_inverse_has_no_column_is_refused() {
     assert!(sql.contains("partner_id"), "got {sql}");
 }
 
+#[test]
+fn a_computed_x2many_is_refused_even_when_it_names_its_relation() {
+    let mut reg = registry_with_o2m(true);
+    let lines = reg
+        .models
+        .get_mut("res.partner")
+        .unwrap()
+        .fields
+        .get_mut("line_ids")
+        .unwrap();
+    lines.stored = false;
+    let err = lines.o2m_inverse().expect_err("a computed one2many has no inverse to read");
+    assert!(err.to_string().contains("computed in Python"), "{err}");
+    let err = compile_res(&reg, json!([["line_ids.name", "=", "X"]])).expect_err("must refuse");
+    assert!(format!("{err:#}").contains("computed in Python"), "{err:#}");
+
+    let mut reg = base_registry();
+    let companies = reg
+        .models
+        .get_mut("res.partner")
+        .unwrap()
+        .fields
+        .get_mut("company_ids")
+        .unwrap();
+    companies.stored = false;
+    let err = companies
+        .m2m_columns()
+        .expect_err("a computed many2many has no relation table to read");
+    assert!(err.to_string().contains("computed in Python"), "{err}");
+    let err = compile_res(&reg, json!([["company_ids", "!=", false]])).expect_err("must refuse");
+    assert!(format!("{err:#}").contains("computed in Python"), "{err:#}");
+}
+
+#[test]
+fn a_one2many_read_refuses_an_inverse_with_no_column() {
+    let reg = registry_with_o2m(false);
+    let owner = reg.get("res.partner").unwrap();
+    let co = reg.get("res.country").unwrap();
+    let err = owner.fields["line_ids"]
+        .o2m_inverse_column(&owner.name, co)
+        .expect_err("must refuse");
+    assert!(err.to_string().contains("no column to join on"), "{err}");
+}
+
 fn trigram_registry() -> Registry {
     let mut name = field("name", FieldType::Char);
     name.translated = true;
@@ -2867,6 +2911,7 @@ fn a_request_naming_no_groupby_is_answered_not_refused() {
         groupby_labels: None,
         raw_many2one: Vec::new(),
         unredacted_many2one: Vec::new(),
+        groupby_hidden_labels_empty: false,
         active_test: None,
         x2many_active_test: None,
         tz: None,
