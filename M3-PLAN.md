@@ -1472,3 +1472,65 @@ is the method-level question the shim already answers for its RPC calls.
 
 Not started: `fetch`, which with `search` is the great majority of what the
 port delegates.
+
+## Readiness is a differential against Odoo's own suites (2026-09-13)
+
+Installing the engine into the workspace venv put routing under real servers,
+and the question stopped being "does the corpus agree" and became "does Odoo
+still pass". Every test module installed on the probe databases was run twice,
+with no engine and with routing on, and the failure sets diffed by name.
+
+```
+suite                               tests   routed   failing only under routing
+test_orm, test_read_group,           1446       65   0   (was 20 before the fixes)
+  test_access_rights, test_search_panel, test_inherits
+/base                                3951      907   4   cursor-parity residuals
+/web                                  460      417   0
+/mail                                 429       90   0
+/mail controllers over HTTP           167      386   0
+24 smaller modules (ai, auth, bus,    702       61   0
+  iap, sms, web views, ...)
+approval, approval_app, base_install  829       10   0
+```
+
+What that found, none of it visible to the corpora:
+
+- **The Rust cursor was wrong in three ways a type probe did not name**: a
+  tuple inside JSON written as its `str()`, a 20-digit JSON integer read as a
+  float, and `%%` inside a quoted literal sent doubled. All three are
+  psycopg's semantics now, and the type probe carries each shape.
+- **A closed Rust connection kept its backend**, and one suite run exhausted
+  the shared cluster.
+- **Routed answers diverged where Python's rules are not the columns'**: a
+  hidden many2one target through `web_read`, a `_check_access` override behind
+  a label, a text column compared with a number, an html comparand, an unknown
+  timezone.
+- **Odoo itself had defects the differential exposed**: the mail access scans
+  paged without ORDER BY (odoo 5fa7d6ec20c2), and grouped views checked label
+  access once per group (odoo e8be5d08754b, about a third faster with or
+  without the engine).
+
+**The fork moves under the engine.** In one afternoon it added four members to
+`StorageBackend`, dropped a parameter from `unlink_rows`, moved
+`web_search_read` onto `search_fetch` and changed its envelope versioning, and
+added a `_search` override to `mail.followers`. Each broke the port or the shim
+outright on the armed database -- the `unlink_rows` change failed every
+delete. The port now passes through what it only delegates and pins exact
+signatures only where it composes SQL; an unknown protocol member is delegated
+and counted. The shim's gates key on method identity, so an override that
+appears at runtime is seen. The standing defence is running the suites above
+after every sync, which `harness/orm_tests.sh` does for any tag set.
+
+**What the engine does not yet own**, measured on recorded traffic:
+
+- models whose read path is Python -- `_search` overrides on mail.message,
+  mail.followers, mail.activity, ir.attachment, res.groups -- are the largest
+  fallback class, and they are access logic, not queries;
+- record rules evaluated in memory (`_check_access` through `filtered_domain`)
+  are the largest Python cost left in the calls that do route;
+- composing SQL in Python is not: `_field_to_sql` and `Query.select` are under
+  a tenth of a replay, so a native `fetch` would buy a few percent.
+
+The next step toward replacement is therefore access logic, not statements:
+record-rule evaluation for a recordset in the kernel, and the mail access scans
+as kernel-side joins, each verified by the differential above.
