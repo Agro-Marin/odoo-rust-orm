@@ -250,8 +250,10 @@ def export_registry(reg):
       if missing:
           raise RuntimeError(
               "refusing to write an incomplete export: %d of %d table-backed "
-              "models are missing (e.g. %s). The registry was not fully loaded; "
-              "re-run." % (len(missing), len(expected), ", ".join(missing[:3]))
+              "models are missing (e.g. %s). Either the registry was not fully "
+              "loaded, or the database still holds models the code no longer "
+              "defines and its modules need an upgrade (-u)."
+              % (len(missing), len(expected), ", ".join(missing[:3]))
           )
     try:
         from odoo.libs.datetime.tz import TIMEZONE_ALIASES
