@@ -441,7 +441,7 @@ elif [ ! -f "$ROOT/target/release/libengine_py.so" ]; then
   stage "orm test modules" SKIP "no libengine_py.so; cargo build --release"
 else
   out=$(RUSTORM_ORM_TESTS_DIR="$OUT/orm_tests" "${T[@]}" "$ROOT/harness/orm_tests.sh" --db "$RUSTORM_ORM_TEST_DB" 2>&1); rc=$?
-  if [ "$rc" = 0 ]; then stage "orm test modules" OK "$(printf '%s\n' "$out" | grep -a '^ORM TESTS off' | sed 's/ (artifacts.*//' | cut -c11-100)"
+  if [ "$rc" = 0 ]; then stage "orm test modules" OK "$(printf '%s\n' "$out" | grep -a '^ORM TESTS off' | sed 's/ (artifacts.*//' | cut -c11-160)"
   elif timed_out "$rc"; then stage "orm test modules" FAIL "$expired"
   else stage "orm test modules" FAIL "$(printf '%s\n' "$out" | grep -aA2 '^ORM TESTS FAILED' | tr '\n' ' ' | cut -c1-110)"; fi
 fi
