@@ -3022,6 +3022,8 @@ passes under both cursors and the exclusion is gone.
 /base cursor classes, --db_maxconn=8   no engine 1 failed, 6 errors of 25 -> 0 of 25
                                        rust cursor 1 failed of 25 -> 0 of 25
 cursor parity                          383 tests, ONLY-RUST 0, nothing excluded
+/base, 3955 tests                      no engine 5 failed, 18 errors; routing on the same
+                                       5 and 18 by name, routed=916
 ```
 
 ## `web_read` routes, and labels visible many2one targets in the kernel

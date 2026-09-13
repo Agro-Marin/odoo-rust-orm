@@ -1484,7 +1484,7 @@ with no engine and with routing on, and the failure sets diffed by name.
 suite                               tests   routed   failing only under routing
 test_orm, test_read_group,           1450     1360   0   (was 20 before the fixes)
   test_access_rights, test_search_panel, test_inherits
-/base                                3951      907   4   cursor-parity residuals
+/base                                3955      916   0   (was 4 cursor-parity residuals)
 /web                                  460      417   0
 /mail                                 429       90   0
 /mail controllers over HTTP           167      386   0
