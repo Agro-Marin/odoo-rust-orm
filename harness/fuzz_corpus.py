@@ -5,9 +5,7 @@ import random
 import sys
 
 _HERE = (
-    pathlib.Path(pathlib.Path(__file__).resolve()).parent
-    if "__file__" in globals()
-    else None
+    str(pathlib.Path(__file__).resolve().parent) if "__file__" in globals() else None
 )
 sys.path.insert(
     0,

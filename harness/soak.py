@@ -13,7 +13,7 @@ import time
 import urllib.error
 import urllib.request
 
-sys.path.insert(0, pathlib.Path(pathlib.Path(__file__).resolve()).parent)
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import pathlib
 
 from _env import p50, p95

@@ -41,7 +41,7 @@ import threading
 import time
 import urllib.request
 
-sys.path.insert(0, pathlib.Path(pathlib.Path(__file__).resolve()).parent)
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from _env import p50, p95
 
 STOP = threading.Event()

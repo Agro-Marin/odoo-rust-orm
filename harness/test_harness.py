@@ -8,7 +8,7 @@ import sys
 import pytest
 
 HERE = pathlib.Path(pathlib.Path(__file__).resolve()).parent
-sys.path.insert(0, HERE)
+sys.path.insert(0, str(HERE))
 
 import pathlib
 
