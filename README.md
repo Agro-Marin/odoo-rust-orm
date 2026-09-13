@@ -2954,6 +2954,14 @@ more things.
   now tries, and when the export refuses as incomplete it logs at debug, keeps
   the process's one attempt, and tries again once the registry has more models.
 
+- **Routed `web_search_read` stamped an envelope version Python no longer
+  sends.** The fork moved `web_search_read` from `@versioned_envelope` to
+  `@versioned`, and it now reads through `search_fetch` and `web_read`; only
+  `web_read` stamps the JSON-RPC envelope, and only when records came back.
+  The shim stamped every routed page, so byte parity read 146 divergences, each
+  an empty page with a `version` key. It now stamps a non-empty page only, and
+  falls back for a model that overrides `search_fetch`.
+
 The source stamp no longer covers `engine-py/src/bin`: building the type probe
 changed the checksum without rebuilding the extension, and the addon refused a
 build that was current.

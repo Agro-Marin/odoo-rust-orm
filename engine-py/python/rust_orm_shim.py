@@ -332,8 +332,8 @@ def _order_drifted(model, order, groupby=()):
 # the kernel; the ids of a read() travel as a search_read
 _READ_PATH_NEEDS = {
     "read": ("read", "_check_access"),
-    "search_read": ("_search", "search_read"),
-    "web_search_read": ("_search", "search_read"),
+    "search_read": ("_search", "search_read", "search_fetch"),
+    "web_search_read": ("_search", "search_read", "search_fetch"),
     "search_count": ("_search", "search_count"),
     "_read_group": ("_search", "_read_group"),
     "name_search": ("_search",),
@@ -1151,6 +1151,7 @@ def install():
         "_search_display_name",
         "name_search",
         "_check_access",
+        "search_fetch",
     ):
         _BASE_METHODS[name] = getattr(BaseModel, name)
 
@@ -1530,7 +1531,8 @@ def install():
                         _warm_cache(self, result["records"])
                         # web_read stamps the JSON-RPC envelope with a version
                         # of its records; the routed answer carries the same
-                        _stamp_envelope(result["records"])
+                        if result["records"]:
+                            _stamp_envelope(result["records"])
                         return result
                 except Exception as e:
                     _record_error(self, e)
