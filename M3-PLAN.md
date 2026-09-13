@@ -1482,8 +1482,8 @@ with no engine and with routing on, and the failure sets diffed by name.
 
 ```
 suite                               tests   routed   failing only under routing
-test_orm, test_read_group,           1450     1360   0   (was 20 before the fixes)
-  test_access_rights, test_search_panel, test_inherits
+test_orm, test_read_group,           1457     1390   0   (was 20 before the fixes; HTTP
+  test_access_rights, test_search_panel, test_inherits     classes now run on both legs)
 /base                                3955      916   0   (was 4 cursor-parity residuals)
 /web                                  460      417   0
 /mail                                 429       90   0
@@ -1491,7 +1491,35 @@ test_orm, test_read_group,           1450     1360   0   (was 20 before the fixe
 24 smaller modules (ai, auth, bus,    702       61   0
   iap, sms, web views, ...)
 approval, approval_app, base_install  829       10   0
+/mail with HTTP (JS suites included)  718      985   0
+enterprise: helpdesk, planning,       811     1561   0
+  sale_planning, sale_subscription,
+  timesheet_grid, knowledge, sign
 ```
+
+Until 2026-09-13 the harness ran both legs with `--no-http`, so every HttpCase
+class, tours and JS suites included, was skipped on both sides and cancelled
+out: 18 classes in /base, 25 across the enterprise suites. Running them with a
+server surfaced failures that exist with no engine at all, and they are the
+fork's to fix, not the engine's. Most are fixed in odoo and enterprise
+(action bindings stale after a server-action write, a COPY threshold below
+its break-even, a filtered_domain round trip per rule, nested copies fetching
+lines twice, partner-merge grouping over an arbitrary 20,000 of 110,542 pairs,
+access-error group names in four queries, the JS mock server's missing
+`result`, planning's context dates and template choices, knowledge's stale
+FontAwesome selectors). What still fails on both legs of the enterprise run:
+
+- knowledge `test_article_get_valid_parent_options` and
+  `test_article_tree_panel_w_favorites`, two queries over each: the cost of
+  filtered_domain evaluating a search-method field through its search, which
+  the fork chose in 428ff95f5280 for parity with search();
+- knowledge's portal tour: `knowledge.webclient` is a page built on
+  `web.assets_backend` that no module's `dynamic_children` names, so its
+  import map lacks `@odoo/o-spreadsheet` and the tour helpers;
+- knowledge's file and calendar command tours, where an embedded component
+  does not mount; not yet diagnosed;
+- sign's two tours, which pick "Administrator" and meet "Mitchell Admin" on a
+  database with demo data.
 
 What that found, none of it visible to the corpora:
 
