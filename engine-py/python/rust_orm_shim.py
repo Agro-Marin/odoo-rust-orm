@@ -333,7 +333,7 @@ def _order_drifted(model, order, groupby=()):
 _READ_PATH_NEEDS = {
     "read": ("read", "_check_access"),
     "search_read": ("_search", "search_read", "search_fetch"),
-    "web_search_read": ("_search", "search_read", "search_fetch"),
+    "web_search_read": ("_search", "search_read", "search_fetch", "search_count"),
     "search_count": ("_search", "search_count"),
     "_read_group": ("_search", "_read_group"),
     "name_search": ("_search",),
@@ -348,12 +348,13 @@ def _clean_model(model, method=None):
         "_read_group",
         "search_count",
     )
-    key = _cache_key(model, "rp:" + (method or "*"))
+    cls = type(model.sudo())
+    methods = tuple(getattr(cls, name) for name in needs)
+    key = _cache_key(model, "rp:" + (method or "*"), tuple(map(id, methods)))
     cached = _GATE_CACHE.get(key)
     if cached is not None:
         return cached
-    cls = type(model.sudo())
-    ok = all(getattr(cls, name) is _BASE_METHODS[name] for name in needs)
+    ok = all(m is _BASE_METHODS[name] for m, name in zip(methods, needs, strict=True))
     _GATE_CACHE[key] = ok
     return ok
 
@@ -710,6 +711,38 @@ def _resolve_display_name_exact(model, domain):
     return out
 
 
+def _needs_python_search(model, domain, depth=0):
+    if depth > 4 or not isinstance(domain, (list, tuple)):
+        return False
+    for item in domain:
+        if not isinstance(item, (list, tuple)) or len(item) != 3:
+            continue
+        path, operator, value = item
+        if not isinstance(path, str):
+            continue
+        current = model
+        names = path.split(".")
+        for i, name in enumerate(names):
+            field = getattr(current, "_fields", {}).get(name)
+            if field is None:
+                return False
+            if (
+                not field.store
+                and field.search
+                and not field.related
+                and name != "display_name"
+            ):
+                return True
+            if not field.relational:
+                break
+            current = model.env[field.comodel_name]
+            last = i == len(names) - 1
+            if last and operator in ("any", "not any", "any!", "not any!"):
+                if _needs_python_search(current, value, depth + 1):
+                    return True
+    return False
+
+
 def _sql_tz(env):
     tz = env.context.get("tz") or None
     if tz is None:
@@ -741,6 +774,17 @@ def _request(model, method, **kw):
 
             kw["domain"] = list(Domain(kw["domain"]))
         kw["domain"] = _resolve_display_name_exact(model, kw["domain"])
+        if _needs_python_search(model, kw["domain"]):
+            from odoo.fields import Domain
+
+            try:
+                env.flush_all()
+                kw["domain"] = list(Domain(kw["domain"]).optimize_full(model))
+            except Exception as exc:
+                raise KernelRefused(
+                    "resolving a Python search method raised %s" % type(exc).__name__
+                ) from exc
+            kw["trusted_domain"] = True
     req.update(kw)
 
     def refuse_non_json(value) -> Never:

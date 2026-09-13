@@ -2977,6 +2977,34 @@ failing only under routing: the cursor-parity residuals -- two pipeline-mode che
 binary COPY type probe, and a KeyboardInterrupt during connection construction
 ```
 
+## A domain through a Python search method is resolved before the kernel sees it
+
+A non-stored field with a `search=` method -- `discuss.channel.is_member`,
+`res.groups.all_user_ids` -- is decided by Python, and the kernel refused any
+domain that named one: 283 sweep cases between those two alone. Python's own
+`_search` runs `Domain.optimize_full`, which calls those methods and leaves a
+domain over stored columns (`is_member = True` becomes `channel_member_ids any
+[partner_id in [3]]`, `all_user_ids in [2]` an id list). When a domain reaches
+such a field -- at the root, through a dotted path, or inside `any` --
+`_request` flushes, applies `optimize_full`, and sends the result marked
+`trusted_domain`, so an `any!` that a field's own bypass produced compiles as
+the port's does; dispatch now reads that flag too. `display_name` and related
+fields keep the kernel's own handling. An exception while resolving, an access
+error included, refuses the call rather than counting against the breaker.
+
+Across every user of `rustorm_o31`, six such domains through `search_count`
+and `search_read`: 108 comparisons, 19 routed where 3 were, none differing.
+`discuss.channel` itself still falls back -- its record rules name `is_member`
+and the kernel compiles rules from the export -- and `res.groups` overrides
+`_search`. The tours route 215 calls, share 0.34, where they routed 172 to
+190.
+
+The same pass found the fork's `web_search_read` computing its length through
+`self.search_count`, so a model overriding `search_count` now falls back, and
+the gate's verdict cache keys on the identity of the methods it compared: a
+method patched at runtime is seen, as `TestWebSearchRead` patches
+`res.currency.search_count`.
+
 ## Odoo's own ORM test modules, with routing on
 
 Installing a fresh engine into the workspace venv put routing under every

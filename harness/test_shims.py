@@ -820,6 +820,70 @@ def test_an_incomplete_registry_does_not_spend_the_kernel_build() -> None:
         ) = saved
 
 
+def test_a_domain_through_a_python_search_method_is_resolved_first() -> None:
+    orm_shim = _shims()[1]
+
+    class Field:
+        def __init__(self, type_, store=True, search=None, related=None, comodel=None):
+            self.type, self.store, self.search, self.related = (
+                type_,
+                store,
+                search,
+                related,
+            )
+            self.relational = type_ in ("many2one", "one2many", "many2many")
+            self.comodel_name = comodel
+
+    class Env(dict):
+        pass
+
+    env = Env()
+
+    class Model:
+        def __init__(self, fields) -> None:
+            self._fields, self.env = fields, env
+
+    env["member"] = Model({"partner_id": Field("many2one", comodel="partner")})
+    env["partner"] = Model({"name": Field("char")})
+    env["channel"] = Model(
+        {
+            "name": Field("char"),
+            "is_member": Field("boolean", store=False, search="_search_is_member"),
+            "member_ids": Field("one2many", comodel="member"),
+            "display_name": Field("char", store=False, search="_search_display_name"),
+            "label": Field("char", store=False, search="_search_label", related="name"),
+        }
+    )
+    env["member"]._fields["channel_id"] = Field("many2one", comodel="channel")
+    needs = orm_shim._needs_python_search
+    channel, member = env["channel"], env["member"]
+    check("a stored column needs nothing", needs(channel, [("name", "=", "x")]), False)
+    check(
+        "a search method is resolved", needs(channel, [("is_member", "=", True)]), True
+    )
+    check(
+        "...through a dotted path",
+        needs(
+            member,
+            ["|", ("partner_id.name", "=", "a"), ("channel_id.is_member", "=", True)],
+        ),
+        True,
+    )
+    check(
+        "...and inside an any",
+        needs(member, [("channel_id", "any", [("is_member", "=", True)])]),
+        True,
+    )
+    check(
+        "display_name is the kernel's",
+        needs(channel, [("display_name", "ilike", "a")]),
+        False,
+    )
+    check(
+        "a related field is the kernel's", needs(channel, [("label", "=", "a")]), False
+    )
+
+
 def test_web_length() -> None:
     orm_shim = _shims()[1]
 

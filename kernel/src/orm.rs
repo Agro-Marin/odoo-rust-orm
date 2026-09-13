@@ -208,7 +208,8 @@ pub struct Request {
     /// The domain was composed by the ORM (`optimize_full` output handed to
     /// `StorageBackend.search`) rather than received from a caller, so an
     /// `any!` in it is a field's own bypass declaration and not a request for
-    /// one. Only the port sets it; `dispatch` never reads it.
+    /// one. The port sets it, and so does the method shim for a domain it
+    /// resolved through `optimize_full`.
     #[serde(default)]
     pub trusted_domain: bool,
 }
