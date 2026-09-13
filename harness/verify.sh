@@ -17,7 +17,7 @@
 #   RUSTORM_STAGE_TIMEOUT (seconds per stage, default 1800; expiry is a FAIL),
 #   RUSTORM_REPLAY (capture file), RUSTORM_TOUR_TAGS, RUSTORM_FUZZ_SEEDS,
 #   RUSTORM_SOAK_THREADS / RUSTORM_SOAK_SECONDS / RUSTORM_SOAK_RSS_GROWTH,
-#   RUSTORM_MIN_COMPARED_{SWEEP,CORPUS,FUZZ}, RUSTORM_OTHER_DB
+#   RUSTORM_MIN_COMPARED_{SWEEP,CORPUS,FUZZ}, RUSTORM_OTHER_DB, RUSTORM_ORM_TEST_DB
 
 set -uo pipefail
 
@@ -433,6 +433,17 @@ if [ -f "$PYMOD/engine_py.so" ]; then
   fi
 else
   stage "every user" SKIP "needs libengine_py.so"
+fi
+
+if [ -z "${RUSTORM_ORM_TEST_DB:-}" ]; then
+  stage "orm test modules" SKIP "set RUSTORM_ORM_TEST_DB to a database with test_orm, test_read_group, test_access_rights, test_search_panel and test_inherits installed"
+elif [ ! -f "$ROOT/target/release/libengine_py.so" ]; then
+  stage "orm test modules" SKIP "no libengine_py.so; cargo build --release"
+else
+  out=$(RUSTORM_ORM_TESTS_DIR="$OUT/orm_tests" "${T[@]}" "$ROOT/harness/orm_tests.sh" --db "$RUSTORM_ORM_TEST_DB" 2>&1); rc=$?
+  if [ "$rc" = 0 ]; then stage "orm test modules" OK "$(printf '%s\n' "$out" | grep -a '^ORM TESTS off' | sed 's/ (artifacts.*//' | cut -c11-100)"
+  elif timed_out "$rc"; then stage "orm test modules" FAIL "$expired"
+  else stage "orm test modules" FAIL "$(printf '%s\n' "$out" | grep -aA2 '^ORM TESTS FAILED' | tr '\n' ' ' | cut -c1-110)"; fi
 fi
 
 # The statement the port composes, against the statement the FORK composes,

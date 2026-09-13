@@ -94,6 +94,7 @@ assert not errors and not bad and total == N * REPS, (
 
 const TYPES: &str = r##"
 import datetime, decimal, psycopg
+from psycopg.types.json import Json, Jsonb
 
 CASES = [
     ("boolean",     [True, False, None]),
@@ -108,8 +109,11 @@ CASES = [
     ("date",        ["2026-01-31", "1970-01-01", None]),
     ("timestamp",   ["2026-01-31 12:34:56", "2026-01-31 12:34:56.789012", None]),
     ("timestamptz", ["2026-01-31 12:34:56+00", None]),
-    ("jsonb",       ['{"a": 1, "b": [1, 2], "c": null}', '"scalar"', "[]", None]),
-    ("json",        ['{"x": true}', None]),
+    ("jsonb",       ['{"a": 1, "b": [1, 2], "c": null}', '"scalar"', "[]", None,
+                     '{"big": 100000000000000000000, "f": 1e20, "z": -0.0}',
+                     Jsonb({"t": ("a", "b"), 1: "int key", "n": 10**20, "f": 1e20}),
+                     Jsonb([{"selection": [("draft", "Draft"), ("done", "Done")]}])]),
+    ("json",        ['{"x": true}', None, Json({"t": (1, 2), "n": 10**20})]),
     ("bytea",       [b"", b"\x00\x01\xff", None]),
     ("int4[]",      [[1, 2, 3], [], None]),
     ("int8[]",      [[1, 2], None]),

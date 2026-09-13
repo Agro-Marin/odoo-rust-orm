@@ -721,6 +721,93 @@ def test_web_many2ones_resolve_through_web_read() -> None:
     )
 
 
+def test_an_order_changed_after_the_kernel_was_built_refuses() -> None:
+    orm_shim = _shims()[1]
+
+    class Env(dict):
+        pass
+
+    env = Env()
+
+    class Model:
+        def __init__(self, name, order, fields) -> None:
+            self._name, self._order, self._fields, self.env = name, order, fields, env
+
+    env["res.users"] = Model("res.users", "login", {"partner_id": F("many2one")})
+    env["res.users"]._fields["partner_id"].comodel_name = "res.partner"
+    env["res.partner"] = Model("res.partner", "name", {"country_id": F("many2one")})
+    env["res.partner"]._fields["country_id"].comodel_name = "res.country"
+    env["res.country"] = Model("res.country", "name", {})
+    saved = dict(orm_shim.ORDERS)
+    try:
+        orm_shim.ORDERS.clear()
+        orm_shim.ORDERS.update(
+            {"res.users": "login", "res.partner": "name", "res.country": "name"}
+        )
+        drifted = orm_shim._order_drifted
+        users = env["res.users"]
+        check("unchanged orders route", drifted(users, None, ["partner_id"]), False)
+        env["res.partner"]._order = "country_id, id"
+        check(
+            "a groupby comodel's changed _order refuses",
+            drifted(users, None, ["partner_id"]),
+            True,
+        )
+        env["res.partner"]._order = "name"
+        env["res.country"]._order = "id"
+        check(
+            "...and one its _order chains to is not reached",
+            drifted(users, None, ["partner_id"]),
+            False,
+        )
+        env["res.partner"]._order = "country_id"
+        orm_shim.ORDERS["res.partner"] = "country_id"
+        check(
+            "a comodel reached through an exported _order is checked",
+            drifted(users, "partner_id", ()),
+            True,
+        )
+    finally:
+        orm_shim.ORDERS.clear()
+        orm_shim.ORDERS.update(saved)
+
+
+def test_a_loading_registry_does_not_spend_the_kernel_build() -> None:
+    orm_shim = _shims()[1]
+    built = []
+
+    class Registry:
+        ready = False
+
+    class Env:
+        registry = Registry()
+
+    saved = (
+        orm_shim.KERNEL,
+        orm_shim.KERNEL_FACTORY,
+        orm_shim._KERNEL_TRIED_PID,
+        orm_shim.PROCESS_HOOK,
+    )
+    try:
+        orm_shim.KERNEL, orm_shim.PROCESS_HOOK = None, None
+        orm_shim._KERNEL_TRIED_PID = None
+        orm_shim.KERNEL_FACTORY = lambda registry: built.append(registry) or "kernel"
+        check(
+            "no kernel while the registry loads", orm_shim._ensure_kernel(Env()), False
+        )
+        check("...and no build was attempted", built, [])
+        Registry.ready = True
+        check("the loaded registry builds it", orm_shim._ensure_kernel(Env()), True)
+        check("...once", len(built), 1)
+    finally:
+        (
+            orm_shim.KERNEL,
+            orm_shim.KERNEL_FACTORY,
+            orm_shim._KERNEL_TRIED_PID,
+            orm_shim.PROCESS_HOOK,
+        ) = saved
+
+
 def test_web_length() -> None:
     orm_shim = _shims()[1]
 

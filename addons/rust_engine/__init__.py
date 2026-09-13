@@ -366,6 +366,7 @@ def _build_kernel(registry):
     export = engine_py.export_registry(registry)
     export_ms = (time.monotonic() - started) * 1000
     kernel = engine_py.RustKernel.build(_STATE["rust_db"], export)
+    orm_shim.snapshot_orders(registry)
     orm_shim.DBNAME = _STATE["db"]
     # This runs once per worker, on the first registry load: a slow startup
     # after arming is one of these two halves, and they have different fixes.

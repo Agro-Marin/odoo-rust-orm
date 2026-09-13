@@ -115,6 +115,8 @@ def _ensure_kernel(env):
             _logger.exception("the rust engine process hook failed")
     if KERNEL is not None:
         return True
+    if not getattr(env.registry, "ready", True):
+        return False
     if KERNEL_FACTORY is None:
         _logger.debug("no kernel factory yet; the addon has not armed this process")
         return False
@@ -282,6 +284,40 @@ def forget_gates() -> None:
     _GATE_CACHE.clear()
 
 
+ORDERS = {}
+
+
+def snapshot_orders(registry) -> None:
+    ORDERS.clear()
+    ORDERS.update({name: registry[name]._order for name in registry})
+
+
+def _order_names(order):
+    for part in (order or "").split(","):
+        name = part.strip().split(" ")[0].split(":")[0]
+        if name:
+            yield name
+
+
+def _order_drifted(model, order, groupby=()):
+    env = model.env
+    todo = [(model, (*_order_names(order), *groupby))]
+    seen = set()
+    while todo:
+        current, names = todo.pop()
+        if current._name in seen:
+            continue
+        seen.add(current._name)
+        exported = ORDERS.get(current._name)
+        if exported is not None and exported != current._order:
+            return True
+        for name in (*names, *_order_names(current._order)):
+            f = current._fields.get(name)
+            if f is not None and f.type == "many2one" and f.comodel_name in env:
+                todo.append((env[f.comodel_name], ()))
+    return False
+
+
 # Python's search_read, search_count and _read_group never call read(), so a
 # read() override (res.users reading its own record under sudo) leaves them on
 # the kernel; the ids of a read() travel as a search_read
@@ -422,6 +458,8 @@ def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: AR
     if not _bound_db(model.env):
         return _refuse("another database")
     if not _ensure_kernel(model.env):
+        if not getattr(model.env.registry, "ready", True):
+            return _refuse("registry still loading")
         return _refuse("kernel not built")
     try:
         if model.env.cr in DIRTY_CRS:
@@ -430,6 +468,10 @@ def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: AR
         return _refuse("unhashable cursor")
     if not _clean_model(model, method):
         return _refuse("read path overridden in python")
+    if ORDERS and _order_drifted(
+        model, order, fields if method == "_read_group" else ()
+    ):
+        return _refuse("an _order changed since the kernel was built")
     ctx = model.env.context
     if ctx.get("prefetch_langs") or ctx.get("edit_translations"):
         return _refuse("translation context")
@@ -1211,6 +1253,7 @@ def install():
             supported = _gate(
                 self,
                 [g.split(":")[0] for g in groupby],
+                order=order,
                 domain=domain,
                 method="_read_group",
             )

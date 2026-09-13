@@ -274,7 +274,7 @@ fn text_or<T: ToSql + Sync + Send + 'static>(
     }
 }
 
-fn json_wrapper_value(v: &Bound<'_, PyAny>) -> PyResult<Option<serde_json::Value>> {
+fn json_wrapper_text(v: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
     let Ok(cls) = v.get_type().name() else {
         return Ok(None);
     };
@@ -286,13 +286,70 @@ fn json_wrapper_value(v: &Bound<'_, PyAny>) -> PyResult<Option<serde_json::Value
     };
     if let Ok(dumps) = v.getattr("dumps")
         && !dumps.is_none()
-        && let Ok(text) = dumps.call1((inner.clone(),))
-        && let Ok(text) = text.extract::<String>()
-        && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text)
     {
-        return Ok(Some(parsed));
+        let text = dumps.call1((inner,))?;
+        return Ok(Some(match text.extract::<String>() {
+            Ok(s) => s,
+            Err(_) => String::from_utf8(text.extract::<Vec<u8>>()?).map_err(rerr)?,
+        }));
     }
-    Ok(Some(py_to_json(&inner)?))
+    Ok(Some(py_json_text(&inner)?))
+}
+
+fn py_json_text(v: &Bound<'_, PyAny>) -> PyResult<String> {
+    let py = v.py();
+    dt_types(py)?.json_dumps.bind(py).call1((v,))?.extract()
+}
+
+fn json_text_to_py(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
+    Ok(dt_types(py)?.json_loads.bind(py).call1((text,))?.unbind())
+}
+
+#[derive(Debug)]
+struct JsonParam(String);
+
+impl ToSql for JsonParam {
+    fn to_sql(
+        &self,
+        ty: &Type,
+        out: &mut bytes::BytesMut,
+    ) -> Result<tokio_postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        use bytes::BufMut;
+        if *ty == Type::JSONB {
+            out.put_u8(1);
+        }
+        out.put_slice(self.0.as_bytes());
+        Ok(tokio_postgres::types::IsNull::No)
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        matches!(*ty, Type::JSON | Type::JSONB)
+    }
+
+    tokio_postgres::types::to_sql_checked!();
+}
+
+struct JsonText(String);
+
+impl<'a> tokio_postgres::types::FromSql<'a> for JsonText {
+    fn from_sql(
+        ty: &Type,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        let body = if *ty == Type::JSONB {
+            match raw.split_first() {
+                Some((1, rest)) => rest,
+                _ => return Err("unsupported jsonb binary version".into()),
+            }
+        } else {
+            raw
+        };
+        Ok(JsonText(std::str::from_utf8(body)?.to_owned()))
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        matches!(*ty, Type::JSON | Type::JSONB)
+    }
 }
 
 fn conv_numeric(v: &Bound<'_, PyAny>) -> PyResult<rust_decimal::Decimal> {
@@ -332,7 +389,7 @@ fn conv_json(v: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
             Ok(serde_json::from_str::<serde_json::Value>(&s)
                 .unwrap_or(serde_json::Value::String(s)))
         }
-        Err(_) => py_to_json(v),
+        Err(_) => serde_json::from_str(&py_json_text(v)?).map_err(rerr),
     }
 }
 
@@ -365,8 +422,8 @@ fn py_to_sql(
     v: &Bound<'_, PyAny>,
     ty: &Type,
 ) -> PyResult<Box<dyn ToSql + Sync + Send>> {
-    if let Some(jv) = json_wrapper_value(v)? {
-        return Ok(Box::new(jv));
+    if let Some(text) = json_wrapper_text(v)? {
+        return Ok(Box::new(JsonParam(text)));
     }
     if v.is_none() {
         return Ok(match *ty {
@@ -432,11 +489,11 @@ fn py_to_sql(
         }
 
         Type::JSON | Type::JSONB => match v.extract::<String>() {
-            Ok(s) => match serde_json::from_str::<serde_json::Value>(&s) {
-                Ok(jv) => Box::new(jv),
-                Err(_) => Box::new(TextParam(Some(s))),
-            },
-            Err(_) => Box::new(py_to_json(v)?),
+            Ok(s) if serde_json::from_str::<serde_json::Value>(&s).is_ok() => {
+                Box::new(JsonParam(s))
+            }
+            Ok(s) => Box::new(TextParam(Some(s))),
+            Err(_) => Box::new(JsonParam(py_json_text(v)?)),
         },
         Type::BYTEA => Box::new(v.extract::<Vec<u8>>()?),
         _ if is_vector(ty) => {
@@ -586,71 +643,6 @@ fn parse_tstz(s: &str) -> PyResult<chrono::DateTime<chrono::Utc>> {
     Err(rerr(format!("cannot parse {s:?} as a timestamptz")))
 }
 
-fn py_to_json(v: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
-    use serde_json::Value as J;
-    if v.is_none() {
-        return Ok(J::Null);
-    }
-    if let Ok(b) = v.cast::<pyo3::types::PyBool>() {
-        return Ok(J::Bool(b.is_true()));
-    }
-    if let Ok(i) = v.extract::<i64>() {
-        return Ok(J::from(i));
-    }
-    if let Ok(f) = v.extract::<f64>() {
-        return Ok(J::from(f));
-    }
-    if let Ok(s) = v.extract::<String>() {
-        return Ok(J::String(s));
-    }
-    if let Ok(d) = v.cast::<PyDict>() {
-        let mut m = serde_json::Map::new();
-        for (k, val) in d.iter() {
-            m.insert(k.str()?.extract()?, py_to_json(&val)?);
-        }
-        return Ok(J::Object(m));
-    }
-    if let Ok(l) = v.cast::<PyList>() {
-        let mut out = Vec::new();
-        for item in l.iter() {
-            out.push(py_to_json(&item)?);
-        }
-        return Ok(J::Array(out));
-    }
-
-    Ok(J::String(v.str()?.extract()?))
-}
-
-fn json_to_py(py: Python<'_>, v: &serde_json::Value) -> PyResult<Py<PyAny>> {
-    use serde_json::Value as J;
-    Ok(match v {
-        J::Null => py.None(),
-        J::Bool(b) => b.into_py_any(py)?,
-        J::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                i.into_py_any(py)?
-            } else {
-                n.as_f64().unwrap_or(0.0).into_py_any(py)?
-            }
-        }
-        J::String(s) => s.into_py_any(py)?,
-        J::Array(items) => {
-            let list = PyList::empty(py);
-            for item in items {
-                list.append(json_to_py(py, item)?)?;
-            }
-            list.into_py_any(py)?
-        }
-        J::Object(m) => {
-            let d = PyDict::new(py);
-            for (k, val) in m {
-                d.set_item(k, json_to_py(py, val)?)?;
-            }
-            d.into_py_any(py)?
-        }
-    })
-}
-
 struct PyTypes {
     date: Py<PyAny>,
     time: Py<PyAny>,
@@ -659,6 +651,8 @@ struct PyTypes {
     utc: Py<PyAny>,
     uuid: Py<PyAny>,
     float: Py<PyAny>,
+    json_dumps: Py<PyAny>,
+    json_loads: Py<PyAny>,
 }
 
 static PY_TYPES: pyo3::sync::PyOnceLock<PyTypes> = pyo3::sync::PyOnceLock::new();
@@ -674,6 +668,8 @@ fn dt_types(py: Python<'_>) -> PyResult<&'static PyTypes> {
             utc: m.getattr("timezone")?.getattr("utc")?.unbind(),
             uuid: py.import("uuid")?.getattr("UUID")?.unbind(),
             float: py.import("builtins")?.getattr("float")?.unbind(),
+            json_dumps: py.import("json")?.getattr("dumps")?.unbind(),
+            json_loads: py.import("json")?.getattr("loads")?.unbind(),
         })
     })
 }
@@ -1142,15 +1138,10 @@ fn cell_to_py(py: Python<'_>, row: &tokio_postgres::Row, i: usize) -> PyResult<P
             Some(v) => inet_to_py(py, &v)?,
             None => py.None(),
         },
-        Type::JSON | Type::JSONB => {
-            match row
-                .try_get::<_, Option<serde_json::Value>>(i)
-                .map_err(rerr)?
-            {
-                Some(v) => json_to_py(py, &v)?,
-                None => py.None(),
-            }
-        }
+        Type::JSON | Type::JSONB => match row.try_get::<_, Option<JsonText>>(i).map_err(rerr)? {
+            Some(v) => json_text_to_py(py, &v.0)?,
+            None => py.None(),
+        },
         Type::BYTEA => match row.try_get::<_, Option<Vec<u8>>>(i).map_err(rerr)? {
             Some(v) => PyBytes::new(py, &v).unbind().into(),
             None => py.None(),
@@ -1217,14 +1208,14 @@ fn cell_to_py(py: Python<'_>, row: &tokio_postgres::Row, i: usize) -> PyResult<P
 
                     Type::JSON | Type::JSONB => {
                         match row
-                            .try_get::<_, Option<Vec<Option<serde_json::Value>>>>(i)
+                            .try_get::<_, Option<Vec<Option<JsonText>>>>(i)
                             .map_err(rerr)?
                         {
                             Some(v) => {
                                 let list = PyList::empty(py);
                                 for item in &v {
                                     match item {
-                                        Some(j) => list.append(json_to_py(py, j)?)?,
+                                        Some(j) => list.append(json_text_to_py(py, &j.0)?)?,
                                         None => list.append(py.None())?,
                                     }
                                 }
@@ -2193,10 +2184,8 @@ fn py_to_copy_text(v: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
     if v.is_none() {
         return Ok(None);
     }
-    if let Some(jv) = json_wrapper_value(v)? {
-        return Ok(Some(
-            serde_json::to_string(&jv).map_err(|e| rerr(e.to_string()))?,
-        ));
+    if let Some(text) = json_wrapper_text(v)? {
+        return Ok(Some(text));
     }
     if v.is_instance_of::<PyBool>() {
         return Ok(Some(
@@ -2222,10 +2211,7 @@ fn py_to_copy_text(v: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
         return Ok(Some(py_seq_to_array_literal(v)?));
     }
     if v.is_instance_of::<pyo3::types::PyDict>() {
-        let jv = py_to_json(v)?;
-        return Ok(Some(
-            serde_json::to_string(&jv).map_err(|e| rerr(e.to_string()))?,
-        ));
+        return Ok(Some(py_json_text(v)?));
     }
     Ok(Some(v.str()?.to_string_lossy().into_owned()))
 }

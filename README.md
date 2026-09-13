@@ -422,6 +422,7 @@ rest of the battery does it now too.
 | replay | the web tours' own traffic (captured by `rust_engine_capture` during that stage; `RUSTORM_REPLAY` names another file) fed back through the shim in shadow mode: routed share and divergences per (model, method); SKIP only when the tours did not run, FAIL when nothing was compared or an unexpected native/shim error occurred; rolled-back tour identities are reported separately and are not counted as replayed |
 | runtime contracts | real native connections check cache fidelity, SQL-failure recovery and breaker classification, stale exports, and the registry reload hook; required even under `--quick` |
 | every user | every user of the database, archived and other companies' included, reads every table-backed model through each routed method, routed and not: many2ones and x2manys, counts, names, groups |
+| orm test modules | with `RUSTORM_ORM_TEST_DB` set, Odoo's test_orm, test_read_group, test_access_rights, test_search_panel and test_inherits run with no engine and with routing on; a test failing only under routing fails the stage |
 | web tours (shadow) | the mail, web and base tours run by `odoo-bin` carrying `rust_engine` in shadow mode against the database: FAIL on a failed tour or a live divergence; reports the routed share and the gate count; SKIP under `--quick` or without `mail` installed (`RUSTORM_TOUR_TAGS` picks another set) |
 | soak | sustained load against `serve` behind a per-run token: the shadow corpus's baseline (`expected.json`) re-asked at every identity it names, plus self-consistency probes at the seeded `other` identity; RSS growth after a warm-up bounded (`RUSTORM_SOAK_RSS_GROWTH`, default 20 %), still healthy after. `--uids` is refused against a server that pins its identity, because the uids would be silently ignored |
 
@@ -2881,6 +2882,62 @@ EVERY USER compared 19802 over 9 users in 31 contexts   0 mismatching
 A runtime contract reads Belgium's currency, which a committed
 rule hides, through `web_search_read` plain and named and `read(load=None)`.
 The contract fails on the previous build.
+
+## Odoo's own ORM test modules, with routing on
+
+Installing a fresh engine into the workspace venv put routing under every
+server on `p314o19m.conf`. The battery's "upstream suites" stage runs two small
+suites that reach the kernel three times, so it said little about that. Odoo's
+own `test_orm`, `test_read_group`, `test_access_rights`, `test_search_panel` and
+`test_inherits`, 1,444 tests, were run on a database of their own with no engine
+and then with routing on:
+
+```
+no engine        2 failed, 3 errors
+routing on      34 failed, 4 errors      20 tests failing only under routing
+```
+
+Three were the engine's.
+
+- **The Rust cursor wrote a tuple inside JSON as its `str()`.** `py_to_json`
+  had cases for dicts and lists and none for tuples, so a properties
+  definition's `selection: [("draft", "Draft")]` was stored as
+  `["('draft', 'Draft')"]`, and the next write of the record raised `Wrong
+  options`. Dict keys went through `str()` too, and an integer past 64 bits
+  became a float. JSON parameters are now the text `json.dumps` produces, which
+  is what psycopg's `Json` adapter sends, encoded as JSONB's binary form so a
+  binary COPY accepts them.
+- **The Rust cursor read a 20-digit JSON integer as a float.** It decoded JSONB
+  through `serde_json::Value`, where a number past `i64` is an `f64`. psycopg
+  decodes with `json.loads`, which keeps it an int. The cursor now reads the
+  text and calls `json.loads`.
+- **A routed `_read_group` ordered by an `_order` changed at runtime.** The
+  test sets `res.partner._order` on the class; the kernel orders from the
+  export taken when it was built. The shim now snapshots every model's `_order`
+  when the kernel is built, and refuses a call whose model, or a many2one
+  comodel its order or groupby reaches, has a different one.
+
+The other thirteen were `test_orm`'s uniform-update tests, which spy on
+`PostgresBackend._update_rows_uniform` and `_update_rows_values` through
+`env.backend` -- a `RustBackend` once the port is installed. They now patch the
+test transaction's backend to `POSTGRES_BACKEND` (odoo cc4741849aff).
+
+A read during module loading also made the shim build a kernel from a
+half-loaded registry: an ERROR traceback, and the process's one build attempt
+spent. `_ensure_kernel` now declines while the registry is not ready, and the
+gate reports "registry still loading".
+
+```
+no engine        2 failed, 3 errors of 1444
+routing on       2 failed, 3 errors of 1444, the same tests, routed=96
+```
+
+`harness/orm_tests.sh` runs both legs and fails when a test fails only under
+routing, or when the routing leg did not route. It is the battery stage "orm
+test modules", run when `RUSTORM_ORM_TEST_DB` names a database with those
+modules installed. Read over the first routing-on log it lists 24 failing
+tests, subtests included. The type probe gained wrapped JSON values: the
+committed cursor fails three of them.
 
 ## A many2one to a model that decides access in Python was labelled from rules
 
