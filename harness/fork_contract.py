@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import ast
 import importlib
 import os
 import pathlib
@@ -92,6 +93,125 @@ SEAMS = [
     ("odoo.db", None, ["get_connection_info_for_database"]),
 ]
 
+BEHAVIOURS = [
+    (
+        "addons/web/models/web_read.py",
+        "Base.web_search_read",
+        {"decorators": {"versioned"}, "not_decorators": {"versioned_envelope"}},
+        {"search_fetch", "web_read", "_format_web_search_read_results"},
+        (
+            "routed web_search_read stamps __version itself and the JSON-RPC envelope "
+            "only through web_read, and falls back for a model overriding search_fetch"
+        ),
+    ),
+    (
+        "addons/web/models/web_read.py",
+        "Base._format_web_search_read_results",
+        {},
+        {"search_count"},
+        "routed web_search_read falls back for a model overriding search_count",
+    ),
+    (
+        "addons/web/models/web_read.py",
+        "Base.web_read",
+        {"decorators": {"versioned_envelope"}},
+        set(),
+        "the routed web_search_read stamps the envelope web_read would",
+    ),
+    (
+        "addons/web/models/web_read.py",
+        "Base._web_read",
+        {"keywords": {("read", "load", "None")}},
+        {"_web_read_resolve_many2one"},
+        "read(load=None) is asked for raw many2ones, resolved by web's own resolver",
+    ),
+    (
+        "odoo/orm/fields/relational/many2one.py",
+        "Many2one.convert_to_read_multi",
+        {},
+        {"_filtered_display_name_access"},
+        "search_read labels a many2one only when display-name access allows it",
+    ),
+    (
+        "odoo/orm/models/mixins/read.py",
+        "ReadMixin.fetch",
+        {},
+        {"check_access"},
+        "read falls back for a model overriding _check_access",
+    ),
+]
+
+
+def _function(tree, qualname):
+    owner, _dot, name = qualname.rpartition(".")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == owner:
+            for item in node.body:
+                if (
+                    isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and item.name == name
+                ):
+                    return item
+    return None
+
+
+def _decorator_names(func):
+    names = set()
+    for dec in func.decorator_list:
+        target = dec.func if isinstance(dec, ast.Call) else dec
+        names.add(
+            target.attr
+            if isinstance(target, ast.Attribute)
+            else getattr(target, "id", "")
+        )
+    return names
+
+
+def _calls(func):
+    called, keywords = set(), set()
+    for node in ast.walk(func):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            called.add(node.func.attr)
+            keywords.update(
+                (node.func.attr, kw.arg, ast.unparse(kw.value)) for kw in node.keywords
+            )
+    return called, keywords
+
+
+def behaviours():
+    failures = []
+    for rel, qualname, shape, calls, assumption in BEHAVIOURS:
+        path = pathlib.Path(ODOO) / rel
+        if not path.is_file():
+            failures.append(
+                "behaviour %s: %s is absent (%s)" % (qualname, rel, assumption)
+            )
+            continue
+        func = _function(ast.parse(path.read_text(encoding="utf-8")), qualname)
+        if func is None:
+            failures.append(
+                "behaviour %s: not defined in %s (%s)" % (qualname, rel, assumption)
+            )
+            continue
+        decorators = _decorator_names(func)
+        called, keywords = _calls(func)
+        wrong = []
+        if missing := shape.get("decorators", set()) - decorators:
+            wrong.append("lost decorator %s" % sorted(missing))
+        if present := shape.get("not_decorators", set()) & decorators:
+            wrong.append("gained decorator %s" % sorted(present))
+        if missing := calls - called:
+            wrong.append("no longer calls %s" % sorted(missing))
+        if missing := shape.get("keywords", set()) - keywords:
+            wrong.append("no longer passes %s" % sorted(missing))
+        if wrong:
+            failures.append(
+                "behaviour %s: %s -- the shim assumes %s"
+                % (qualname, "; ".join(wrong), assumption)
+            )
+    return failures
+
+
 FROM_RE = re.compile(r"^\s*from\s+(odoo[\w.]*)\s+import\s+([\w, ]+)", re.MULTILINE)
 IMPORT_RE = re.compile(r"^\s*import\s+(odoo[\w.]*)", re.MULTILINE)
 
@@ -154,14 +274,17 @@ def main() -> int:
             if not hasattr(target, attr)
         )
 
+    failures.extend(behaviours())
+
     for failure in failures:
         print("  FAIL %s" % failure)
     print(
-        "FORK %s (%d imports, %d seams)"
+        "FORK %s (%d imports, %d seams, %d behaviours)"
         % (
             "OK" if not failures else "FAILED (%d)" % len(failures),
             len(wanted),
             sum(len(a) for _, _, a in SEAMS),
+            len(BEHAVIOURS),
         )
     )
     return 1 if failures else 0

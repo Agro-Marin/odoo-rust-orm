@@ -2977,6 +2977,27 @@ failing only under routing: the cursor-parity residuals -- two pipeline-mode che
 binary COPY type probe, and a KeyboardInterrupt during connection construction
 ```
 
+## The fork contract pins behaviour, not only names
+
+`harness/fork_contract.py` checked that every fork name the engine imports or
+patches exists. The fork changes that hurt on 2026-09-13 kept every name:
+`web_search_read` began reading through `search_fetch` and counting through
+`search_count`, and its envelope versioning moved to `web_read`. Each silently
+changed what a routed answer must be, and one was caught by byte parity only
+because its corpus happened to page past the end.
+
+The contract now also pins six behaviours the shim relies on, read from the
+fork's source with `ast`, needing no database: the decorators and calls of
+`web_search_read`, `_format_web_search_read_results`, `web_read` and `_web_read`,
+that `Many2one.convert_to_read_multi` asks `_filtered_display_name_access`, and
+that `fetch` runs `check_access`. A change fails the first battery stage with
+the assumption it breaks. Run against `web_read.py` from before a25b7418c7a4:
+
+```
+behaviour Base.web_search_read: no longer calls ['search_fetch'] -- the shim
+assumes routed web_search_read ... falls back for a model overriding search_fetch
+```
+
 ## A domain through a Python search method is resolved before the kernel sees it
 
 A non-stored field with a `search=` method -- `discuss.channel.is_member`,
