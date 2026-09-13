@@ -4,7 +4,7 @@ import os
 import threading
 import typing
 import urllib.parse
-from time import monotonic
+from time import monotonic, sleep
 from typing import Never
 
 import psycopg
@@ -807,6 +807,24 @@ class _RustPool:
         )
         return conn
 
+    def _connect_until(self, deadline, timeout):
+        from psycopg_pool import PoolTimeout
+
+        delay = 0.05
+        while True:
+            try:
+                return self._new_connection()
+            except Exception as exc:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise PoolTimeout(
+                        "couldn't get a connection after %.2f sec: %s"
+                        % (30.0 if timeout is None else timeout, exc)
+                    ) from exc
+                _logger.debug("opening a rust connection failed, retrying: %s", exc)
+                sleep(min(delay, remaining))
+                delay = min(delay * 2, 1.0)
+
     def getconn(self, timeout=None):
         from psycopg_pool import PoolClosed, PoolTimeout
 
@@ -837,7 +855,7 @@ class _RustPool:
             # The callbacks talk to the server, so they run outside the lock.
             try:
                 if conn is None:
-                    conn = self._new_connection()
+                    conn = self._connect_until(deadline, timeout)
                     INSTALLED["count"] += 1
                 else:
                     INSTALLED["reused"] += 1

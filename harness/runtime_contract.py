@@ -650,6 +650,22 @@ if "mail.mail" in reg:
         flush=True,
     )
 
+closing = rust_db.connect()
+with psycopg.connect(**conninfo, autocommit=True) as watcher:
+    rust_conn = dbshim.FakeConnection(closing)
+    backend_pid = rust_conn.execute("SELECT pg_backend_pid()").fetchone()[0]
+    rust_conn.rollback()
+    rust_conn.close()
+    for _ in range(50):
+        alive = watcher.execute(
+            "SELECT count(*) FROM pg_stat_activity WHERE pid = %s", [backend_pid]
+        ).fetchone()[0]
+        if not alive:
+            break
+        __import__("time").sleep(0.1)
+    assert not alive, "a closed rust connection kept its backend %s open" % backend_pid
+print("CONTRACT closing a rust connection disconnects its backend", flush=True)
+
 # Release committed rule/field policy changes before the rest of the corpus.
 with env_for() as e:
     e["ir.rule"].browse(rule_id).unlink()

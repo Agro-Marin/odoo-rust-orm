@@ -2032,9 +2032,23 @@ impl<'a> Compiler<'a> {
     ) -> Result<Expr> {
         // an unset comparand never reaches here: optimize_leaf rewrote it to
         // the field's falsy value or to FALSE
-        let accept_null = field
-            .falsy_json()
-            .is_some_and(|falsy| can_be_null && json_cmp_op(&falsy, value, op).unwrap_or(false));
+        if field.ttype == FieldType::Html {
+            refuse!(
+                "{} {op} compares against the sanitized value, which Python computes",
+                field.name
+            );
+        }
+        let textual = matches!(
+            field.ttype,
+            FieldType::Char | FieldType::Text | FieldType::Selection
+        );
+        let comparand = match value {
+            Json::Number(n) if textual => Json::String(n.to_string()),
+            other => other.clone(),
+        };
+        let accept_null = field.falsy_json().is_some_and(|falsy| {
+            can_be_null && json_cmp_op(&falsy, &comparand, op).unwrap_or(false)
+        });
         let v = to_value(field, value)?;
         let mut sql = match op {
             "<" => sql_field.clone().lt(v),

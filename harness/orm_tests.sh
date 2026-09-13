@@ -53,7 +53,7 @@ if [ "$refusing" != 0 ] || [ "${routed:-0}" = 0 ]; then
 fi
 if [ -n "$only_on" ]; then
   echo "ORM TESTS FAILED: failing only under routing:"
-  printf '  %s\n' $only_on
+  printf '%s\n' "$only_on" | sed 's/^/  /'
   exit 1
 fi
 echo "ORM TESTS OK"

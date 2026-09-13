@@ -168,11 +168,6 @@ fn translate_placeholders(sql: &str) -> (String, Vec<String>) {
     let mut i = 0;
     while i < bytes.len() {
         let c = bytes[i];
-        if let Some(end) = skip_opaque(bytes, i) {
-            out.extend_from_slice(&bytes[i..end]);
-            i = end;
-            continue;
-        }
         match c {
             b'%' if i + 1 < bytes.len() && bytes[i + 1] == b'%' => {
                 out.push(b'%');
@@ -1281,7 +1276,7 @@ pub struct RustResult {
 
 #[pyclass]
 pub struct RustConn {
-    client: Arc<Client>,
+    client: std::sync::RwLock<Option<Arc<Client>>>,
     handle: Handle,
     stmt_cache: std::sync::Mutex<HashMap<String, tokio_postgres::Statement>>,
 
@@ -1313,8 +1308,12 @@ fn statement_invalidates_prepared(sql: &str) -> bool {
 }
 
 impl RustConn {
-    pub fn client(&self) -> Arc<Client> {
-        self.client.clone()
+    pub fn client(&self) -> PyResult<Arc<Client>> {
+        self.client
+            .read()
+            .ok()
+            .and_then(|slot| slot.clone())
+            .ok_or_else(|| rerr("connection is closed"))
     }
 
     pub fn handle(&self) -> &Handle {
@@ -1360,7 +1359,7 @@ impl RustConn {
 
     pub fn new(client: Arc<Client>, handle: Handle) -> Self {
         RustConn {
-            client,
+            client: std::sync::RwLock::new(Some(client)),
             handle,
             stmt_cache: std::sync::Mutex::new(HashMap::new()),
             kernel_stmts: Arc::new(odoo_kernel::orm::StmtCache::default()),
@@ -1376,10 +1375,12 @@ impl RustConn {
 
     fn type_display_name(&self, py: Python<'_>, ty: &Type) -> String {
         let fallback = || ty.name().to_string();
+        let Ok(client) = self.client() else {
+            return fallback();
+        };
         let rows = match self.block(
             py,
-            self.client
-                .query("SELECT format_type($1::oid, NULL)", &[&ty.oid()]),
+            client.query("SELECT format_type($1::oid, NULL)", &[&ty.oid()]),
         ) {
             Ok(rows) => rows,
             Err(_) => return fallback(),
@@ -1405,7 +1406,7 @@ impl RustConn {
                 target: "odoo_kernel::cursor",
                 readonly, "opened a transaction on the Python cursor's connection"
             );
-            self.block(py, self.client.batch_execute(begin))
+            self.block(py, self.client()?.batch_execute(begin))
                 .map_err(db_err)?;
         }
         Ok(())
@@ -1421,7 +1422,7 @@ impl RustConn {
             end = stmt, was_open, "ending the Python cursor's transaction"
         );
         if was_open {
-            self.block(py, self.client.batch_execute(stmt))
+            self.block(py, self.client()?.batch_execute(stmt))
                 .map_err(db_err)?;
         }
         Ok(())
@@ -1438,7 +1439,7 @@ impl RustConn {
     fn execute_simple(&self, py: Python<'_>, sql: &str) -> PyResult<RustResult> {
         use tokio_postgres::SimpleQueryMessage as M;
         let messages = self
-            .block(py, self.client.simple_query(sql))
+            .block(py, self.client()?.simple_query(sql))
             .map_err(db_err)?;
         let mut columns: Vec<String> = Vec::new();
         let mut rows: Vec<tokio_postgres::SimpleQueryRow> = Vec::new();
@@ -1690,7 +1691,7 @@ impl RustConn {
                     Some(s) => s,
                     None => {
                         let s = self
-                            .block(py, self.client.prepare_typed(&sql, &types))
+                            .block(py, self.client()?.prepare_typed(&sql, &types))
                             .map_err(db_err)?;
                         {
                             let mut cache = self.stmt_cache.lock().unwrap();
@@ -1753,7 +1754,7 @@ impl RustConn {
                 let cached = self.stmt_cache.lock().unwrap().get(&sql).cloned();
                 stmt = match cached {
                     Some(s) => Some(s),
-                    None => match self.block(py, self.client.prepare(&sql)) {
+                    None => match self.block(py, self.client()?.prepare(&sql)) {
                         Ok(s) => {
                             self.stmt_cache
                                 .lock()
@@ -1766,8 +1767,8 @@ impl RustConn {
                 };
             }
             let rows = match &stmt {
-                Some(st) => self.block(py, self.client.query(st, &refs)),
-                None => self.block(py, self.client.query(&sql, &refs)),
+                Some(st) => self.block(py, self.client()?.query(st, &refs)),
+                None => self.block(py, self.client()?.query(&sql, &refs)),
             }
             .map_err(db_err)?;
 
@@ -1808,8 +1809,8 @@ impl RustConn {
             })
         } else {
             let n = match &stmt {
-                Some(st) => self.block(py, self.client.execute(st, &refs)),
-                None => self.block(py, self.client.execute(&sql, &refs)),
+                Some(st) => self.block(py, self.client()?.execute(st, &refs)),
+                None => self.block(py, self.client()?.execute(&sql, &refs)),
             }
             .map_err(db_err)? as i64;
             tracing::debug!(
@@ -1835,7 +1836,7 @@ impl RustConn {
         }
         self.ensure_tx(py)?;
         let sink = self
-            .block(py, self.client.copy_in::<_, bytes::Bytes>(statement))
+            .block(py, self.client()?.copy_in::<_, bytes::Bytes>(statement))
             .map_err(db_err)?;
         tracing::debug!(
             target: "odoo_kernel::copy",
@@ -1884,7 +1885,7 @@ impl RustConn {
             return Err(rerr("connection is closed"));
         }
         self.end_tx(py, "ROLLBACK")?;
-        self.block(py, self.client.batch_execute(sql))
+        self.block(py, self.client()?.batch_execute(sql))
             .map_err(db_err)?;
         if discard {
             self.clear_prepared();
@@ -1928,6 +1929,9 @@ impl RustConn {
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         if !self.closed.swap(true, Ordering::SeqCst) {
             let _ = self.end_tx(py, "ROLLBACK");
+            if let Ok(mut slot) = self.client.write() {
+                slot.take();
+            }
         }
         Ok(())
     }
@@ -2000,29 +2004,26 @@ mod tests {
     }
 
     #[test]
+    fn placeholders_and_escapes_are_read_as_psycopg_reads_them() {
+        let (sql, names) = translate_placeholders("SELECT '%%(city)s' AS a, %s AS b");
+        assert_eq!(sql, "SELECT '%(city)s' AS a, $1 AS b");
+        assert_eq!(names.len(), 1);
+        let (sql, names) = translate_placeholders("CHECK (name !~ '%%') AND %(x)s");
+        assert_eq!(sql, "CHECK (name !~ '%') AND $1");
+        assert_eq!(names, vec!["x"]);
+        let (sql, names) = translate_placeholders("SELECT $$%%$$, E'%s', %s");
+        assert_eq!(sql, "SELECT $$%$$, E'$1', $2");
+        assert_eq!(names.len(), 2);
+    }
+
+    #[test]
     fn escape_strings_hide_their_contents() {
-        let (sql, names) = translate_placeholders(r"SELECT E'a\'%s b' , %s");
-        assert_eq!(names.len(), 1, "got {sql}");
-        assert_eq!(sql, r"SELECT E'a\'%s b' , $1");
         assert!(!returns_rows(r"UPDATE t SET a = E'\' RETURNING'"));
         assert!(returns_rows(r"UPDATE t SET a = E'\\' RETURNING id"));
-        let (sql, names) = translate_placeholders("SELECT e'x' || %s");
-        assert_eq!(names.len(), 1, "lowercase e prefix: {sql}");
-        let (_, names) = translate_placeholders("SELECT some'%s'");
-        assert!(
-            names.is_empty(),
-            "an identifier ending in e is not an escape prefix"
-        );
     }
 
     #[test]
     fn dollar_quoting_hides_its_contents() {
-        let (sql, names) = translate_placeholders("SELECT $$%s$$, %s");
-        assert_eq!(sql, "SELECT $$%s$$, $1");
-        assert_eq!(names.len(), 1);
-        let (sql, names) = translate_placeholders("SELECT $fn$ x %s $other$ %s $fn$, %(a)s");
-        assert_eq!(sql, "SELECT $fn$ x %s $other$ %s $fn$, $1");
-        assert_eq!(names, vec!["a"]);
         assert!(!returns_rows("DO $$ BEGIN RETURNING END $$"));
         assert!(!returns_rows(
             "CREATE FUNCTION f() RETURNS int AS $body$ SELECT 1 RETURNING $body$ LANGUAGE sql"
@@ -2098,30 +2099,14 @@ SET b = 2;"
     }
 
     #[test]
-    fn percent_inside_string_literal_is_left_alone() {
-        let (sql, names) = translate_placeholders("SELECT * FROM t WHERE a LIKE '%save%'");
-        assert_eq!(sql, "SELECT * FROM t WHERE a LIKE '%save%'");
-        assert!(names.is_empty());
-    }
-
-    #[test]
-    fn percent_inside_quoted_identifier_is_left_alone() {
-        let (sql, _) = translate_placeholders(r#"SELECT "od%sd" FROM t"#);
-        assert_eq!(sql, r#"SELECT "od%sd" FROM t"#);
-    }
-
-    #[test]
-    fn placeholder_inside_line_comment_is_left_alone() {
-        let (sql, names) = translate_placeholders("SELECT 1 -- pct %s here\n, 2");
-        assert!(names.is_empty(), "got {names:?}");
-        assert_eq!(sql, "SELECT 1 -- pct %s here\n, 2");
-    }
-
-    #[test]
-    fn placeholder_inside_block_comment_is_left_alone() {
-        let (sql, names) = translate_placeholders("SELECT /* %s /* nested %s */ */ 1, %s");
-        assert_eq!(names.len(), 1, "only the real placeholder: {sql}");
-        assert!(sql.ends_with("1, $1"), "got {sql}");
+    fn literals_identifiers_and_comments_hold_placeholders_as_they_do_for_psycopg() {
+        let (sql, names) =
+            translate_placeholders("SELECT * FROM t WHERE a LIKE '%%save%%' AND b = %s");
+        assert_eq!(sql, "SELECT * FROM t WHERE a LIKE '%save%' AND b = $1");
+        assert_eq!(names.len(), 1);
+        let (sql, names) = translate_placeholders(r#"SELECT "od%%sd", 1 -- %s"#);
+        assert_eq!(sql, r#"SELECT "od%sd", 1 -- $1"#);
+        assert_eq!(names.len(), 1);
     }
 
     #[test]

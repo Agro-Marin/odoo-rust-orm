@@ -300,6 +300,21 @@ for value in (["a", "b"], [], ["NULL", None, "a,b", 'a"b', "a\\b"]):
     if by_rust != by_py:
         bad.append(("untyped array", repr(value), repr(by_rust), repr(by_py)))
 
+for query, params in (
+    ("SELECT '%%(city)s' AS a, %s AS b", ["x"]),
+    ("SELECT '%%(city)s' AS a", None),
+    ("SELECT '%%' AS a", ()),
+    ("SELECT %(v)s AS a, 'x %% y' AS b", {"v": 1}),
+    ("SELECT 'a' LIKE '%%a%%' AS a, %s AS b", [2]),
+):
+    checked += 1
+    rcur.execute(query, params)
+    by_rust = rcur.fetchall()
+    rust.commit()
+    by_py = pcur.execute(query, params).fetchall()
+    if by_rust != by_py:
+        bad.append(("percent", query[:30], repr(by_rust), repr(by_py)))
+
 print("PROBE types checked=%d mismatches=%d" % (checked, len(bad)))
 for b in bad:
     print("PROBE types MISMATCH %-12s value=%-20s rust=%-42s psycopg=%s" % b)

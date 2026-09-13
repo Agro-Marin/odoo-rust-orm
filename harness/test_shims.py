@@ -772,39 +772,51 @@ def test_an_order_changed_after_the_kernel_was_built_refuses() -> None:
         orm_shim.ORDERS.update(saved)
 
 
-def test_a_loading_registry_does_not_spend_the_kernel_build() -> None:
+def test_an_incomplete_registry_does_not_spend_the_kernel_build() -> None:
     orm_shim = _shims()[1]
     built = []
 
     class Registry:
-        ready = False
+        models = {"a": 1}
 
     class Env:
         registry = Registry()
+
+    def factory(registry):
+        built.append(len(registry.models))
+        if len(registry.models) < 2:
+            raise RuntimeError("refusing to write an incomplete export: 1 of 2")
+        return "kernel"
 
     saved = (
         orm_shim.KERNEL,
         orm_shim.KERNEL_FACTORY,
         orm_shim._KERNEL_TRIED_PID,
         orm_shim.PROCESS_HOOK,
+        orm_shim._KERNEL_INCOMPLETE[0],
     )
     try:
         orm_shim.KERNEL, orm_shim.PROCESS_HOOK = None, None
         orm_shim._KERNEL_TRIED_PID = None
-        orm_shim.KERNEL_FACTORY = lambda registry: built.append(registry) or "kernel"
+        orm_shim._KERNEL_INCOMPLETE[0] = None
+        orm_shim.KERNEL_FACTORY = factory
+        env = Env()
         check(
-            "no kernel while the registry loads", orm_shim._ensure_kernel(Env()), False
+            "no kernel from an incomplete registry", orm_shim._ensure_kernel(env), False
         )
-        check("...and no build was attempted", built, [])
-        Registry.ready = True
-        check("the loaded registry builds it", orm_shim._ensure_kernel(Env()), True)
-        check("...once", len(built), 1)
+        check("...asked again, no second export", orm_shim._ensure_kernel(env), False)
+        check("...one attempt so far", built, [1])
+        check("...and the attempt is not spent", orm_shim._KERNEL_TRIED_PID, None)
+        Registry.models = {"a": 1, "b": 2}
+        check("the grown registry builds it", orm_shim._ensure_kernel(env), True)
+        check("...on the second export", built, [1, 2])
     finally:
         (
             orm_shim.KERNEL,
             orm_shim.KERNEL_FACTORY,
             orm_shim._KERNEL_TRIED_PID,
             orm_shim.PROCESS_HOOK,
+            orm_shim._KERNEL_INCOMPLETE[0],
         ) = saved
 
 
@@ -1496,6 +1508,42 @@ def test_pool_drain_retires_borrowed_connections() -> None:
     check("close retires idle connections", fresh.closed, True)
 
 
+def test_a_refused_connection_waits_like_psycopg_pool_then_times_out() -> None:
+    from psycopg_pool import PoolTimeout
+
+    shim = _shims()[0]
+    pool = shim._RustPool(max_size=2)
+    attempts = []
+
+    def refuse_twice():
+        attempts.append(1)
+        if len(attempts) <= 2:
+            raise RuntimeError("db error: FATAL: sorry, too many clients already")
+        return shim.FakeConnection(_RustConn())
+
+    pool._new_connection = refuse_twice
+    conn = pool.getconn(timeout=5)
+    check("a refused connection is retried until it opens", len(attempts), 3)
+    pool.putconn(conn)
+
+    pool._new_connection = lambda: (_ for _ in ()).throw(
+        RuntimeError("db error: FATAL: sorry, too many clients already")
+    )
+    pool._idle.clear()
+    try:
+        pool.getconn(timeout=0.2)
+    except PoolTimeout as exc:
+        check(
+            "...and times out as psycopg_pool does",
+            "too many clients" in str(exc),
+            True,
+        )
+    else:
+        raise AssertionError("a pool that cannot connect returned a connection")
+    check("the failed checkout gave its slot back", pool._out, 0)
+    pool.close()
+
+
 def test_every_kernel_failure_path_reports_somewhere() -> None:
     # The completeness half of a census, which a null control does NOT imply:
     # a corpus reading zero refusals says nothing about a site that refuses and
@@ -1590,7 +1638,7 @@ def test_the_ports_signatures_match_the_delegates() -> None:
 
     backend = _backend()
     wrong = []
-    for name in backend.PROTOCOL_METHODS:
+    for name in ("create_rows", "update_rows", "search"):
         mine = _shape(getattr(backend.RustBackend, name))
         theirs = _shape(getattr(PostgresBackend, name))
         if mine != theirs:
@@ -1641,10 +1689,27 @@ def test_an_unarmed_port_is_its_delegate() -> None:
             {"check_access": False, "prof": "p"},
         ),
         "as_query": (("model", False), {}),
+        "descendants": (
+            ("model", "parent_id", [1]),
+            {"domain": "d", "step_domain": "s", "same_columns": ("a",)},
+        ),
+        "read_group_rows": (
+            ("model", "select"),
+            {
+                "domain": "d",
+                "query": "q",
+                "groupby": ["g"],
+                "aggregates": ["__count"],
+                "having": None,
+                "order": None,
+                "limit": None,
+                "offset": 0,
+            },
+        ),
         "get_existing_ids": (("model", [1, 2]), {}),
         "lock_for_update": (("model",), {"allow_referencing": True}),
         "try_lock_for_update": (("model",), {"allow_referencing": True, "limit": 3}),
-        "unlink_rows": (("model", (1,), "Data", "Defaults", "Attachment"), {}),
+        "unlink_rows": (("model", (1,), "Defaults", "Attachment"), {}),
         "read_m2m_pairs": (("model", "rel", "c1", "c2", [1]), {}),
         "link_m2m_pairs": (("model", "rel", "c1", "c2", [(1, 2)]), {}),
         "unlink_m2m_pairs": (("model", "rel", "c1", "c2", [(1, 2)]), {}),
@@ -1697,6 +1762,31 @@ def test_the_port_mirrors_its_delegates_support_flags() -> None:
                 getattr(port, flag),
                 value,
             )
+
+
+def test_a_protocol_member_the_port_does_not_know_is_delegated() -> None:
+    backend = _backend()
+
+    class Delegate:
+        supports_something_new = True
+
+        def something_new(self, model):
+            return ("delegate", model)
+
+    port = backend.RustBackend(Delegate())
+    before = backend.STATS["delegated"]["something_new"]
+    check("a new flag is the delegate's", port.supports_something_new, True)
+    check("a new method is the delegate's", port.something_new("m"), ("delegate", "m"))
+    check(
+        "...and counted as delegated",
+        backend.STATS["delegated"]["something_new"] > before,
+        True,
+    )
+    import copy
+
+    check(
+        "copying the port does not recurse", type(copy.copy(port)), backend.RustBackend
+    )
 
 
 def test_installing_the_port_leaves_the_in_memory_backend_alone() -> None:
@@ -1863,6 +1953,8 @@ def test_a_column_group_the_kernel_refuses_falls_through_to_the_delegate() -> No
 
 
 class _InsertField:
+    is_html = False
+
     def __init__(self, name, convert=None) -> None:
         self.name = name
         self._convert = convert

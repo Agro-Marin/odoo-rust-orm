@@ -36,11 +36,13 @@ _port_logger = logging.getLogger("odoo.rust_kernel.port")
 #: added upstream cannot reach a `RustBackend` that silently lacks it.
 PROTOCOL_FLAGS = (
     "sequences",
+    "columns",
     "supports_parent_store",
     "supports_record_rules",
     "supports_joined_m2m_read",
     "supports_column_scan",
     "supports_translation_terms",
+    "supports_recursive_queries",
 )
 
 PROTOCOL_METHODS = (
@@ -49,6 +51,8 @@ PROTOCOL_METHODS = (
     "fetch",
     "search",
     "as_query",
+    "descendants",
+    "read_group_rows",
     "get_existing_ids",
     "lock_for_update",
     "try_lock_for_update",
@@ -138,6 +142,20 @@ class RustBackend:
         return self._delegate.sequences
 
     @property
+    def columns(self):
+        return self._delegate.columns
+
+    @property
+    def supports_recursive_queries(self) -> bool:
+        return self._delegate.supports_recursive_queries
+
+    def __getattr__(self, name):
+        if name == "_delegate" or name.startswith("__"):
+            raise AttributeError(name)
+        _delegated(name, "not in this port's protocol")
+        return getattr(self._delegate, name)
+
+    @property
     def supports_parent_store(self) -> bool:
         return self._delegate.supports_parent_store
 
@@ -175,9 +193,9 @@ class RustBackend:
             return None
         return self._delegate.update_rows(model, fnames, rows)
 
-    def fetch(self, model, query, column_fields, other_fields):
+    def fetch(self, *args, **kwargs):
         _delegated("fetch", "not implemented natively")
-        return self._delegate.fetch(model, query, column_fields, other_fields)
+        return self._delegate.fetch(*args, **kwargs)
 
     def search(
         self, model, domain, offset, limit, order, *, check_access=True, prof=None
@@ -193,41 +211,45 @@ class RustBackend:
             model, domain, offset, limit, order, check_access=check_access, prof=prof
         )
 
-    def as_query(self, model, ordered=True):
+    def as_query(self, *args, **kwargs):
         _delegated("as_query", "not implemented natively")
-        return self._delegate.as_query(model, ordered)
+        return self._delegate.as_query(*args, **kwargs)
 
-    def get_existing_ids(self, model, ids):
+    def descendants(self, *args, **kwargs):
+        _delegated("descendants", "not implemented natively")
+        return self._delegate.descendants(*args, **kwargs)
+
+    def read_group_rows(self, *args, **kwargs):
+        _delegated("read_group_rows", "not implemented natively")
+        return self._delegate.read_group_rows(*args, **kwargs)
+
+    def get_existing_ids(self, *args, **kwargs):
         _delegated("get_existing_ids", "not implemented natively")
-        return self._delegate.get_existing_ids(model, ids)
+        return self._delegate.get_existing_ids(*args, **kwargs)
 
-    def lock_for_update(self, model, *, allow_referencing=False) -> None:
+    def lock_for_update(self, *args, **kwargs):
         _delegated("lock_for_update", "not implemented natively")
-        return self._delegate.lock_for_update(
-            model, allow_referencing=allow_referencing
-        )
+        return self._delegate.lock_for_update(*args, **kwargs)
 
-    def try_lock_for_update(self, model, *, allow_referencing=False, limit=None):
+    def try_lock_for_update(self, *args, **kwargs):
         _delegated("try_lock_for_update", "not implemented natively")
-        return self._delegate.try_lock_for_update(
-            model, allow_referencing=allow_referencing, limit=limit
-        )
+        return self._delegate.try_lock_for_update(*args, **kwargs)
 
-    def unlink_rows(self, model, sub_ids, Data, Defaults, Attachment):
+    def unlink_rows(self, *args, **kwargs):
         _delegated("unlink_rows", "not implemented natively")
-        return self._delegate.unlink_rows(model, sub_ids, Data, Defaults, Attachment)
+        return self._delegate.unlink_rows(*args, **kwargs)
 
-    def read_m2m_pairs(self, model, relation, column1, column2, ids):
+    def read_m2m_pairs(self, *args, **kwargs):
         _delegated("read_m2m_pairs", "not implemented natively")
-        return self._delegate.read_m2m_pairs(model, relation, column1, column2, ids)
+        return self._delegate.read_m2m_pairs(*args, **kwargs)
 
-    def link_m2m_pairs(self, model, relation, column1, column2, pairs) -> None:
+    def link_m2m_pairs(self, *args, **kwargs):
         _delegated("link_m2m_pairs", "not implemented natively")
-        return self._delegate.link_m2m_pairs(model, relation, column1, column2, pairs)
+        return self._delegate.link_m2m_pairs(*args, **kwargs)
 
-    def unlink_m2m_pairs(self, model, relation, column1, column2, pairs) -> None:
+    def unlink_m2m_pairs(self, *args, **kwargs):
         _delegated("unlink_m2m_pairs", "not implemented natively")
-        return self._delegate.unlink_m2m_pairs(model, relation, column1, column2, pairs)
+        return self._delegate.unlink_m2m_pairs(*args, **kwargs)
 
 
 #: Set by the addon to the same callable `rust_orm_shim` uses, so the port

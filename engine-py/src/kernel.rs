@@ -54,7 +54,7 @@ impl RustKernel {
         })?;
         let conn = db.connect(py, None)?;
         let handle = conn.handle().clone();
-        let client = conn.client();
+        let client = conn.client()?;
         // Read the model map and security/default watermark from one snapshot.
         // This private transaction never changes the caller's transaction.
         conn.ensure_tx(py)?;
@@ -203,7 +203,7 @@ impl RustKernel {
         // statement that is the KERNEL's.
         conn.ensure_tx(py)?;
         let checked = conn.checked_signals(self.generation);
-        let client = conn.client();
+        let client = conn.client()?;
         let handle = conn.handle().clone();
         let stmts = conn.kernel_stmts_at(self.generation);
         py.detach(|| {
@@ -278,7 +278,7 @@ impl RustKernel {
         }
         conn.ensure_tx(py)?;
         let checked = conn.checked_signals(self.generation);
-        let client = conn.client();
+        let client = conn.client()?;
         let handle = conn.handle().clone();
         let stmts = conn.kernel_stmts_at(self.generation);
         // The GIL is released for the whole dispatch: `detached_ms` minus the

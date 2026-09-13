@@ -62,6 +62,8 @@ class _Field:
     happened to be around.
     """
 
+    is_html = False
+
     def __init__(self, name, cast, translate):
         self.name = name
         self.column_type = (cast.lower(), cast)

@@ -27,6 +27,7 @@ DBNAME = None
 KERNEL_FACTORY = None
 _KERNEL_TRIED_PID = None
 _KERNEL_LOCK = threading.Lock()
+_KERNEL_INCOMPLETE = [None]
 
 PROCESS_HOOK = None
 _PROCESS_PID = None
@@ -115,8 +116,6 @@ def _ensure_kernel(env):
             _logger.exception("the rust engine process hook failed")
     if KERNEL is not None:
         return True
-    if not getattr(env.registry, "ready", True):
-        return False
     if KERNEL_FACTORY is None:
         _logger.debug("no kernel factory yet; the addon has not armed this process")
         return False
@@ -124,12 +123,14 @@ def _ensure_kernel(env):
         # one attempt per process: a worker that could not build the kernel
         # serves from Python for its whole life rather than retrying per call
         return False
+    loading = (os.getpid(), id(env.registry), len(env.registry.models))
+    if loading == _KERNEL_INCOMPLETE[0]:
+        return False
     with _KERNEL_LOCK:
         if KERNEL is not None:
             return True
         if os.getpid() == _KERNEL_TRIED_PID:
             return False
-        _KERNEL_TRIED_PID = os.getpid()
         started = time.monotonic()
         try:
             KERNEL = KERNEL_FACTORY(env.registry)
@@ -139,7 +140,15 @@ def _ensure_kernel(env):
                 os.getpid(),
                 (time.monotonic() - started) * 1000,
             )
-        except Exception:
+        except Exception as exc:
+            if "incomplete export" in str(exc):
+                _KERNEL_INCOMPLETE[0] = loading
+                _logger.debug(
+                    "not building the rust kernel yet: %s models loaded so far",
+                    loading[2],
+                )
+                return False
+            _KERNEL_TRIED_PID = os.getpid()
             _logger.exception(
                 "could not build the rust kernel in this process; "
                 "it will serve from python"
@@ -458,8 +467,6 @@ def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: AR
     if not _bound_db(model.env):
         return _refuse("another database")
     if not _ensure_kernel(model.env):
-        if not getattr(model.env.registry, "ready", True):
-            return _refuse("registry still loading")
         return _refuse("kernel not built")
     try:
         if model.env.cr in DIRTY_CRS:
@@ -703,6 +710,18 @@ def _resolve_display_name_exact(model, domain):
     return out
 
 
+def _sql_tz(env):
+    tz = env.context.get("tz") or None
+    if tz is None:
+        return None
+    from odoo.orm.fields.temporal import _resolve_sql_timezone_name
+
+    resolved = _resolve_sql_timezone_name(env, tz)
+    if resolved is None:
+        raise KernelRefused("timezone %r is unknown to the database" % tz)
+    return resolved
+
+
 def _request(model, method, **kw):
     env = model.env
     req = {
@@ -714,7 +733,7 @@ def _request(model, method, **kw):
         "lang": env.context.get("lang") or None,
         "allowed_company_ids": env.context.get("allowed_company_ids") or None,
         "active_test": bool(env.context.get("active_test", True)),
-        "tz": env.context.get("tz") or None,
+        "tz": _sql_tz(env),
     }
     if kw.get("domain") is not None:
         if not isinstance(kw["domain"], list):

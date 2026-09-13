@@ -26,6 +26,9 @@ fn collect(dir: &Path, suffix: &str, out: &mut Vec<PathBuf>) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            if path.file_name().is_some_and(|name| name == "bin") {
+                continue;
+            }
             collect(&path, suffix, out);
         } else if path.to_string_lossy().ends_with(suffix) {
             out.push(path);

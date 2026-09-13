@@ -296,6 +296,32 @@ fn negating_an_inequality_adds_the_unset_case_only_where_odoo_does() {
 }
 
 #[test]
+fn a_number_compared_with_text_admits_the_unset_rows_as_odoo_does() {
+    let reg = base_registry();
+    let sql = compile(&reg, serde_json::json!(["!", ["name", ">", 3]]));
+    assert!(sql.contains("<= '3'"), "got: {sql}");
+    assert!(
+        sql.contains("IS NULL"),
+        "'' <= '3', so unset names match: {sql}"
+    );
+}
+
+#[test]
+fn an_inequality_on_html_is_refused() {
+    let reg = registry(vec![model(
+        "res.partner",
+        "id",
+        vec![
+            field("id", FieldType::Integer),
+            field("comment", FieldType::Html),
+        ],
+    )]);
+    let err = compile_res(&reg, serde_json::json!([["comment", "<", "note"]])).unwrap_err();
+    assert!(format!("{err:#}").contains("sanitized"), "{err:#}");
+    assert!(compile_res(&reg, serde_json::json!([["comment", "=", "note"]])).is_ok());
+}
+
+#[test]
 fn an_inequality_on_a_boolean_is_refused() {
     let reg = base_registry();
     let err = compile_res(&reg, serde_json::json!([["active", "<=", true]])).unwrap_err();

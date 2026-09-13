@@ -2883,6 +2883,87 @@ A runtime contract reads Belgium's currency, which a committed
 rule hides, through `web_search_read` plain and named and `read(load=None)`.
 The contract fails on the previous build.
 
+## The Rust cursor sent `%%` inside a quoted literal as it was written
+
+The same comparison over `/base`, 3,947 tests on `rustorm_o31`, had eight tests
+failing only under routing. Two were `res.partner` addresses rendered as their
+format string and one a CHECK constraint that let a row through:
+
+```
+_display_address()   'TestCity 12345'  ->  '%(city)s %(zip)s %(nothing)s'
+add_constraint       CHECK (name !~ '%')  stored as  CHECK (name !~ '%%')
+```
+
+psycopg splits a query on `%` without reading SQL: when parameters are passed,
+an empty tuple included, `%%` is a percent and `%s` a placeholder wherever they
+stand, inside a string literal as much as outside. Odoo's SQL is written for
+that, `'%%'` in literals. `translate_placeholders` skipped quoted literals,
+quoted identifiers, dollar-quoted bodies and comments, so a `%%` there reached
+the server doubled. Every `SQL` object reaches the cursor with its parameter
+tuple, so this was any fork statement with a percent in a literal: a stored
+format, a constraint definition, a `LIKE 'x%%'` pattern.
+
+```
+                                          psycopg          rust, before
+SELECT '%%(city)s' AS a, %s AS b  ['x']   '%(city)s'       '%%(city)s'
+SQL("SELECT '%%' AS b")                   '%'              '%%'
+SELECT %(v)s, 'x %% y'  {'v': 1}          'x % y'          'x %% y'
+SELECT '%%(city)s' AS a  (no params)      '%%(city)s'      '%%(city)s'
+```
+
+The translation now reads `%` as psycopg does. Four unit tests had pinned the
+quote-aware reading; a query they protected, `LIKE '%save%'` with parameters,
+is one psycopg itself rejects, so no working caller could have depended on it.
+The type probe runs five percent queries through both cursors; the committed
+cursor fails three.
+
+Running `/base` again, on odoo trees that peers had just synced, turned up five
+more things.
+
+- **A closed Rust connection kept its backend.** `RustConn.close()` rolled back
+  and set a flag; the socket closed only when the last `Arc<Client>` dropped,
+  which a live Python reference could put off for the life of the process.
+  `/base` held 88 idle backends on `rustorm_o31`, the shared cluster refused
+  every new connection, and a peer's suite failed. `close()` now takes the
+  client out of the connection, and tokio-postgres sends Terminate. A runtime
+  contract closes a connection and requires its backend gone from
+  `pg_stat_activity`; the previous build keeps it. `TestCursorBulkMethods`
+  alone peaked at 16 connections, now 3, and the whole of `/base` at 11 where
+  psycopg's run peaks at 10.
+- **A refused connection failed at once.** psycopg_pool keeps reconnecting in
+  the background, so `getconn` waits until its timeout and raises
+  `PoolTimeout`, which the fork's pool turns into `PoolError`. The shim raised
+  "too many clients already" as a RuntimeError on the first try. It now retries
+  with backoff until the deadline, then raises `PoolTimeout`.
+- **The fork's persistence protocol grew four members** --
+  `supports_recursive_queries`, `columns`, `descendants` and
+  `read_group_rows` -- and `RustBackend` lacked them: 646 errors, every import
+  among them. The port now delegates them explicitly, and delegates any member
+  it does not know through `__getattr__`, counted under "not in this port's
+  protocol", so the next addition degrades to Python instead of raising. The
+  conformance test still requires each one to be named.
+- **A grouping in a timezone PostgreSQL does not know logged nothing.** Python
+  resolves the context `tz` against `pg_timezone_names`, maps an alias to its
+  zone, and groups in UTC with a warning when neither is known. The shim now
+  resolves it with the fork's own `_resolve_sql_timezone_name` and falls back
+  to Python when it cannot.
+- **A test run never built a kernel.** 10bc8e6 made the shim decline while
+  `registry.ready` was false, to stop an ERROR traceback when a read during
+  module loading exported a half-loaded registry. Odoo runs `--test-tags`
+  tests inside loading, before `ready`, so those runs routed nothing. The shim
+  now tries, and when the export refuses as incomplete it logs at debug, keeps
+  the process's one attempt, and tries again once the registry has more models.
+
+The source stamp no longer covers `engine-py/src/bin`: building the type probe
+changed the checksum without rebuilding the extension, and the addon refused a
+build that was current.
+
+```
+/base, 3951 tests    no engine: 4 failed, 19 errors    routing on: 8 failed, 19 errors, routed=907
+failing only under routing: the cursor-parity residuals -- two pipeline-mode checks, the
+binary COPY type probe, and a KeyboardInterrupt during connection construction
+```
+
 ## Odoo's own ORM test modules, with routing on
 
 Installing a fresh engine into the workspace venv put routing under every

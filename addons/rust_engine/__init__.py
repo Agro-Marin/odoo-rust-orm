@@ -165,7 +165,11 @@ def source_crc(root: pathlib.Path) -> str:
         if not suffix:
             files += [path] if path.is_file() else []
         elif path.is_dir():
-            files += [p for p in path.rglob("*" + suffix) if p.is_file()]
+            files += [
+                p
+                for p in path.rglob("*" + suffix)
+                if p.is_file() and "bin" not in p.relative_to(path).parts[:-1]
+            ]
     blob = b"".join(
         rel.encode() + b"\0" + path.read_bytes() + b"\0"
         for rel, path in sorted((p.relative_to(root).as_posix(), p) for p in files)
