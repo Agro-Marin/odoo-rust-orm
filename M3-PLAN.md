@@ -1531,6 +1531,12 @@ after every sync, which `harness/orm_tests.sh` does for any tag set.
 - composing SQL in Python is not: `_field_to_sql` and `Query.select` are under
   a tenth of a replay, so a native `fetch` would buy a few percent.
 
-The next step toward replacement is therefore access logic, not statements:
-record-rule evaluation for a recordset in the kernel, and the mail access scans
-as kernel-side joins, each verified by the differential above.
+The next step toward replacement is therefore access logic, not statements,
+and one version of it has already been measured and set aside: answering the
+rule half of `_check_access` as a `SELECT id ... WHERE id = ANY(ids) AND <rule>`
+agreed with Python on 1,804 decisions and saved nothing, because the round trip
+costs what the in-memory evaluation does (README, "Recorded traffic said the
+routed path was slower, and why"). What remains open is evaluation without the
+round trip -- the rule predicates over values the cache already holds, in
+Rust -- and the mail access scans as one kernel-side join instead of chunked
+Python passes. Either is verified by the differential above before it is armed.
