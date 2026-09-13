@@ -1566,3 +1566,17 @@ routed path was slower, and why"). What remains open is evaluation without the
 round trip -- the rule predicates over values the cache already holds, in
 Rust -- and the mail access scans as one kernel-side join instead of chunked
 Python passes. Either is verified by the differential above before it is armed.
+
+**Grouped views were measured the same way on 2026-09-13, and the answer did
+not change.** Routed `web_read_group` still reads 0.95x Python on recorded
+traffic. A profile of its 286 calls puts about a third of the time in
+`_get_display_name_visible_ids` -> `_filtered_display_name_access` ->
+`filtered_domain`, which looks like the case the rule-check step missed:
+fresh group records, so the in-memory rules fetch the fields they compare.
+Replacing that helper with one rule-filtered `_search` over the group ids,
+for comodels whose display-name visibility and `_check_access` are the base
+ones, gave identical responses on all 286 calls and 1.025 s against 1.043 s.
+The fetches move into the query rather than disappear, and the remaining time
+is web's formatting over the groups. What would move grouped views is routing
+`web_read_group` whole, as `web_search_read` is, which is a larger step than
+the label check.
