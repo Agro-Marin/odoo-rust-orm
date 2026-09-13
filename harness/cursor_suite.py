@@ -19,28 +19,6 @@ MODULES = [
     "odoo.addons.base.tests.test_db_cursor",
 ]
 
-# Excluded from BOTH legs, so the comparison stays symmetric, and reported in
-# the output so the exclusion is visible rather than silent.
-#
-# `test_a_baseexception_during_construction_returns_the_connection` raises a
-# real `KeyboardInterrupt` on purpose, to check that a BaseException during
-# connection construction still returns the connection to the pool. Odoo's own
-# runner installs a handler for that; a bare `unittest` runner inside
-# `odoo-bin shell` does not, so the interrupt escapes and takes the process
-# with it -- the whole suite then reports nothing at all, which is worse than
-# skipping one test.
-EXCLUDE = {"test_a_baseexception_during_construction_returns_the_connection"}
-
-
-def _keep(suite):
-    out = unittest.TestSuite()
-    for t in suite:
-        if isinstance(t, unittest.TestSuite):
-            out.addTest(_keep(t))
-        elif getattr(t, "_testMethodName", None) not in EXCLUDE:
-            out.addTest(t)
-    return out
-
 
 def _cases(suite):
     for t in suite:
@@ -83,7 +61,7 @@ outcomes = {}
 detail = {}
 for modname in MODULES:
     mod = importlib.import_module(modname)
-    suite = _keep(unittest.TestLoader().loadTestsFromModule(mod))
+    suite = unittest.TestLoader().loadTestsFromModule(mod)
     short = modname.rsplit(".", 1)[-1]
     for case in _cases(suite):
         outcomes["%s.%s" % (short, case.id().split(".", 3)[-1])] = "ok"
@@ -103,7 +81,6 @@ for modname in MODULES:
     for case, _reason in result.skipped:
         outcomes["%s.%s" % (short, case.id().split(".", 3)[-1])] = "skip"
     outcomes["__ran__%s" % short] = result.testsRun
-    outcomes["__excluded__%s" % short] = sorted(EXCLUDE)
 
 # THE GATE MUST NOT BE ABLE TO PASS BY NOT RUNNING THE THING UNDER TEST.
 # A pool is built once per dsn and cached, so a shim that swaps the pool

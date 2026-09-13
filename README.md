@@ -803,12 +803,8 @@ difference with a cost attached.
 `harness/cursor_parity_baseline.json` holds the number and the gate matches
 it EXACTLY, as the repo's other ratchets do, so fixing one lowers the
 baseline in the same commit rather than banking slack. A leg that ran no
-tests reports `CURSOR PARITY VACUOUS` and fails rather than passing. And
-`test_a_baseexception_during_construction_returns_the_connection` is excluded
-from BOTH legs, symmetrically and visibly: it raises a real
-`KeyboardInterrupt` on purpose, Odoo's runner installs a handler for that and
-a bare one does not, so it killed the whole leg and the suite reported
-nothing at all.
+tests reports `CURSOR PARITY VACUOUS` and fails rather than passing. No test
+is excluded from either leg.
 
 ### Byte parity: the lane the other lanes cannot be
 
@@ -3009,6 +3005,23 @@ passes a Python-only conf and never saw it.
 
 ```
 cursor parity   ran psycopg=382 rust=382   not-ok both=19   ONLY-RUST 3 -> 0
+```
+
+The suite used to exclude `test_a_baseexception_during_construction_returns_the_connection`
+from both legs, because its `KeyboardInterrupt` escaped and ended the run. The
+interrupt was escaping from psycopg_pool's worker thread. The test patched the
+connection's `cursor` for the whole process and raised on the first call
+anywhere, and after another test the first call was the worker resetting a
+returned connection. The dead worker then starved every later borrow, which is
+why Odoo's own runner showed six COPY tests timing out on the pool with no engine
+at all. odoo a700313e3293 raises only when the caller is `Cursor.__init__`, and
+patches the class of the connection the pool lends, so the test now runs and
+passes under both cursors and the exclusion is gone.
+
+```
+/base cursor classes, --db_maxconn=8   no engine 1 failed, 6 errors of 25 -> 0 of 25
+                                       rust cursor 1 failed of 25 -> 0 of 25
+cursor parity                          383 tests, ONLY-RUST 0, nothing excluded
 ```
 
 ## `web_read` routes, and labels visible many2one targets in the kernel

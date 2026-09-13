@@ -86,7 +86,6 @@ if rust.get("__cursor__") != "FakeConnection" or not rust.get("__connects__"):
     )
     sys.exit(1)
 detail = rust.get("__detail__", {})
-excluded = sorted({n for v in rust.values() if isinstance(v, list) for n in v})
 
 def bad(d, k):
     return d.get(k) in ("fail", "error")
@@ -97,8 +96,6 @@ both      = sorted(k for k in names if bad(psy, k) and bad(rust, k))
 
 print("  ran psycopg=%d rust=%d   not-ok both=%d   ONLY-RUST=%d   only-psycopg=%d"
       % (ran_p, ran_r, len(both), len(only_rust), len(only_psy)))
-if excluded:
-    print("  excluded from both legs: %s" % ", ".join(excluded))
 import collections
 shapes = collections.Counter(
     detail.get(k, "?").split(":")[0][:60] for k in only_rust
