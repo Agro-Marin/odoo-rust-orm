@@ -28,7 +28,7 @@ base() {
 { base; printf 'server_wide_modules = base,web,rust_engine\nrust_engine_db = %s\nrust_engine_mode = on\nrust_engine_verify_sample = 0\n' "$DB"; } > "$OUT/on.conf"
 
 failures() {
-  grep -aoE 'odoo\.addons\.[a-z_]+\.tests\.[a-z_0-9]+: (FAIL|ERROR): [^ ]+( [A-Za-z_]+\.[A-Za-z_0-9]+)?' "$1" \
+  grep -aoE '(odoo\.addons\.[a-z_]+\.tests\.[a-z_0-9]+|odoo\.tests\.suite): (FAIL|ERROR): [^ ]+( [A-Za-z_(.]+[A-Za-z_0-9)]+)?' "$1" \
     | sed -E 's/^[^:]+: //' | sort -u
 }
 
@@ -58,6 +58,9 @@ fi
 unavailable=$(grep -ac "INFRASTRUCTURE UNAVAILABLE" "$OUT/on.log")
 if [ "$unavailable" != 0 ]; then
   echo "ORM TESTS FAILED: $unavailable test class(es) could not run in the routing leg"; exit 1
+fi
+if [ "${off_line%% of *}" != "${on_line%% of *}" ] && [ -z "$only_on" ]; then
+  echo "ORM TESTS FAILED: the legs report different totals ($off_line vs $on_line) but no failure name differs"; exit 1
 fi
 if [ -n "$only_on" ]; then
   echo "ORM TESTS FAILED: failing only under routing:"
