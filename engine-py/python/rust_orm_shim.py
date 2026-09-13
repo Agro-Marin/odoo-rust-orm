@@ -286,8 +286,6 @@ def forget_gates() -> None:
 # read() override (res.users reading its own record under sudo) leaves them on
 # the kernel; the ids of a read() travel as a search_read
 _READ_PATH_NEEDS = {
-    # fetch() runs check_access("read") on the ids it is given; search_fetch
-    # reads only what _search returned, so the other methods do not need it
     "read": ("read", "_check_access"),
     "search_read": ("_search", "search_read"),
     "web_search_read": ("_search", "search_read"),
@@ -378,9 +376,6 @@ def _gated(model, method) -> None:
 
 
 def _kernel_labels(comodel) -> bool:
-    # The kernel names a comodel's records from _rec_name and decides which
-    # the user may see from rules. A comodel that computes its name, or that
-    # decides access in _check_access, is Python's to label.
     if not _display_ok(comodel):
         return False
     key = _cache_key(comodel, "ca")
@@ -392,8 +387,6 @@ def _kernel_labels(comodel) -> bool:
 
 
 def _python_labelled(model, fields):
-    # Those many2ones are read raw and labelled by
-    # Many2one.convert_to_read_multi, which is read()'s own labelling.
     out = []
     for fname in fields:
         f = model._fields.get(fname)
@@ -1532,9 +1525,6 @@ def install():
                     self.env, self, [("id", "in", ids)], "id", fields
                 ):
                     raise KernelRefused("flush failed; not routing")
-                # read(load=None) is web_read's call: its many2ones are the raw
-                # foreign keys, an unreadable target included, so the kernel
-                # returns them unlabelled rather than redacted
                 if load == "_classic_read":
                     labelled = raw = _python_labelled(self, fields)
                 else:

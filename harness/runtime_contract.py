@@ -623,17 +623,12 @@ print(
     flush=True,
 )
 
-# mail.message decides read access in _check_access, through the documents its
-# messages belong to, and the kernel reads only rules. Labelling a many2one to
-# it from rules named messages Python redacts: mail.mail.mail_message_id at the
-# admin read a subject where Python reads False. The kernel refuses the label
-# outright, and the shim labels such a column in Python.
 if "mail.mail" in reg:
     shim.reset_breaker()
     previous_mode, previous_sample = shim.MODE, shim.SAMPLE
     shim.MODE, shim.SAMPLE = "on", 0.0
     try:
-        with env_for(2) as e:  # the admin reads mail.mail and is not the superuser
+        with env_for(2) as e:
             request = {
                 "model": "mail.mail",
                 "method": "search_read",

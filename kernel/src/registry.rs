@@ -295,10 +295,6 @@ pub struct Model {
 
     pub display_name_access_pure: bool,
 
-    /// `_check_access` is Odoo's own: record rules and ACLs decide read access.
-    /// A model that overrides it (mail.message reads through its documents)
-    /// decides in Python which records a user may see, and the kernel cannot
-    /// label its records for anyone but the superuser.
     pub check_access_pure: bool,
 
     pub active_name: Option<String>,
