@@ -174,6 +174,7 @@ def export_registry(reg):
             "_read_group_postprocess_groupby", "_read_group_empty_value",
         )
         display_name_access_pure = pure("_get_display_name_visible_ids")
+        check_access_pure = pure("_check_access")
         dn_default = getattr(cls, "_compute_display_name", None) is getattr(
             base, "_compute_display_name", None
         )
@@ -220,6 +221,7 @@ def export_registry(reg):
             "order_pure": bool(order_pure),
             "read_group_pure": bool(read_group_pure),
             "display_name_access_pure": bool(display_name_access_pure),
+            "check_access_pure": bool(check_access_pure),
             "display_name_default": bool(dn_default),
             "table": _s(m._table),
             "order": _s(m._order),

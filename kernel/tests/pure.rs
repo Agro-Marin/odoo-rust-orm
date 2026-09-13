@@ -97,6 +97,7 @@ fn model(name: &str, order: &str, fields: Vec<Field>) -> Model {
         order_pure: true,
         read_group_pure: true,
         display_name_access_pure: true,
+        check_access_pure: true,
         name_search_fields: Some(vec!["name".into()]),
         display_name_search_exact: Vec::new(),
         impure_read_methods: Vec::new(),

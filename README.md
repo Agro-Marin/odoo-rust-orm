@@ -2882,6 +2882,43 @@ A runtime contract reads Belgium's currency, which a committed
 rule hides, through `web_search_read` plain and named and `read(load=None)`.
 The contract fails on the previous build.
 
+## A many2one to a model that decides access in Python was labelled from rules
+
+The kernel labels a many2one target from the comodel's `_rec_name`, and hides
+the ones record rules hide. Python labels through
+`Many2one.convert_to_read_multi`, which asks `_filtered_display_name_access`,
+which asks `_filtered_access("read")`, which runs the comodel's
+`_check_access`. Five models in this database override that method --
+`mail.message`, `mail.activity`, `mail.followers`, `mail.scheduled.message`
+and `ir.attachment` -- and the kernel read none of them.
+
+It stayed hidden because the gate also refused any read with a many2one to a
+comodel whose name Python computes, and the reads that reached these targets
+usually carried one. Letting Python label those columns, so those reads could
+route, exposed it at once: the every-user stage found `mail.mail.mail_message_id`
+read at the admin as `(8788, 'Security Update: Password Changed')` routed and
+`False` from Python, and `{"id": 8788}` against a name through
+`web_search_read`.
+
+- **The export records `check_access_pure`**, whether `_check_access` is
+  Odoo's own. The kernel refuses to label a target whose comodel's is not,
+  for anyone but the superuser, whatever called it.
+- **The shim labels those columns in Python.** `search_read` and `read` ask
+  the kernel for them raw and pass them to `convert_to_read_multi`, the
+  labelling `read()` uses. `web_search_read` sends them to web's own resolver
+  whole. A comodel whose name Python computes goes the same way, so those
+  reads route instead of falling back.
+- **`read(ids)` on a model that overrides `_check_access` falls back.**
+  Python's `fetch` runs `check_access("read")` on the ids it is given, which
+  `search_fetch` does not, so only `read` needs it.
+
+A runtime contract dispatches `mail.mail.search_read` with `mail_message_id`
+at the admin and requires the kernel to refuse it, and to answer when the
+column is asked for raw. It fails on the previous build with `KernelRefused
+not raised`. The every-user stage now reads 20,095 routed calls with none
+disagreeing, and recorded traffic routes 260 `search_read` calls where it
+routed 252, at the same speed.
+
 ## A routed call no longer waits on its savepoint
 
 A routed call ran the kernel inside `env.cr.savepoint(flush=False)`, so a

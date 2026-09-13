@@ -295,6 +295,12 @@ pub struct Model {
 
     pub display_name_access_pure: bool,
 
+    /// `_check_access` is Odoo's own: record rules and ACLs decide read access.
+    /// A model that overrides it (mail.message reads through its documents)
+    /// decides in Python which records a user may see, and the kernel cannot
+    /// label its records for anyone but the superuser.
+    pub check_access_pure: bool,
+
     pub active_name: Option<String>,
 
     // several columns are an ordered coalesce: the first non-empty renders
@@ -773,6 +779,7 @@ impl Registry {
             read_group_pure = model.read_group_pure,
             display_name_default = model.display_name_default,
             display_name_access_pure = model.display_name_access_pure,
+            check_access_pure = model.check_access_pure,
             impure_read_methods = ?model.impure_read_methods,
             rec_name = ?model.rec_name,
             active_name = ?model.active_name,
@@ -928,6 +935,7 @@ impl Registry {
                     order_pure: false,
                     read_group_pure: false,
                     display_name_access_pure: false,
+                    check_access_pure: false,
                     name_search_fields: None,
                     display_name_search_exact: Vec::new(),
                 },
@@ -1178,6 +1186,7 @@ impl Registry {
                     display_name_access_pure: em["display_name_access_pure"]
                         .as_bool()
                         .unwrap_or(false),
+                    check_access_pure: em["check_access_pure"].as_bool().unwrap_or(false),
                 },
             );
         }

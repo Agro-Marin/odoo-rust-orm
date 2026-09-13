@@ -286,7 +286,9 @@ def forget_gates() -> None:
 # read() override (res.users reading its own record under sudo) leaves them on
 # the kernel; the ids of a read() travel as a search_read
 _READ_PATH_NEEDS = {
-    "read": ("read",),
+    # fetch() runs check_access("read") on the ids it is given; search_fetch
+    # reads only what _search returned, so the other methods do not need it
+    "read": ("read", "_check_access"),
     "search_read": ("_search", "search_read"),
     "web_search_read": ("_search", "search_read"),
     "search_count": ("_search", "search_count"),
@@ -375,7 +377,52 @@ def _gated(model, method) -> None:
     _gate_logger.debug("%s.%s not routed: %s", model._name, method, reason)
 
 
-def _gate(model, fields=None, order=None, domain=None, labels=True, method=None):  # noqa: ARG001  order and domain are the routed call shape, kept for the reasons log
+def _kernel_labels(comodel) -> bool:
+    # The kernel names a comodel's records from _rec_name and decides which
+    # the user may see from rules. A comodel that computes its name, or that
+    # decides access in _check_access, is Python's to label.
+    if not _display_ok(comodel):
+        return False
+    key = _cache_key(comodel, "ca")
+    pure = _GATE_CACHE.get(key)
+    if pure is None:
+        pure = type(comodel.sudo())._check_access is _BASE_METHODS["_check_access"]
+        _GATE_CACHE[key] = pure
+    return pure
+
+
+def _python_labelled(model, fields):
+    # Those many2ones are read raw and labelled by
+    # Many2one.convert_to_read_multi, which is read()'s own labelling.
+    out = []
+    for fname in fields:
+        f = model._fields.get(fname)
+        if f is not None and f.type == "many2one":
+            if not _kernel_labels(model.env[f.comodel_name]):
+                out.append(fname)
+    return out
+
+
+def _label_in_python(model, records, names):
+    if not names or not records:
+        return records
+    owners = model.browse([rec["id"] for rec in records])
+    for name in names:
+        field = model._fields[name]
+        comodel = model.env[field.comodel_name]
+        targets = [rec[name] for rec in records]
+        prefetch = [t for t in targets if t]
+        values = [
+            comodel.browse(t).with_prefetch(prefetch) if t else comodel.browse()
+            for t in targets
+        ]
+        labels = field.convert_to_read_multi(values, owners)
+        for rec, label in zip(records, labels, strict=True):
+            rec[name] = label
+    return records
+
+
+def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: ARG001  order and domain are the routed call shape, kept for the reasons log
     if not _policy_allows(model._name):
         # _policy_allows has already recorded which policy it was
         return False
@@ -399,12 +446,6 @@ def _gate(model, fields=None, order=None, domain=None, labels=True, method=None)
         f = model._fields.get(fname)
         if f is None:
             return _refuse(f"unknown field {fname}")
-        if (
-            labels
-            and f.type == "many2one"
-            and not _display_ok(model.env[f.comodel_name])
-        ):
-            return _refuse(f"{fname}: {f.comodel_name} display_name computed in python")
         if f.type in ("one2many", "many2many") and _x2many_cached(model, f):
             return _refuse(f"{fname} written in this transaction")
     return True
@@ -889,12 +930,12 @@ def _web_split_many2ones(model, specification, many2ones):
     # A plain many2one is web_read's raw foreign key and needs no label. A
     # named one keeps the kernel's label when the user may see the target;
     # a target the label query hid comes back as its bare id for web's own
-    # resolver, and a comodel whose name Python computes goes there whole.
+    # resolver, and a comodel Python names or guards goes there whole.
     raw, unredacted = [], []
     for name in many2ones:
         named = "fields" in (specification[name] or {})
         comodel = model.env[model._fields[name].comodel_name]
-        (unredacted if named and _display_ok(comodel) else raw).append(name)
+        (unredacted if named and _kernel_labels(comodel) else raw).append(name)
     return raw, unredacted
 
 
@@ -1055,6 +1096,7 @@ def install():
         "_compute_display_name",
         "_search_display_name",
         "name_search",
+        "_check_access",
     ):
         _BASE_METHODS[name] = getattr(BaseModel, name)
 
@@ -1073,6 +1115,7 @@ def install():
             try:
                 if not _flush_if_needed(self.env, self, domain, order, fields):
                     raise KernelRefused("flush failed; not routing")
+                python_labelled = _python_labelled(self, fields)
                 recs = _dispatch(
                     self,
                     "search_read",
@@ -1081,9 +1124,12 @@ def install():
                     offset=offset or 0,
                     limit=limit,
                     order=order,
+                    raw_many2one=python_labelled,
                 )
                 STATS["kernel"] += 1
-                revived = _revive_records(self, recs)
+                revived = _label_in_python(
+                    self, _revive_records(self, recs), python_labelled
+                )
                 if MODE != "shadow" and not _verify_this_one():
                     _warm_cache(self, revived)
                     return revived
@@ -1173,7 +1219,6 @@ def install():
                 self,
                 [g.split(":")[0] for g in groupby],
                 domain=domain,
-                labels=False,
                 method="_read_group",
             )
         if supported:
@@ -1376,7 +1421,6 @@ def install():
                     plan[0],
                     order=order,
                     domain=domain,
-                    labels=False,
                     method="web_search_read",
                 )
             ):
@@ -1481,17 +1525,27 @@ def install():
         elif not _read_fields_ok(self, fields):
             routable = False
         else:
-            # read(load=None) is web_read's call: its many2ones are the raw
-            # foreign keys, an unreadable target included, so the kernel
-            # returns them unlabelled rather than redacted
-            labels = load == "_classic_read"
-            routable = _gate(self, list(fields), labels=labels, method="read")
+            routable = _gate(self, list(fields), method="read")
         if routable:
             try:
                 if not _flush_if_needed(
                     self.env, self, [("id", "in", ids)], "id", fields
                 ):
                     raise KernelRefused("flush failed; not routing")
+                # read(load=None) is web_read's call: its many2ones are the raw
+                # foreign keys, an unreadable target included, so the kernel
+                # returns them unlabelled rather than redacted
+                if load == "_classic_read":
+                    labelled = raw = _python_labelled(self, fields)
+                else:
+                    labelled, raw = (
+                        [],
+                        [
+                            f
+                            for f in fields
+                            if getattr(self._fields.get(f), "type", None) == "many2one"
+                        ],
+                    )
                 recs = _dispatch(
                     self.with_context(active_test=False),
                     "search_read",
@@ -1501,16 +1555,11 @@ def install():
                     limit=None,
                     order="id",
                     x2many_active_test=bool(self.env.context.get("active_test", True)),
-                    raw_many2one=[]
-                    if labels
-                    else [
-                        f
-                        for f in fields
-                        if getattr(self._fields.get(f), "type", None) == "many2one"
-                    ],
+                    raw_many2one=raw,
                 )
                 STATS["kernel"] += 1
-                ordered = _read_reorder(ids, _revive_records(self, recs), load)
+                revived = _label_in_python(self, _revive_records(self, recs), labelled)
+                ordered = _read_reorder(ids, revived, load)
                 if ordered is None:
                     raise KernelRefused("read order not reproducible")
                 if MODE != "shadow" and not _verify_this_one():

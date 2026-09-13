@@ -502,6 +502,13 @@ impl<'a> Orm<'a> {
                  cannot render it from _rec_name"
             );
         }
+        if !env.su && !comodel.check_access_pure {
+            refuse!(
+                "{comodel_name} decides read access in Python (_check_access); \
+                 the kernel cannot tell which of its records uid {} may see named",
+                env.uid
+            );
+        }
 
         let widened = || {
             refusal!(
