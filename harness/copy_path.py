@@ -52,6 +52,13 @@ CASES = [
     {"name": "copy-float", "ref": "R14", "partner_latitude": 0.1 + 0.2},
     {"name": "copy-float2", "ref": "R15", "partner_latitude": -89.999999},
 ]
+from odoo.orm.runtime.backend import COPY_THRESHOLD
+
+BATCH = [
+    dict(case, name="%s#%03d" % (case["name"], copy))
+    for copy in range(-(-COPY_THRESHOLD // len(CASES)))
+    for case in CASES
+]
 COLUMNS = [
     "name",
     "ref",
@@ -68,7 +75,7 @@ def tagged(tag, case) -> str:
 
 
 def create_batch(tag):
-    vals = [dict(c, name=tagged(tag, c)) for c in CASES]
+    vals = [dict(c, name=tagged(tag, c)) for c in BATCH]
     return env["res.partner"].create(vals)  # noqa: F821
 
 
@@ -108,29 +115,15 @@ with Registry(dbname).cursor() as cr:
         failures.append(
             "the db shim did not take: cursor is %s" % type(cr._cnx).__name__
         )
-    vals = [dict(c, name=tagged("RUST", c)) for c in CASES]
+    vals = [dict(c, name=tagged("RUST", c)) for c in BATCH]
     e["res.partner"].create(vals)
     cr.commit()
 actual = read_back("RUST")
 print("COPY rust    wrote %d rows" % len(actual))
 
 JSON_CODES = [
-    "X0",
-    "X1",
-    "X2",
-    "X3",
-    "X4",
-    "X5",
-    "X6",
-    "X7",
-    "X8",
-    "X9",
-    "Y0",
-    "Y1",
-    "Y2",
-    "Y3",
-    "Y4",
-]
+    "%s%d" % (letter, digit) for letter in "XYZWQVUJKT" for digit in range(10)
+][: max(15, COPY_THRESHOLD)]
 JSON_CASES = [
     {"code": code, "name": "copy-country-%s \u00f1" % code} for code in JSON_CODES
 ]
@@ -193,17 +186,15 @@ else:
                     "row %d column %s: psycopg %r, rust %r" % (i, col, want, got)
                 )
 
-from odoo.orm.runtime.backend import COPY_THRESHOLD
-
 copies = db_shim.pool_stats().get("copies", 0)
 print(
     "COPY streams opened through the rust cursor: %d (threshold %d, %d rows)"
-    % (copies, COPY_THRESHOLD, len(CASES))
+    % (copies, COPY_THRESHOLD, len(BATCH))
 )
-if len(CASES) < COPY_THRESHOLD:
+if len(BATCH) < COPY_THRESHOLD:
     failures.append(
         "only %d cases but COPY_THRESHOLD is %d; this never used COPY"
-        % (len(CASES), COPY_THRESHOLD)
+        % (len(BATCH), COPY_THRESHOLD)
     )
 if copies < 1:
     failures.append(

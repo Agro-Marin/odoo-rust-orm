@@ -3410,7 +3410,7 @@ the id array lands inside the `CASE`.
 
 The second armed method is the other half of the write path, and it is
 narrower than `update_rows` on purpose. `PostgresBackend.create_rows` has two
-strategies. Ten rows or more, outside a pipeline, go as a binary `COPY`: the
+strategies. `COPY_THRESHOLD` rows or more (50 since odoo e6fc39e30777), outside a pipeline, go as a binary `COPY`: the
 cursor preallocates the ids, resolves each column's type OID and streams the
 rows, and with the db shim installed that stream is already encoded by
 `RustCopy` and verified by `harness/copy_path.py`. Everything else is one
