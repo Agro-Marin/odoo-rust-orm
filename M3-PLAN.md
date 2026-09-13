@@ -1484,7 +1484,7 @@ with no engine and with routing on, and the failure sets diffed by name.
 suite                               tests   routed   failing only under routing
 test_orm, test_read_group,           1457     1390   0   (was 20 before the fixes; HTTP
   test_access_rights, test_search_panel, test_inherits     classes now run on both legs)
-/base                                3955      916   0   (was 4 cursor-parity residuals)
+/base with HTTP, 0 failed either leg 4012      992   0   (was 4 cursor-parity residuals)
 /web                                  460      417   0
 /mail                                 429       90   0
 /mail controllers over HTTP           167      386   0
@@ -1516,8 +1516,6 @@ FontAwesome selectors). What still fails on both legs of the enterprise run:
 - knowledge's portal tour: `knowledge.webclient` is a page built on
   `web.assets_backend` that no module's `dynamic_children` names, so its
   import map lacks `@odoo/o-spreadsheet` and the tour helpers;
-- knowledge's file and calendar command tours, where an embedded component
-  does not mount; not yet diagnosed;
 - sign's two tours, which pick "Administrator" and meet "Mitchell Admin" on a
   database with demo data.
 
