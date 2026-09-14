@@ -165,6 +165,10 @@ def baseline_cases(path, auth, other_uid):
         for c in json.loads(pathlib.Path(corpus_path).read_text(encoding="utf-8"))
     }
     pinned = auth.get("uid") if auth.get("mode") == "pinned" else None
+    # a token server refuses `su` unless it was started with
+    # RUSTORM_SERVE_ALLOW_SU=1, and /health says which; a case the server
+    # would answer 403 by policy is not a comparison
+    su_refused = auth.get("mode") == "token" and not auth.get("allow_su", True)
     out, dropped = [], 0
     for exp in data["cases"]:
         case = corpus.get(exp["id"])
@@ -178,6 +182,9 @@ def baseline_cases(path, auth, other_uid):
                 continue
             payload["uid"] = uid = other_uid
         if pinned is not None and (uid != pinned or payload.get("su")):
+            dropped += 1
+            continue
+        if su_refused and payload.get("su"):
             dropped += 1
             continue
         if exp["ok"]:

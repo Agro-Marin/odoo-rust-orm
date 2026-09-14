@@ -1524,7 +1524,7 @@ server says which one it is in:
 
 | `RUSTORM_SERVE_TOKEN` | behaviour |
 |---|---|
-| set | requests must carry `X-Rustorm-Token`; a caller that presents it may name an identity, because it had to be told the secret |
+| set | requests must carry `X-Rustorm-Token`; a caller that presents it may name a `uid`, because it had to be told the secret. `su` is **refused with 403** unless the server was started with `RUSTORM_SERVE_ALLOW_SU=1`, and `/health` reports `allow_su`: the secret says the caller may pick an identity, not that one shared string should be a superuser read of the whole database. `verify.sh` starts the soak server with the opt-in, because that lane replays the corpus at every identity against a disposable database |
 | unset | `serve` **refuses to start** unless `RUSTORM_SERVE_PINNED_UID=<uid>` names the one identity every request runs as (non-superuser; `uid`/`su` in the body are ignored). It used to default to uid 2 — the administrator on every Odoo database, which reads everything — and called that "cannot be used to impersonate" |
 
 Errors are typed by status so a caller and the soak harness can tell them
@@ -2368,6 +2368,12 @@ above).
   `ir_model` bootstrap cannot see them, so it is not a safe primary source —
   `serve`, `query`, `run-corpus` and `bench` refuse to start without
   `--export`; `inspect` is the one command that reads the bootstrap.
+- **The fork's `ir.rule.composition` is read where it exists, assumed `grant`
+  where it does not.** The loader asks `pg_attribute` for the column through
+  `'ir_rule'::regclass` before selecting it; a stock Odoo database has no such
+  column, and selecting it unconditionally failed the whole security load
+  there. Tested against a live PostgreSQL with and without the column
+  (`kernel/tests/db_rules.rs`, ignored unless `RUSTORM_TEST_DSN` is set).
 - **25 of 222 ruled models on a real database** cannot have their rules
   compiled and fall back to Python — `account.move`, `account.move.line`,
   `sale.order`, `sale.order.line`, `hr.employee` among them. Every one is now

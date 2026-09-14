@@ -207,16 +207,61 @@ impl Drop for TxGuard<'_> {
 }
 
 enum Auth {
-    Token(String),
+    /// The caller presented the shared secret and may name a `uid`. Whether
+    /// it may also claim `su` is a separate decision: the secret says the
+    /// caller is trusted to pick an identity, not that every identity it
+    /// picks should skip the ACL and the record rules.
+    Token {
+        secret: String,
+        allow_su: bool,
+    },
 
-    Pinned { uid: i32 },
+    Pinned {
+        uid: i32,
+    },
 }
 
 impl Auth {
     fn describe(&self) -> serde_json::Value {
         match self {
-            Auth::Token(_) => json!({"mode": "token"}),
+            Auth::Token { allow_su, .. } => json!({"mode": "token", "allow_su": allow_su}),
             Auth::Pinned { uid } => json!({"mode": "pinned", "uid": uid}),
+        }
+    }
+}
+
+/// What the transport lets the body say about WHO is asking. A pinned server
+/// overrides it; a token server takes the `uid` and refuses `su` unless the
+/// operator opted in, because one shared secret must not be a superuser read
+/// of the whole database by default.
+fn admit(auth: &Auth, req: &mut Request) -> Result<(), (StatusCode, &'static str)> {
+    match auth {
+        Auth::Pinned { uid } => {
+            // the body's own uid/su are DISCARDED here; a caller that thinks
+            // it asked as somebody else got this identity instead
+            tracing::trace!(
+                target: "odoo_kernel::http",
+                pinned = *uid, requested = ?req.uid, requested_su = req.su,
+                "overriding the request identity with the pinned one"
+            );
+            req.uid = Some(odoo_kernel::orm::UidSpec::Id(*uid));
+            req.su = false;
+            Ok(())
+        }
+        Auth::Token { allow_su, .. } => {
+            if req.su && !allow_su {
+                tracing::warn!(
+                    target: "odoo_kernel::http",
+                    model = %req.model, requested = ?req.uid,
+                    "rejected a call: su is not accepted over HTTP without RUSTORM_SERVE_ALLOW_SU=1"
+                );
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    "su is not accepted over HTTP unless the server was started \
+                     with RUSTORM_SERVE_ALLOW_SU=1",
+                ));
+            }
+            Ok(())
         }
     }
 }
@@ -256,9 +301,21 @@ pub async fn serve(db: &str, port: u16, export: Option<&str>, options: ServeOpti
         .ok()
         .filter(|t| !t.is_empty())
     {
-        Some(token) => {
-            tracing::info!("requests must carry X-Rustorm-Token");
-            Auth::Token(token)
+        Some(secret) => {
+            let allow_su = std::env::var("RUSTORM_SERVE_ALLOW_SU").is_ok_and(|v| v == "1");
+            if allow_su {
+                tracing::warn!(
+                    "requests must carry X-Rustorm-Token, and RUSTORM_SERVE_ALLOW_SU=1 \
+                     lets a caller that has it claim `su`: the ACL and the record rules \
+                     are then whatever the caller says they are"
+                );
+            } else {
+                tracing::info!(
+                    "requests must carry X-Rustorm-Token; a caller that has it may name \
+                     a uid, and `su` is refused (RUSTORM_SERVE_ALLOW_SU=1 to allow it)"
+                );
+            }
+            Auth::Token { secret, allow_su }
         }
         None => {
             // uid 2 is the administrator on every Odoo database: an
@@ -528,7 +585,9 @@ fn token_matches(given: &str, expected: &str) -> bool {
     let b = digest(expected);
     let diff = (a[0] ^ b[0]) | (a[1] ^ b[1]);
     let same_len = (given.len() ^ expected.len()) as u64;
-    (diff | same_len) == 0
+    // an empty secret admits nobody: `serve` never configures one, and a
+    // compare that said "" matches "" would be the one case worth abusing
+    (diff | same_len) == 0 && !expected.is_empty()
 }
 
 async fn handle_call(
@@ -538,37 +597,27 @@ async fn handle_call(
 ) -> axum::response::Response {
     let t0 = std::time::Instant::now();
     let mut req = req;
-    match &state.auth {
-        Auth::Token(expected) => {
-            let given = headers
-                .get("x-rustorm-token")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or_default();
-            if !token_matches(given, expected) {
-                tracing::warn!(
-                    target: "odoo_kernel::http",
-                    model = %req.model,
-                    presented = !given.is_empty(),
-                    "rejected a call: missing or wrong X-Rustorm-Token"
-                );
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    AxJson(json!({"error": "missing or wrong X-Rustorm-Token"})),
-                )
-                    .into_response();
-            }
-        }
-        Auth::Pinned { uid } => {
-            // the body's own uid/su are DISCARDED here; a caller that thinks
-            // it asked as somebody else got this identity instead
-            tracing::trace!(
+    if let Auth::Token { secret, .. } = &state.auth {
+        let given = headers
+            .get("x-rustorm-token")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        if !token_matches(given, secret) {
+            tracing::warn!(
                 target: "odoo_kernel::http",
-                pinned = *uid, requested = ?req.uid, requested_su = req.su,
-                "overriding the request identity with the pinned one"
+                model = %req.model,
+                presented = !given.is_empty(),
+                "rejected a call: missing or wrong X-Rustorm-Token"
             );
-            req.uid = Some(odoo_kernel::orm::UidSpec::Id(*uid));
-            req.su = false;
+            return (
+                StatusCode::UNAUTHORIZED,
+                AxJson(json!({"error": "missing or wrong X-Rustorm-Token"})),
+            )
+                .into_response();
         }
+    }
+    if let Err((code, why)) = admit(&state.auth, &mut req) {
+        return (code, AxJson(json!({"error": why}))).into_response();
     }
 
     if state.stale.load(Ordering::SeqCst) {
@@ -679,7 +728,54 @@ mod tests {
         assert!(!token_matches("ab", "abc"));
         assert!(!token_matches("abcd", "abc"));
         assert!(!token_matches("", "abc"));
-        assert!(token_matches("", ""));
+        assert!(!token_matches("", ""), "an empty secret admits nobody");
+    }
+
+    fn request(body: serde_json::Value) -> Request {
+        serde_json::from_value(body).expect("a well-formed request")
+    }
+
+    #[test]
+    fn a_pinned_server_ignores_whatever_the_body_says() {
+        let auth = Auth::Pinned { uid: 2 };
+        let mut req = request(serde_json::json!({
+            "model": "res.partner", "method": "search_count", "uid": 1, "su": true
+        }));
+        admit(&auth, &mut req).expect("pinned never refuses");
+        assert!(matches!(req.uid, Some(odoo_kernel::orm::UidSpec::Id(2))));
+        assert!(!req.su);
+    }
+
+    #[test]
+    fn a_token_server_refuses_su_unless_the_operator_allowed_it() {
+        let mut req = request(serde_json::json!({
+            "model": "res.partner", "method": "search_count", "uid": 7, "su": true
+        }));
+        let closed = Auth::Token {
+            secret: "s".into(),
+            allow_su: false,
+        };
+        let (code, why) = admit(&closed, &mut req).expect_err("su refused by default");
+        assert_eq!(code, StatusCode::FORBIDDEN);
+        assert!(why.contains("RUSTORM_SERVE_ALLOW_SU"));
+        assert!(
+            matches!(req.uid, Some(odoo_kernel::orm::UidSpec::Id(7))),
+            "uid untouched"
+        );
+        assert_eq!(closed.describe()["allow_su"], false, "and /health says so");
+
+        let open = Auth::Token {
+            secret: "s".into(),
+            allow_su: true,
+        };
+        admit(&open, &mut req).expect("opted in");
+        assert!(req.su);
+
+        let mut plain = request(serde_json::json!({
+            "model": "res.partner", "method": "search_count", "uid": 7
+        }));
+        admit(&closed, &mut plain).expect("a uid without su is what the token is for");
+        assert!(!plain.su);
     }
 
     #[tokio::test]
