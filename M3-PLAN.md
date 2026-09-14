@@ -1486,6 +1486,9 @@ test_orm, test_read_group,           1457     1390   0   (was 20 before the fixe
   test_access_rights, test_search_panel, test_inherits     classes now run on both legs)
 /base with HTTP, 0 failed either leg 4012      992   0   (was 4 cursor-parity residuals)
 /web                                  460      417   0
+/web with HTTP and JS suites, at       852     1365   0   (0 failed either leg; after
+  grouped reads, stand-ins, pool fix)                    web_read_group, group_expand)
+test_orm and the four above, again    1465     1399   0   (with the stand-in tests)
 /mail                                 429       90   0
 /mail controllers over HTTP           167      386   0
 24 smaller modules (ai, auth, bus,    702       61   0
@@ -1496,6 +1499,12 @@ enterprise: helpdesk, planning,       811     1561   0
   sale_planning, sale_subscription,
   timesheet_grid, knowledge, sign
 ```
+
+The two later rows ran on odoo 1de39b4d2228 and enterprise a666e8d127a from
+detached worktrees: two earlier /web runs in the shared checkout were
+overtaken by other sessions' commits between the legs, which makes the legs
+compare different trees, so a differential longer than the commit rate runs
+pinned (`RUSTORM_ODOO_ROOT` and a conf whose addons_path names the worktrees).
 
 Until 2026-09-13 the harness ran both legs with `--no-http`, so every HttpCase
 class, tours and JS suites included, was skipped on both sides and cancelled
