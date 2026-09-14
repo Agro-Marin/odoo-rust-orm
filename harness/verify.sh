@@ -395,6 +395,11 @@ if [ -f "$ROOT/target/release/libengine_py.so" ]; then
   PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/write_path.py" > "$OUT/write.log" 2>&1; rc=$?
   if [ "$rc" = 0 ]; then
     stage "write path (port)" OK "$(grep -a '^WRITE native update_rows' "$OUT/write.log" | head -1 | cut -c1-70)"
+  elif [ "$rc" = 3 ]; then
+    # the port was not armed in this process (conf says off, the addon could
+    # not install it, a stale extension): nothing native ran, and a stage
+    # that ran nothing is SKIP -- it used to exit 0 and read as OK
+    stage "write path (port)" SKIP "$(grep -a '^WRITE SKIP' "$OUT/write.log" | head -1 | cut -c1-70)"
   elif timed_out "$rc"; then stage "write path (port)" FAIL "$expired"
   else
     stage "write path (port)" FAIL "$(grep -aE '^ *WRITE MISMATCH|^WRITE ' "$OUT/write.log" | tail -1 | cut -c1-70)"
@@ -412,6 +417,8 @@ if [ -f "$ROOT/target/release/libengine_py.so" ] && [ -f "$OUT/sweep_corpus.json
     PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/search_path.py" > "$OUT/search.log" 2>&1; rc=$?
   if [ "$rc" = 0 ]; then
     stage "search (port)" OK "$(grep -a '^SEARCH cases' "$OUT/search.log" | head -1 | cut -c1-90)"
+  elif [ "$rc" = 3 ]; then
+    stage "search (port)" SKIP "$(grep -a '^SEARCH SKIP' "$OUT/search.log" | head -1 | cut -c1-70)"
   elif timed_out "$rc"; then stage "search (port)" FAIL "$expired"
   else
     stage "search (port)" FAIL "$(grep -aE '^SEARCH (FAILED|failure kinds|SKIP)' "$OUT/search.log" | tr '\n' ' ' | cut -c1-90)"
