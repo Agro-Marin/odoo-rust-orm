@@ -36,7 +36,7 @@ from _env import dsn_for
 
 if not os.environ.get("PYTHONPATH"):
     print("WRITE SKIP: no PYTHONPATH; engine_py must be importable")
-    sys.exit(0)
+    sys.exit(3)  # skipped, not passed
 
 import engine_py
 
@@ -133,7 +133,7 @@ failures = []
 
 if port.installed() is None:
     print("WRITE SKIP: the port is not installed in this process")
-    sys.exit(0)
+    sys.exit(3)  # skipped, not passed
 
 backend = env.cr.transaction.backend  # noqa: F821
 if type(backend).__name__ != "RustBackend":
@@ -141,7 +141,7 @@ if type(backend).__name__ != "RustBackend":
         "WRITE SKIP: env.backend is %s, so this database is not armed"
         % type(backend).__name__
     )
-    sys.exit(0)
+    sys.exit(3)  # skipped, not passed
 
 port.reset_stats()
 native_recs = seed()

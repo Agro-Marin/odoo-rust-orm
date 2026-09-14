@@ -51,7 +51,7 @@ from _env import base_env, harness_dir
 
 if not os.environ.get("PYTHONPATH"):
     print("SEARCH SKIP: no PYTHONPATH; engine_py must be importable")
-    sys.exit(0)
+    sys.exit(3)  # skipped, not passed
 
 import engine_py
 from cases import case_env
@@ -63,7 +63,7 @@ port = engine_py.install_backend()
 backend_name = type(env.cr.transaction.backend).__name__  # noqa: F821
 if port.installed() is None or backend_name != "RustBackend":
     print("SEARCH SKIP: the port is not installed for this database")
-    sys.exit(0)
+    sys.exit(3)  # skipped, not passed
 
 ORIGINAL = port.RustBackend.NATIVE
 ARMED = ORIGINAL | {"search"}
