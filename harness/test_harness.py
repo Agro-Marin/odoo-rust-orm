@@ -173,6 +173,44 @@ def test_json_output_carries_every_bucket(tmp_path) -> None:
     assert got["compared"] == 1
 
 
+def test_a_run_the_kernel_mostly_declined_is_not_a_pass(tmp_path) -> None:
+    # refusals never fail a case, so a kernel that declines nine in ten used
+    # to score zero failures; the share of the run it declined is capped
+    exp = tmp_path / "exp.json"
+    act = tmp_path / "act.json"
+    exp.write_text(
+        json.dumps(stamped([{"id": c, "ok": True, "result": [1]} for c in "abcd"]))
+    )
+    act.write_text(
+        json.dumps(
+            stamped(
+                [{"id": "a", "ok": True, "result": [1]}]
+                + [
+                    {"id": c, "ok": False, "kind": "refusal", "error": "declined"}
+                    for c in "bcd"
+                ]
+            )
+        )
+    )
+
+    def run(*extra):
+        return subprocess.run(  # noqa: PLW1510  the exit code is the assertion
+            [sys.executable, os.path.join(HERE, "diff.py"), str(exp), str(act), *extra],
+            capture_output=True,
+            text=True,
+        )
+
+    proc = run()
+    assert proc.returncode == 1, proc.stdout
+    assert proc.stdout.startswith("FAIL"), proc.stdout
+    assert "DECLINED 75%" in proc.stdout
+    assert "the kernel declined 3 of the 4 cases" in proc.stdout
+
+    proc = run("--max-refused-share=0.8")
+    assert proc.returncode == 0, proc.stdout
+    assert proc.stdout.startswith("PASS 1/4"), proc.stdout
+
+
 def test_fuzz_families_census() -> None:
     src = pathlib.Path(os.path.join(HERE, "fuzz_corpus.py")).read_text(encoding="utf-8")
     ns = {}

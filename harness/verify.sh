@@ -17,7 +17,8 @@
 #   RUSTORM_STAGE_TIMEOUT (seconds per stage, default 1800; expiry is a FAIL),
 #   RUSTORM_REPLAY (capture file), RUSTORM_TOUR_TAGS, RUSTORM_FUZZ_SEEDS,
 #   RUSTORM_SOAK_THREADS / RUSTORM_SOAK_SECONDS / RUSTORM_SOAK_RSS_GROWTH,
-#   RUSTORM_MIN_COMPARED_{SWEEP,CORPUS,FUZZ}, RUSTORM_OTHER_DB, RUSTORM_ORM_TEST_DB
+#   RUSTORM_MIN_COMPARED_{SWEEP,CORPUS,FUZZ}, RUSTORM_MAX_REFUSED_{SWEEP,CORPUS,FUZZ},
+#   RUSTORM_OTHER_DB, RUSTORM_ORM_TEST_DB
 
 set -uo pipefail
 
@@ -231,6 +232,10 @@ elif [ "$SWEEP_CORPUS_OK" = 1 ]; then
   "${T[@]}" "$ROOT/target/release/rustorm" --db "$DB" --export "$OUT/export.json" \
       run-corpus --file "$OUT/sweep_corpus.json" > "$OUT/sweep_actual.json" 2> "$OUT/sweep_run.log" \
     || echo "run-corpus exited $?" >> "$OUT/sweep_run.log"
+  # the caps sit above what each lane declines today (sweep ~15 %, corpus
+  # ~9 % on the reference database): a change that de-routes a family of
+  # models fails the lane instead of shrinking COMPARED in silence
+  RUSTORM_DIFF_MAX_REFUSED_SHARE="${RUSTORM_MAX_REFUSED_SWEEP:-0.30}" \
   diff_stage "kernel sweep" "$OUT/sweep_expected.json" "$OUT/sweep_actual.json" \
     "${RUSTORM_MIN_COMPARED_SWEEP:-300}" "$OUT/sweep_diff.json"
 else
@@ -240,6 +245,7 @@ RUSTORM_EXPECTED="$OUT/expected.json" python_script "$ROOT/harness/gen_expected.
 if [ "$rc" = 0 ]; then
   "${T[@]}" "$ROOT/target/release/rustorm" --db "$DB" --export "$OUT/export.json" \
       run-corpus --file "$ROOT/harness/corpus.json" > "$OUT/actual.json" 2> "$OUT/corpus.log"
+  RUSTORM_DIFF_MAX_REFUSED_SHARE="${RUSTORM_MAX_REFUSED_CORPUS:-0.20}" \
   diff_stage "shadow corpus" "$OUT/expected.json" "$OUT/actual.json" \
     "${RUSTORM_MIN_COMPARED_CORPUS:-150}" "$OUT/corpus_diff.json"
 elif timed_out "$rc"; then stage "shadow corpus" FAIL "$expired"
@@ -268,7 +274,7 @@ else
         run-corpus --file "$OUT/fuzz_$seed.json" > "$OUT/fuzz_act_$seed.json" 2> "$OUT/fuzz_run_$seed.log" \
       || { fuzz_fail=1; fuzz_note="$fuzz_note seed$seed:RUNFAIL"; continue; }
     line=$("$PY" "$ROOT/harness/diff.py" "$OUT/fuzz_exp_$seed.json" "$OUT/fuzz_act_$seed.json" \
-           --min-compared="${RUSTORM_MIN_COMPARED_FUZZ:-50}" --json="$OUT/fuzz_diff_$seed.json" 2>&1 \
+           --min-compared="${RUSTORM_MIN_COMPARED_FUZZ:-50}" --max-refused-share="${RUSTORM_MAX_REFUSED_FUZZ:-0.50}" --json="$OUT/fuzz_diff_$seed.json" 2>&1 \
            | grep -E '^(PASS|FAIL|REFUSING)' | head -1)
     case "$line" in PASS*) ;; *) fuzz_fail=1 ;; esac
     fuzz_note="$fuzz_note seed$seed:${line%% *}"
