@@ -1223,11 +1223,28 @@ def _no_plan(reason) -> None:
     _refuse(reason)
 
 
+def _related_reads_columns(model, f) -> bool:
+    current = model
+    for segment in f.related.split("."):
+        link = current._fields.get(segment)
+        if link is None:
+            return False
+        if not link.store and not (
+            link.related and _related_reads_columns(current, link)
+        ):
+            return False
+        if link.comodel_name:
+            current = model.env[link.comodel_name]
+    return True
+
+
 def _web_field_in_python(model, f, name, spec):
     if f.type in READ_SKIP_TYPES:
         return f"{f.type} is read in python"
     if name != "display_name" and not (f.store or f.related):
         return "computed and not stored"
+    if f.related and not f.store and not _related_reads_columns(model, f):
+        return "related through a field computed in python"
     if f.type == "many2one":
         if "context" in spec:
             return "specification carries a context"

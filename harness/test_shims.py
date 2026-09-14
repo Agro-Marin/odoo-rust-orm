@@ -1068,6 +1068,10 @@ def test_web_spec_plan() -> None:
 
     class Comodel:
         _search = base_search
+        _fields = {
+            "currency_id": F("many2one", comodel_name="probe.tag"),
+            "permission": F("selection", store=False),
+        }
 
         def sudo(self):
             return self
@@ -1080,7 +1084,11 @@ def test_web_spec_plan() -> None:
 
     class M:
         _name = "probe.web_spec"
-        env = {"probe.tag": Comodel(), "probe.activity": SearchingComodel()}
+        env = {
+            "probe.tag": Comodel(),
+            "probe.activity": SearchingComodel(),
+            "probe.company": Comodel(),
+        }
         _fields = {
             "name": F("char"),
             "partner_id": F("many2one"),
@@ -1093,7 +1101,9 @@ def test_web_spec_plan() -> None:
             "ref_id": F("reference"),
             "props": F("properties"),
             "icon": F("char", store=False),
+            "company_id": F("many2one", comodel_name="probe.company"),
             "cur": F("many2one", store=False, related="company_id.currency_id"),
+            "perm": F("selection", store=False, related="company_id.permission"),
         }
 
     plan = orm_shim._web_spec_plan
@@ -1132,6 +1142,7 @@ def test_web_spec_plan() -> None:
         ("a compute", {"icon": {}}),
         ("an x2many whose comodel searches in python", {"activity_ids": {}}),
         ("an x2many whose domain is computed", {"member_ids": {}}),
+        ("a related through a compute", {"perm": {}}),
     ):
         check("%s is left to web_read" % label, plan(M(), spec), (["id"], [], spec))
     check(
