@@ -1283,6 +1283,7 @@ pub struct RustConn {
     kernel_stmts: Arc<odoo_kernel::orm::StmtCache>,
     kernel_generation: std::sync::atomic::AtomicU64,
     in_tx: AtomicBool,
+    aborted: AtomicBool,
     /// Incremented every time this connection opens a transaction, so a value
     /// recorded inside one says nothing about the next.
     tx_serial: std::sync::atomic::AtomicU64,
@@ -1365,6 +1366,7 @@ impl RustConn {
             kernel_stmts: Arc::new(odoo_kernel::orm::StmtCache::default()),
             kernel_generation: std::sync::atomic::AtomicU64::new(0),
             in_tx: AtomicBool::new(false),
+            aborted: AtomicBool::new(false),
             tx_serial: std::sync::atomic::AtomicU64::new(0),
             signals_checked: std::sync::Mutex::new(None),
             autocommit: AtomicBool::new(false),
@@ -1417,6 +1419,7 @@ impl RustConn {
             self.clear_prepared();
         }
         let was_open = self.in_tx.swap(false, Ordering::SeqCst);
+        self.aborted.store(false, Ordering::SeqCst);
         tracing::trace!(
             target: "odoo_kernel::cursor",
             end = stmt, was_open, "ending the Python cursor's transaction"
@@ -1615,10 +1618,33 @@ fn has_multiple_statements(sql: &str) -> bool {
     false
 }
 
-#[pymethods]
+fn statement_rolls_back(sql: &str) -> bool {
+    let head = sql.trim_start().as_bytes();
+    head.len() >= 8 && head[..8].eq_ignore_ascii_case(b"rollback")
+}
+
 impl RustConn {
-    #[pyo3(signature = (query, params=None))]
-    fn execute(
+    fn track_abort(&self, py: Python<'_>, query: &str, result: &PyResult<RustResult>) {
+        if !self.in_tx.load(Ordering::SeqCst) {
+            self.aborted.store(false, Ordering::SeqCst);
+            return;
+        }
+        match result {
+            Ok(_) if statement_rolls_back(query) => self.aborted.store(false, Ordering::SeqCst),
+            Ok(_) => {}
+            Err(e) if e.value(py).to_string().starts_with("SQLSTATE:") => {
+                let raised_by_server = !e.value(py).to_string().starts_with("SQLSTATE:|");
+                if raised_by_server {
+                    self.aborted.store(true, Ordering::SeqCst);
+                }
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+impl RustConn {
+    fn execute_statement(
         &self,
         py: Python<'_>,
         query: &str,
@@ -1828,6 +1854,26 @@ impl RustConn {
                 rows: PyList::empty(py).unbind(),
             })
         }
+    }
+}
+
+#[pymethods]
+impl RustConn {
+    #[pyo3(signature = (query, params=None))]
+    fn execute(
+        &self,
+        py: Python<'_>,
+        query: &str,
+        params: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<RustResult> {
+        let result = self.execute_statement(py, query, params);
+        self.track_abort(py, query, &result);
+        result
+    }
+
+    #[getter]
+    fn in_failed_transaction(&self) -> bool {
+        self.in_tx.load(Ordering::SeqCst) && self.aborted.load(Ordering::SeqCst)
     }
 
     fn copy(&self, py: Python<'_>, statement: &str) -> PyResult<RustCopy> {

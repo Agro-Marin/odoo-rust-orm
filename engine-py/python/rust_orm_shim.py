@@ -867,6 +867,32 @@ def _domain_needs_python_search(model, domain, depth=0):
     return False
 
 
+_RULES_NEED_PYTHON = {}
+
+
+def _rules_key(env, name):
+    lru = env.registry.ormcache_lrus.get("default")
+    return (
+        id(env.registry),
+        lru.generation if lru is not None else None,
+        env.uid,
+        tuple(env.context.get("allowed_company_ids") or ()),
+        name,
+    )
+
+
+def _rules_need_python(env, name):
+    key = _rules_key(env, name)
+    needed = _RULES_NEED_PYTHON.get(key)
+    if needed is None:
+        domain = env["ir.rule"]._get_domain_accessible_records(name, "read")
+        needed = not domain.is_true() and _domain_needs_python_search(env[name], domain)
+        if len(_RULES_NEED_PYTHON) >= 4096:
+            _RULES_NEED_PYTHON.clear()
+        _RULES_NEED_PYTHON[key] = needed
+    return needed
+
+
 def _resolved_rules(model, kw):
     env = model.env
     if env.su:
@@ -883,14 +909,14 @@ def _resolved_rules(model, kw):
     resolved = {}
     for name in sorted(names):
         try:
+            if not _rules_need_python(env, name):
+                continue
             domain = env["ir.rule"]._get_domain_accessible_records(name, "read")
         except Exception as exc:
             raise KernelRefused(
                 "computing the record rules on %s raised %s"
                 % (name, type(exc).__name__)
             ) from exc
-        if domain.is_true() or not _domain_needs_python_search(env[name], domain):
-            continue
         try:
             rules = list(
                 domain.optimize_full(env[name].sudo().with_context(active_test=False))
@@ -904,6 +930,7 @@ def _resolved_rules(model, kw):
             json.dumps(rules)
         except (TypeError, ValueError) as exc:
             _logger.debug("record rules on %s do not resolve to data: %s", name, exc)
+            _RULES_NEED_PYTHON[_rules_key(env, name)] = False
             continue
         resolved[name] = rules
     return resolved
@@ -1163,33 +1190,66 @@ def _no_plan(reason) -> None:
     _refuse(reason)
 
 
+def _web_field_in_python(f, name, spec):
+    if f.type in READ_SKIP_TYPES:
+        return f"{f.type} is read in python"
+    if name != "display_name" and not (f.store or f.related):
+        return "computed and not stored"
+    if f.type == "many2one":
+        if "context" in spec:
+            return "specification carries a context"
+        sub = spec.get("fields")
+        if sub is not None and not (
+            isinstance(sub, dict) and set(sub) == {"display_name"}
+        ):
+            return "sub-fields other than display_name"
+    elif f.type in ("one2many", "many2many") and spec:
+        return "x2many with a sub-specification"
+    return None
+
+
 def _web_spec_plan(model, specification):
-    fields, many2ones = [], []
+    fields, many2ones, python_spec = [], [], {}
     for name, spec in specification.items():
         f = model._fields.get(name)
         if f is None:
             return _no_plan(f"unknown field {name}")
-        spec = spec or {}
-        if not isinstance(spec, dict):
+        if not isinstance(spec or {}, dict):
             return _no_plan(f"{name}: specification is not a dict")
-        if f.type in READ_SKIP_TYPES:
-            return _no_plan(f"{name}: {f.type} is read in python")
-        if name != "display_name" and not (f.store or f.related):
-            return _no_plan(f"{name} is computed and not stored")
+        if name == "display_name" and not _display_ok(model):
+            reason = "display_name computed in python"
+        else:
+            reason = _web_field_in_python(f, name, spec or {})
+        if reason:
+            _call_logger.debug(
+                "%s.%s: %s; web_read answers it", model._name, name, reason
+            )
+            python_spec[name] = spec
+            continue
         if f.type == "many2one":
-            if "context" in spec:
-                return _no_plan(f"{name}: specification carries a context")
-            sub = spec.get("fields")
-            if sub is not None and not (
-                isinstance(sub, dict) and set(sub) == {"display_name"}
-            ):
-                return _no_plan(f"{name}: sub-fields other than display_name")
             many2ones.append(name)
-        elif f.type in ("one2many", "many2many"):
-            if spec:
-                return _no_plan(f"{name}: x2many with a sub-specification")
         fields.append(name)
-    return fields, many2ones
+    return fields or ["id"], many2ones, python_spec
+
+
+def _web_merge(specification, records, python_records):
+    if not python_records:
+        return records
+    by_id = {rec["id"]: rec for rec in python_records}
+    merged = []
+    for rec in records:
+        extra = by_id[rec["id"]]
+        merged.append(
+            {
+                "id": rec["id"],
+                **{
+                    name: rec[name] if name in rec else extra[name]
+                    for name in specification
+                    if name != "id"
+                },
+            }
+        )
+    return merged
 
 
 def _web_split_many2ones(model, specification, many2ones):
@@ -1687,20 +1747,18 @@ def install():
                 _refuse("empty specification")
             else:
                 plan = _web_spec_plan(self, specification)
-            if (
-                plan
-                and plan[0]
-                and _gate(
-                    self,
-                    plan[0],
-                    order=order,
-                    domain=domain,
-                    method="web_search_read",
-                )
+            if plan and _gate(
+                self,
+                plan[0],
+                order=order,
+                domain=domain,
+                method="web_search_read",
             ):
-                fields, many2ones = plan
+                fields, many2ones, python_spec = plan
                 raw, unredacted = _web_split_many2ones(self, specification, many2ones)
                 try:
+                    for name in python_spec:
+                        self._check_field_access(self._fields[name], "read")
                     if not _flush_if_needed(self.env, self, domain, order, fields):
                         raise KernelRefused("flush failed; not routing")
                     recs = _dispatch(
@@ -1734,16 +1792,23 @@ def install():
                         bool(self.env.context.get("force_search_count")),
                         count,
                     )
-                    result = {
-                        "length": length,
-                        "records": _web_resolve_many2ones(
-                            self,
-                            _revive_records(self, recs),
+                    records = _web_resolve_many2ones(
+                        self,
+                        _revive_records(self, recs),
+                        specification,
+                        raw,
+                        unredacted,
+                    )
+                    if python_spec and records:
+                        records = _web_merge(
                             specification,
-                            raw,
-                            unredacted,
-                        ),
-                    }
+                            records,
+                            orig_web_read(
+                                self.browse([rec["id"] for rec in records]),
+                                python_spec,
+                            ),
+                        )
+                    result = {"length": length, "records": records}
                     result["__version"] = _canonical_digest(result)
                     if MODE != "shadow" and not _verify_this_one():
                         _warm_cache(self, result["records"])
@@ -1800,8 +1865,8 @@ def install():
                 _refuse("web read hooks overridden in python")
             else:
                 plan = _web_spec_plan(self, specification)
-            if plan and plan[0] and _gate(self, plan[0], method="read"):
-                fields, many2ones = plan
+            if plan and _gate(self, plan[0], method="read"):
+                fields, many2ones, python_spec = plan
                 raw, unredacted = _web_split_many2ones(self, specification, many2ones)
                 try:
                     if not _flush_if_needed(
@@ -1833,6 +1898,10 @@ def install():
                     result = _web_resolve_many2ones(
                         self, ordered, specification, raw, unredacted
                     )
+                    if python_spec:
+                        result = _web_merge(
+                            specification, result, orig_web_read(self, python_spec)
+                        )
                     if MODE != "shadow" and not _verify_this_one():
                         _warm_cache(self, result)
                         return result

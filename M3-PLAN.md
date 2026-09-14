@@ -1489,6 +1489,14 @@ test_orm, test_read_group,           1457     1390   0   (was 20 before the fixe
 /web with HTTP and JS suites, at       852     1365   0   (0 failed either leg; after
   grouped reads, stand-ins, pool fix)                    web_read_group, group_expand)
 test_orm and the four above, again    1465     1399   0   (with the stand-in tests)
+milestone, odoo 051049f3aeb1, pinned:
+  test_orm and the four above         1486     1487   0
+  /base with HTTP                     4032     1006   0   (0 failed either leg)
+  /web with HTTP and JS suites         872     1381   1   (the aborted-transaction gap,
+                                                         fixed in the next build)
+  seven enterprise modules             811     2006   0   (5 failed, 1 error on both legs:
+                                                         knowledge reds fixed after the pin,
+                                                         sign and sale_planning tours)
 /mail                                 429       90   0
 /mail controllers over HTTP           167      386   0
 24 smaller modules (ai, auth, bus,    702       61   0

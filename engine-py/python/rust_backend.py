@@ -37,7 +37,6 @@ _port_logger = logging.getLogger("odoo.rust_kernel.port")
 PROTOCOL_FLAGS = (
     "sequences",
     "columns",
-    "supports_column_scan",
     "supports_recursive_queries",
 )
 
@@ -61,6 +60,7 @@ PROTOCOL_METHODS = (
     "move_parent_paths",
     "records_with_parent_changed",
     "timezone_names",
+    "count_m2m_groups",
 )
 
 STATS = {
@@ -149,10 +149,6 @@ class RustBackend:
             raise AttributeError(name)
         _delegated(name, "not in this port's protocol")
         return getattr(self._delegate, name)
-
-    @property
-    def supports_column_scan(self) -> bool:
-        return self._delegate.supports_column_scan
 
     def create_rows(self, model, stored_list, columns, col_fields):
         if "create_rows" not in self.NATIVE:
@@ -245,6 +241,10 @@ class RustBackend:
     def timezone_names(self, *args, **kwargs):
         _delegated("timezone_names", "not implemented natively")
         return self._delegate.timezone_names(*args, **kwargs)
+
+    def count_m2m_groups(self, *args, **kwargs):
+        _delegated("count_m2m_groups", "not implemented natively")
+        return self._delegate.count_m2m_groups(*args, **kwargs)
 
     def ancestors(self, *args, **kwargs):
         _delegated("ancestors", "not implemented natively")

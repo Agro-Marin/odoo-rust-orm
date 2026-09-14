@@ -268,6 +268,7 @@ class _RustConn:
         self.calls = []
         self.closed = False
         self.in_transaction = False
+        self.in_failed_transaction = False
         self.readonly = False
         self.resets = []
 
@@ -1015,6 +1016,7 @@ def test_web_spec_plan() -> None:
     orm_shim = _shims()[1]
 
     class M:
+        _name = "probe.web_spec"
         _fields = {
             "name": F("char"),
             "partner_id": F("many2one"),
@@ -1038,43 +1040,52 @@ def test_web_spec_plan() -> None:
                 "tag_ids": {},
             },
         ),
-        (["name", "partner_id", "user_id", "tag_ids"], ["partner_id", "user_id"]),
+        (["name", "partner_id", "user_id", "tag_ids"], ["partner_id", "user_id"], {}),
     )
     check("unknown field refuses", plan(M(), {"nope": {}}), None)
     # a refused plan says why, or the gate log reads it as "call shape"
     check("...and records why", orm_shim._GATE_TL.reason, "unknown field nope")
     orm_shim._GATE_TL.reason = None
-    check(
-        "m2o with extra sub-field refuses",
-        plan(M(), {"partner_id": {"fields": {"display_name": {}, "email": {}}}}),
-        None,
-    )
-    check(
-        "m2o with context refuses",
-        plan(
-            M(), {"partner_id": {"fields": {"display_name": {}}, "context": {"x": 1}}}
+    for label, spec in (
+        (
+            "m2o with extra sub-field",
+            {"partner_id": {"fields": {"display_name": {}, "email": {}}}},
         ),
-        None,
-    )
+        (
+            "m2o with context",
+            {"partner_id": {"fields": {"display_name": {}}, "context": {"x": 1}}},
+        ),
+        ("x2many with fields", {"tag_ids": {"fields": {"name": {}}}}),
+        ("x2many with order", {"tag_ids": {"order": "name"}}),
+        ("x2many with limit", {"tag_ids": {"limit": 5}}),
+        ("reference with spec", {"ref_id": {"fields": {}}}),
+        ("a bare reference", {"ref_id": {}}),
+        ("properties with spec", {"props": {"fields": {}}}),
+        ("a compute", {"icon": {}}),
+    ):
+        check("%s is left to web_read" % label, plan(M(), spec), (["id"], [], spec))
     check(
-        "x2many with fields refuses",
-        plan(M(), {"tag_ids": {"fields": {"name": {}}}}),
-        None,
+        "a mixed spec splits, the kernel keeping what it reads",
+        plan(M(), {"icon": {}, "name": {}, "partner_id": {}}),
+        (["name", "partner_id"], ["partner_id"], {"icon": {}}),
     )
-    check("x2many with order refuses", plan(M(), {"tag_ids": {"order": "name"}}), None)
-    check("x2many with limit refuses", plan(M(), {"tag_ids": {"limit": 5}}), None)
-    check("reference with spec refuses", plan(M(), {"ref_id": {"fields": {}}}), None)
-    check(
-        "a bare reference refuses too: the kernel cannot read it",
-        plan(M(), {"ref_id": {}}),
-        None,
-    )
-    check("properties with spec refuses", plan(M(), {"props": {"fields": {}}}), None)
-    check("a compute refuses", plan(M(), {"icon": {}}), None)
     check(
         "a related non-stored field maps",
         plan(M(), {"cur": {}}),
-        (["cur"], ["cur"]),
+        (["cur"], ["cur"], {}),
+    )
+    merged = orm_shim._web_merge(
+        {"icon": {}, "name": {}},
+        [{"id": 2, "name": "b"}, {"id": 1, "name": "a"}],
+        [{"id": 1, "icon": "x"}, {"id": 2, "icon": "y"}],
+    )
+    check(
+        "the halves merge by id, in the specification's order",
+        [list(rec.items()) for rec in merged],
+        [
+            [("id", 2), ("icon", "y"), ("name", "b")],
+            [("id", 1), ("icon", "x"), ("name", "a")],
+        ],
     )
     orm_shim._GATE_CACHE.update({"k": True})
     orm_shim.forget_gates()
@@ -1383,7 +1394,7 @@ def test_install_is_idempotent_and_keeps_stamps() -> None:
     from odoo.fields import Domain
 
     class _Rules:
-        def _get_domain_accessible_records(self, model_name, mode):
+        def _get_domain_accessible_records(self, *_args):
             return Domain.TRUE
 
     class _Env:
@@ -1391,6 +1402,7 @@ def test_install_is_idempotent_and_keeps_stamps() -> None:
 
         class registry:
             registry_sequence = 7
+            ormcache_lrus = {}
 
         def __getitem__(self, model_name):
             return _Rules()
@@ -1852,7 +1864,6 @@ def test_the_ports_signatures_match_the_delegates() -> None:
 
 
 class _RecordingDelegate:
-    supports_column_scan = True
     supports_recursive_queries = True
 
     def __init__(self) -> None:
@@ -1920,6 +1931,7 @@ def test_an_unarmed_port_is_its_delegate() -> None:
         "ancestors": (("model", "parent_id", [1]), {}),
         "records_with_parent_changed": (("model", {1: [2]}), {}),
         "timezone_names": (("env",), {}),
+        "count_m2m_groups": (("records", "rel", "c1", "c2", "query"), {}),
     }
     check(
         "every protocol method is exercised",

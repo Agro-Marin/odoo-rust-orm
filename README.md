@@ -3359,6 +3359,71 @@ calls with 0 mismatches. The captured kanban traffic moves little yet:
 `knowledge.article` routes, `project.task` and `helpdesk.ticket` stay behind
 the argument-rewriting overrides above.
 
+## A web read the kernel can only half answer is split, not refused
+
+One computed field in a list view's specification -- `is_user_favorite`, a
+rating count, `message_needaction` -- sent the whole `web_search_read` to
+Python: the search, the order, the count and every stored field with it. On the
+captured traffic those were the largest refusal class once access stopped being
+one.
+
+The specification planner now sorts fields instead of refusing them. What the
+kernel reads -- stored and related fields, many2ones labelled or raw, x2many ids
+-- goes to the kernel; a compute, a properties or reference field, a many2one
+with sub-fields or a context, an x2many with a sub-specification goes to
+Python. The kernel runs the search with its half; web's own `web_read` answers
+the other half on exactly the records the kernel returned, and the two merge by
+id in the specification's order. Only an unknown field or a malformed spec
+still refuses the call.
+
+The Python half is web's own method, so its access check, computes and
+formatting are Python's. Two things had to be reproduced around it:
+
+- `search_fetch` checks read access on every requested field before it
+  searches, so a group-restricted compute raises even when nothing matches.
+  every-user found the routed answer returning `[]` there where Python raised;
+  the split now checks the Python half's fields before dispatching.
+- the kernel's half warms the cache before the Python half runs, as
+  `search_fetch` fills it before `web_read`. It writes no x2many, so it cannot
+  change what `read()`'s access check sees.
+
+every-user gains a shape reading the first three computed fields with a
+many2one, and one reading `display_name` through `web_search_read`: a model
+whose display name Python computes now sends that field, not the call, to the
+Python half.
+
+**On real traffic this is not yet a speed-up, and the resolved rules were why
+routing lost ground.** Replaying the captured grouped-view tours, routing read
+1.09-1.10x Python on the committed build. A profile of the routed leg against
+the Python one put 0.36 s of 0.72 s of dispatch overhead in `_resolved_rules`:
+every dispatch resolved the rules of its model and every comodel, and half of
+the resolutions were `message_partner_ids`, which resolves to a subquery the
+kernel cannot receive and compiles natively anyway, so the work was thrown
+away. Whether a model's rules need Python is now remembered per rule-cache
+generation, identity and model, and so is a resolution that turned out not to
+be data; the overhead fell to 0.19 s, the knowledge rules that are resolved for
+real. With the split, the same replay reads 1.05-1.11x: level with the build
+before it while routing more (share 0.66 against 0.58), and still behind
+Python. The recorded capture reads 0.63x, as before.
+
+**A failed statement left the rust transaction reading as healthy.** The
+milestone /web run failed `TestProdNodesDeclineNotCached.
+test_a_failed_save_statement_leaves_the_transaction_usable` only under the
+engine: the asset save closes its savepoint with `rollback=cr.in_failed_
+transaction()`, which reads psycopg's INERROR, and the shim reported INTRANS for
+any open transaction -- its own comment said no reader in the fork told them
+apart, which stopped being true. The savepoint was released instead of rolled
+back and PostgreSQL refused. `RustConn` now marks its transaction aborted when a
+statement fails there with a server error, clears the mark on a successful
+`ROLLBACK TO SAVEPOINT`, a rollback or a commit, and the shim reports INERROR
+from it. A runtime contract fails a statement inside a savepoint and requires
+INERROR, then INTRANS after the rollback to it, and no mark from a client-side
+error; the build before this fails it on the missing attribute.
+
+The fork's persistence protocol moved under the port twice meanwhile: it gained
+`count_m2m_groups`, now delegated, and lost `supports_column_scan`, now gone from
+`RustBackend` too.
+
 ## Record rules Python resolves to data are handed to the kernel
 
 Knowledge articles restrict themselves with `('user_has_access', '=', True)`, and

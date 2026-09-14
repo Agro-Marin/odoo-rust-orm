@@ -695,6 +695,39 @@ print(
     flush=True,
 )
 
+from psycopg.pq import TransactionStatus
+
+aborting = dbshim.FakeConnection(rust_db.connect())
+aborting.execute("SAVEPOINT contract_abort")
+assert aborting.info.transaction_status == TransactionStatus.INTRANS
+with contextlib.suppress(psycopg.errors.DivisionByZero):
+    aborting.execute("SELECT 1 / 0")
+assert aborting._rust.in_failed_transaction, (
+    "a failed statement left the transaction reading as healthy"
+)
+assert aborting.info.transaction_status == TransactionStatus.INERROR
+aborting.execute("ROLLBACK TO SAVEPOINT contract_abort")
+assert not aborting._rust.in_failed_transaction, (
+    "ROLLBACK TO SAVEPOINT did not clear the abort"
+)
+assert aborting.info.transaction_status == TransactionStatus.INTRANS
+assert aborting.execute("SELECT 1").fetchone()[0] == 1
+with contextlib.suppress(Exception):
+    aborting.execute("SELECT %s, %s", [1])
+assert not aborting._rust.in_failed_transaction, (
+    "a client-side error marked the transaction aborted"
+)
+with contextlib.suppress(psycopg.errors.DivisionByZero):
+    aborting.execute("SELECT 1 / 0")
+aborting.rollback()
+assert not aborting._rust.in_failed_transaction
+assert aborting.info.transaction_status == TransactionStatus.IDLE
+aborting.close()
+print(
+    "CONTRACT a failed statement marks the rust transaction aborted until a rollback",
+    flush=True,
+)
+
 # Release committed rule/field policy changes before the rest of the corpus.
 with env_for() as e:
     e["ir.rule"].browse(rule_id).unlink()

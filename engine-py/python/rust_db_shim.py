@@ -655,19 +655,19 @@ class _ConnInfo:
         # every cursor whose rollback hook raised cost a warm pooled
         # connection -- a hook bug charged twice.
         #
-        # INTRANS rather than INERROR when a transaction is open: the rust
-        # connection tracks that a transaction exists, not whether a statement
-        # inside it failed. Both are non-IDLE, so the distinction is invisible
-        # to every reader of this attribute in the fork today.
+        # Cursor.in_failed_transaction reads INERROR to decide whether a
+        # savepoint is rolled back or released; the rust connection marks its
+        # transaction aborted when a statement fails in it, as PostgreSQL does.
         from psycopg.pq import TransactionStatus
 
         if self._conn.closed:
             return TransactionStatus.UNKNOWN
-        return (
-            TransactionStatus.INTRANS
-            if self._conn._rust.in_transaction
-            else TransactionStatus.IDLE
-        )
+        rust = self._conn._rust
+        if not rust.in_transaction:
+            return TransactionStatus.IDLE
+        if rust.in_failed_transaction:
+            return TransactionStatus.INERROR
+        return TransactionStatus.INTRANS
 
 
 # tokio-postgres understands a SUBSET of libpq's keywords, so this is an

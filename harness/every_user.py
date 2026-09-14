@@ -32,6 +32,7 @@ from odoo.exceptions import AccessError, UserError
 MIN_COMPARED = 5000
 MANY2ONES = 4
 X2MANYS = 3
+COMPUTED = 3
 ROWS = 40
 
 
@@ -59,6 +60,9 @@ def shapes(model):
     out = {
         "search_count": lambda: model.search_count([]),
         "display_name": lambda: model.search_read([], ["display_name"], limit=ROWS),
+        "web_search_read display_name": lambda: model.web_search_read(
+            [], {"display_name": {}}, limit=ROWS
+        )["records"],
         "name_search": lambda: model.name_search("", limit=ROWS),
     }
     if m2o:
@@ -83,6 +87,18 @@ def shapes(model):
             ],
             "web_read_group": lambda: model.web_read_group([], [m2o[0]], ["__count"]),
         }
+    computed = [
+        n
+        for n, f in fields.items()
+        if f.compute
+        and not f.store
+        and not f.related
+        and f.type not in ("one2many", "many2many", "binary", "properties", "json")
+    ][:COMPUTED]
+    if computed:
+        out["web_search_read computed"] = lambda: model.web_search_read(
+            [], {n: {} for n in [*m2o[:1], *computed]}, limit=ROWS
+        )["records"]
     expandable = [
         n
         for n, f in fields.items()
