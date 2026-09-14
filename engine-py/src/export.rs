@@ -164,6 +164,11 @@ def export_registry(reg):
                 "group_by_field": _s(getattr(f, "group_by_field", None)),
                 "order_by_field": _s(getattr(f, "order_by_field", None)),
                 "compute_sudo": bool(getattr(f, "compute_sudo", False)),
+                # a non-stored related field reaches SQL in Odoo only through
+                # `_traverse_related_sql`, which insists on `env.su`, `compute_sudo`
+                # or `inherited`; the kernel refuses what Odoo would refuse, and
+                # without this flag beside `compute_sudo` it could not tell.
+                "inherited": bool(getattr(f, "inherited", False)),
                 "required": bool(getattr(f, "required", False)),
             }
         cls = type(m.sudo())

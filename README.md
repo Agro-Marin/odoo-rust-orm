@@ -1208,6 +1208,19 @@ rust_engine_breaker = 3            ; Python serves a model after N kernel errors
 `engine_py.so` has to be importable -- `PYTHONPATH`, or installed into the
 server's environment.
 
+`off` is off for **both** layers. The mode always governed routing; it did not
+govern the connection layer, and `db_shim.install()` at `post_load` rebound the
+pool class for every later borrow whatever the mode said — so with
+`rust_engine_mode = off` no read was routed and every query still ran on
+tokio-postgres. The db shim now has its own `ACTIVE` flag, set through
+`rust_db_shim.set_active` from the same mode by `rust_engine._set_mode` — at
+start (`_apply_config`) and on every kill-switch tick (`_apply_params`): while
+it is off the pool factory builds psycopg pools, while it is on it builds rust
+ones (`on` and `shadow` both need them — the kernel runs inside the caller's
+transaction), and each switch closes the armed database's pools so the next
+borrow goes through the factory again. Connections already checked out keep
+working and are closed on return rather than pooled.
+
 Three things about that shape are worth stating because each of them was a
 defect first:
 
@@ -2331,6 +2344,23 @@ psycopg rather than broken), turning routing off without a restart
 measurement, and TLS in the connector (`require` and `verify-full`, see
 above).
 
+- **Non-stored related fields are read as SQL only where Odoo reads them as
+  SQL.** `_traverse_related_sql` allows the correlated subquery for `env.su`,
+  `compute_sudo` and `inherited` fields, and computes every other related
+  field in Python under the caller's own access. The subquery carries no ACL
+  and no rules, so the kernel used to read the comodel unfiltered for exactly
+  the fields Odoo would not; it now refuses them for a non-superuser caller
+  (in `search_read` fields, `_read_group` groupbys and aggregates, and
+  `ORDER BY`), and the export carries `inherited` beside `compute_sudo` so it
+  can tell. A domain leaf on such a field is unaffected: `related_search`
+  already follows `search_related` and applies the comodel's rules.
+- **Domain nesting is capped at 100 structural levels**, as Odoo's
+  `MAX_DOMAIN_NESTING` caps it, and counted the same way: a run of the same
+  n-ary operator is one level (the parser flattens it, as `DomainNary` does)
+  and `!!x` is `x`. Before that, `Compiler::MAX_DEPTH` counted only `any`
+  subqueries, and a flat prefix domain of ten thousand `"!"` tokens — well
+  inside the 256 KiB request body — built a tree that deep and aborted the
+  process on the recursion; the parser refuses it now, before any walk exists.
 - **Python model overrides** (`_search`, `_compute_display_name`, computed
   fields): invisible to a registry built from the DB alone. This is the
   fundamental M2 problem — the business-logic layer. Fields declaring
