@@ -3359,6 +3359,31 @@ calls with 0 mismatches. The captured kanban traffic moves little yet:
 `knowledge.article` routes, `project.task` and `helpdesk.ticket` stay behind
 the argument-rewriting overrides above.
 
+## A rollback no longer throws the kernel's plans away
+
+The prepared-statement cache follows psycopg: a `ROLLBACK` tag -- which
+`ROLLBACK TO SAVEPOINT` also reports -- or a `DROP` clears it, because a plan
+prepared against an object the rollback removed fails. The rust connection
+applied that to every plan it held, the kernel's included, so every read request
+that ended in a rollback, and every routed call a savepoint rolled back, sent its
+kernel statements through `PREPARE` again. On the captured grouped-view tours
+215 of 217 kernel statements per round were freshly prepared: 35 ms of preparing
+against 82 ms of executing, a third of the SQL the kernel spent.
+
+A plan can only be broken by a rollback that undoes DDL: without DDL, every
+object it names exists before and after, and a plan PostgreSQL finds stale is
+already dropped by the kernel on its error. The connection now remembers whether
+its transaction ran DDL -- a statement led by `CREATE`, `ALTER`, `DROP`,
+`TRUNCATE`, `COMMENT`, `DO` or `REFRESH`, or a multi-statement string -- and a
+rollback drops the cursor's own plans, as psycopg does, but the kernel's only
+after DDL. A `DROP` still clears both at once. The mark starts clear with each
+transaction; the first version kept it from an earlier one ended by an executed
+`COMMIT` string or run in autocommit, and the runtime contract caught it.
+
+The same replay now prepares none of its 217 kernel statements after the first
+round, and the kernel's SQL time falls from 117 ms to 52 ms. The tour replay reads
+0.97-1.09x Python on a loaded machine, from 1.09-1.10x.
+
 ## A web read the kernel can only half answer is split, not refused
 
 One computed field in a list view's specification -- `is_user_favorite`, a

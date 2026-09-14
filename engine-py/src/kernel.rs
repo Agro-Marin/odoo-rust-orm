@@ -303,7 +303,7 @@ impl RustKernel {
                 // waited on: the caller's next statement needs the
                 // transaction usable again
                 let undone = handle.block_on(client.batch_execute(SAVEPOINT_UNDO));
-                conn.clear_prepared();
+                conn.clear_prepared_after_rollback();
                 if let Err(e) = undone {
                     tracing::warn!(
                         target: "odoo_kernel::bridge",

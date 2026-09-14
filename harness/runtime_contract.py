@@ -728,6 +728,46 @@ print(
     flush=True,
 )
 
+shim.MODE = "on"
+with env_for(uid) as e:
+    conn = e.cr._cnx._rust
+
+    def kernel_plans():
+        return conn.prepared_count - len(conn.prepared_names)
+
+    def routed_count():
+        shim.KERNEL.dispatch(
+            conn,
+            json.dumps(
+                {
+                    "model": "res.country",
+                    "method": "search_count",
+                    "uid": uid,
+                    "registry_sequence": reg.registry_sequence,
+                }
+            ),
+        )
+
+    e.cr.execute("SELECT 1")
+    routed_count()
+    assert kernel_plans() > 0, "a routed call left no kernel plan to keep"
+    e.cr.execute("SAVEPOINT contract_plans")
+    e.cr.execute("SELECT %s", [1])
+    e.cr.execute("ROLLBACK TO SAVEPOINT contract_plans")
+    assert not conn.prepared_names, "a rollback kept the cursor's own plans"
+    assert kernel_plans() > 0, "a rollback with no DDL dropped the kernel's plans"
+    e.cr.execute("SAVEPOINT contract_plans_ddl")
+    e.cr.execute("CREATE TEMP TABLE contract_plans_ddl (id int)")
+    e.cr.execute("ROLLBACK TO SAVEPOINT contract_plans_ddl")
+    assert kernel_plans() == 0, "a rollback after DDL kept the kernel's plans"
+    routed_count()
+    e.cr.rollback()
+shim.MODE = "off"
+print(
+    "CONTRACT a rollback keeps the kernel's plans unless the transaction ran DDL",
+    flush=True,
+)
+
 # Release committed rule/field policy changes before the rest of the corpus.
 with env_for() as e:
     e["ir.rule"].browse(rule_id).unlink()

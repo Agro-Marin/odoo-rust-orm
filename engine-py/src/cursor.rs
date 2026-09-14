@@ -1284,6 +1284,7 @@ pub struct RustConn {
     kernel_generation: std::sync::atomic::AtomicU64,
     in_tx: AtomicBool,
     aborted: AtomicBool,
+    ddl_in_tx: AtomicBool,
     /// Incremented every time this connection opens a transaction, so a value
     /// recorded inside one says nothing about the next.
     tx_serial: std::sync::atomic::AtomicU64,
@@ -1295,6 +1296,39 @@ pub struct RustConn {
     autocommit: AtomicBool,
     pub readonly: AtomicBool,
     closed: AtomicBool,
+}
+
+fn statement_is_ddl(sql: &str) -> bool {
+    let head = sql
+        .trim_start()
+        .trim_start_matches('(')
+        .trim_start()
+        .as_bytes();
+    [
+        &b"create"[..],
+        b"alter",
+        b"drop",
+        b"truncate",
+        b"comment",
+        b"do",
+        b"refresh",
+    ]
+    .iter()
+    .any(|lit| {
+        head.len() > lit.len()
+            && head[..lit.len()].eq_ignore_ascii_case(lit)
+            && !head[lit.len()].is_ascii_alphanumeric()
+            && head[lit.len()] != b'_'
+    })
+}
+
+fn statement_drops(sql: &str) -> bool {
+    let head = sql
+        .trim_start()
+        .trim_start_matches('(')
+        .trim_start()
+        .as_bytes();
+    head.len() >= 5 && head[..5].eq_ignore_ascii_case(b"drop ")
 }
 
 fn statement_invalidates_prepared(sql: &str) -> bool {
@@ -1367,6 +1401,7 @@ impl RustConn {
             kernel_generation: std::sync::atomic::AtomicU64::new(0),
             in_tx: AtomicBool::new(false),
             aborted: AtomicBool::new(false),
+            ddl_in_tx: AtomicBool::new(false),
             tx_serial: std::sync::atomic::AtomicU64::new(0),
             signals_checked: std::sync::Mutex::new(None),
             autocommit: AtomicBool::new(false),
@@ -1416,10 +1451,11 @@ impl RustConn {
 
     fn end_tx(&self, py: Python<'_>, stmt: &str) -> PyResult<()> {
         if stmt == "ROLLBACK" {
-            self.clear_prepared();
+            self.clear_prepared_after_rollback();
         }
         let was_open = self.in_tx.swap(false, Ordering::SeqCst);
         self.aborted.store(false, Ordering::SeqCst);
+        self.ddl_in_tx.store(false, Ordering::SeqCst);
         tracing::trace!(
             target: "odoo_kernel::cursor",
             end = stmt, was_open, "ending the Python cursor's transaction"
@@ -1653,7 +1689,11 @@ impl RustConn {
         if self.closed.load(Ordering::SeqCst) {
             return Err(rerr("connection is closed"));
         }
+        if !self.in_tx.load(Ordering::SeqCst) {
+            self.ddl_in_tx.store(false, Ordering::SeqCst);
+        }
         self.ensure_tx(py)?;
+        let in_tx = self.in_tx.load(Ordering::SeqCst);
         // Every statement Odoo's Python ORM runs comes through here, so this
         // is the one place the whole server's SQL is observable at once --
         // the kernel's own queries go through `odoo_kernel::sql` instead.
@@ -1663,10 +1703,16 @@ impl RustConn {
             None => true,
             Some(p) => p.is_none() || p.len().is_ok_and(|n| n == 0),
         };
-        if statement_invalidates_prepared(query) {
+        if in_tx && statement_is_ddl(query) {
+            self.ddl_in_tx.store(true, Ordering::SeqCst);
+        }
+        if statement_drops(query) {
             self.clear_prepared();
+        } else if statement_invalidates_prepared(query) {
+            self.clear_prepared_after_rollback();
         }
         if unparameterised && has_multiple_statements(query) {
+            self.ddl_in_tx.store(in_tx, Ordering::SeqCst);
             // several statements in one string cannot be prepared; they go
             // through the simple protocol, where every value is text
             tracing::debug!(
@@ -1872,6 +1918,11 @@ impl RustConn {
     }
 
     #[getter]
+    fn ddl_in_transaction(&self) -> bool {
+        self.ddl_in_tx.load(Ordering::SeqCst)
+    }
+
+    #[getter]
     fn in_failed_transaction(&self) -> bool {
         self.in_tx.load(Ordering::SeqCst) && self.aborted.load(Ordering::SeqCst)
     }
@@ -1908,6 +1959,28 @@ impl RustConn {
 
     pub(crate) fn rollback(&self, py: Python<'_>) -> PyResult<()> {
         self.end_tx(py, "ROLLBACK")
+    }
+
+    pub(crate) fn clear_prepared_after_rollback(&self) {
+        if self.ddl_in_tx.load(Ordering::SeqCst) {
+            self.clear_prepared();
+            return;
+        }
+        let cursor_plans = {
+            let mut cache = self.stmt_cache.lock().unwrap();
+            let n = cache.len();
+            cache.clear();
+            n
+        };
+        if cursor_plans > 0 {
+            tracing::debug!(
+                target: "odoo_kernel::cursor",
+                cursor_plans,
+                kernel_plans = self.kernel_stmts.len(),
+                "a rollback dropped the cursor's plans; the kernel's survive, no DDL ran \
+                 in this transaction"
+            );
+        }
     }
 
     pub(crate) fn clear_prepared(&self) {
@@ -2601,7 +2674,37 @@ impl RustDb {
 
 #[cfg(test)]
 mod prepared_invalidation_tests {
-    use super::statement_invalidates_prepared;
+    use super::{statement_drops, statement_invalidates_prepared, statement_is_ddl};
+
+    #[test]
+    fn ddl_is_recognised_by_its_leading_keyword_only() {
+        for sql in [
+            "CREATE TABLE t (id int)",
+            "  create index i on t (id)",
+            "ALTER TABLE t ADD COLUMN x int",
+            "DROP TABLE t",
+            "truncate t",
+            "COMMENT ON TABLE t IS 'x'",
+            "DO $$ BEGIN END $$",
+            "REFRESH MATERIALIZED VIEW v",
+            "(CREATE TABLE t (id int))",
+        ] {
+            assert!(statement_is_ddl(sql), "{sql}");
+        }
+        for sql in [
+            "SELECT created FROM t",
+            "UPDATE t SET dropped = true",
+            "INSERT INTO t (comment) VALUES ('x')",
+            "ROLLBACK TO SAVEPOINT sp",
+            "created_at",
+            "do_something()",
+            "SAVEPOINT sp",
+        ] {
+            assert!(!statement_is_ddl(sql), "{sql}");
+        }
+        assert!(statement_drops("DROP TABLE t"));
+        assert!(!statement_drops("ROLLBACK"));
+    }
 
     #[test]
     fn it_matches_psycopgs_rollback_and_drop_tags() {
