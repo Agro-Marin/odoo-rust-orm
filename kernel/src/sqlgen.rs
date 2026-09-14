@@ -1263,7 +1263,17 @@ impl<'a> Compiler<'a> {
                     op: "any".into(),
                     value: leaf.value.clone(),
                 });
-                self.x2many_subselect(field, Some(&sub), positive, true, true)
+                // the comparand is a set of ids read as sudo, so the comodel's
+                // rules are skipped whatever the flag says; passed for the
+                // record, as every other caller passes it
+                self.x2many_subselect(
+                    field,
+                    Some(&sub),
+                    positive,
+                    true,
+                    true,
+                    field.bypass_search_access,
+                )
             }
             FieldType::Many2one if field.has_column && !field.company_dependent => {
                 if matches!(leaf.op.as_str(), "in" | "not in") {
