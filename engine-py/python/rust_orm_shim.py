@@ -1397,12 +1397,20 @@ def _read_fields_ok(model, fields):
     return True
 
 
-def _read_reorder(ids, records, load):
+def _read_reorder(model, ids, records, load, fields):
     by_id = {rec["id"]: rec for rec in records}
-    if any(i not in by_id for i in ids):
-        return None
+    absent = sorted({i for i in ids if i not in by_id})
+    if absent:
+        reads_a_column = any(
+            f is not None and f.store and f.column_type
+            for f in map(model._fields.get, fields)
+        )
+        if not reads_a_column or model.browse(absent).exists():
+            return None
     out = []
     for i in ids:
+        if i not in by_id:
+            continue
         rec = dict(by_id[i])
         if load != "_classic_read":
             for name, val in rec.items():
@@ -1639,7 +1647,7 @@ def install():
                 # slower than Python.
                 prefetch = [
                     tuple(row[i] for row in rows if row[i])
-                    if f.type == "many2one"
+                    if f.type in ("many2one", "many2many")
                     else ()
                     for i, f in enumerate(gb_fields)
                 ]
@@ -1653,7 +1661,7 @@ def install():
                     item = []
                     for i, f in enumerate(gb_fields):
                         v = row[i]
-                        if f.type == "many2one":
+                        if f.type in ("many2one", "many2many"):
                             item.append(
                                 self.env[f.comodel_name]
                                 .browse(v)
@@ -1945,7 +1953,11 @@ def install():
                     )
                     STATS["kernel"] += 1
                     ordered = _read_reorder(
-                        ids, _revive_records(self, recs), "_classic_read"
+                        self,
+                        ids,
+                        _revive_records(self, recs),
+                        "_classic_read",
+                        specification,
                     )
                     if ordered is None:
                         raise KernelRefused(
@@ -2280,7 +2292,7 @@ def install():
                 )
                 STATS["kernel"] += 1
                 revived = _label_in_python(self, _revive_records(self, recs), labelled)
-                ordered = _read_reorder(ids, revived, load)
+                ordered = _read_reorder(self, ids, revived, load, fields)
                 if ordered is None:
                     raise KernelRefused("read order not reproducible")
                 if MODE != "shadow" and not _verify_this_one():

@@ -3359,6 +3359,30 @@ calls with 0 mismatches. The captured kanban traffic moves little yet:
 `knowledge.article` routes, `project.task` and `helpdesk.ticket` stay behind
 the argument-rewriting overrides above.
 
+## A many2many groupby joins its relation table, and a read of a vanished id is answered
+
+The kernel had no many2many groupby. project.task's dependency counts group by
+`successor_ids` and `predecessor_ids` with `state:array_agg`, so every form read of a
+task paid a kernel dispatch, a refusal and the whole Python read again -- 7.5 ms more
+per call than Python alone. `Compiler::many2many_group_join` now builds what
+`_read_group_groupby_many2many` builds: a LEFT JOIN of the relation table on
+`id = column1`, narrowed by `column2 IN` the comodel's ids under the field domain, the
+active test and the comodel's rules unless `bypass_search_access`, when any of those
+applies. The group value is `column2`, ordered as it is; aggregates run over the
+joined rows. An `array_agg` over a selection decodes as the text array it is.
+
+A read the kernel answered with fewer rows than ids was refused whole, because a row
+missing from its answer may be one the rules hide -- Python raises -- or one that does
+not exist. Python's read drops a record that does not exist as soon as it reads one
+of its columns, and keeps it when it reads only relations or computes. The shim now
+asks `exists()` about the missing ids when the read names a stored column; if none
+exists, the kernel's rows are Python's answer.
+
+`traffic_bench` times only the captured calls that succeed in Python on the database
+it runs on: reads of records the recorded tours created and rolled back are not the
+calls Odoo served. On the grouped-view tours 358 of 414 qualify, and routing reads
+0.96x Python over them; refusals over both captures fall from 343 to 192.
+
 ## A subquery Python resolved reaches the kernel as a bound fragment
 
 A search method may answer with SQL rather than ids: knowledge's

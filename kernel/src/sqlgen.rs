@@ -1475,6 +1475,54 @@ impl<'a> Compiler<'a> {
         Ok(cond)
     }
 
+    pub fn many2many_group_join(&self, field: &Field) -> Result<(String, String, Condition)> {
+        if field.related.is_some() || !field.stored {
+            refuse!(
+                "grouping {}.{} needs a stored many2many; a related one groups through \
+                 its target in Python",
+                self.model.name,
+                field.name
+            );
+        }
+        let (rel, c1, c2) = field.m2m_columns()?;
+        let co = self.ctx.registry.get(field.comodel()?)?;
+        let rel_alias = format!("{}__{}", self.alias, field.name);
+        let sub_alias = format!("s{}_{}", self.depth, co.table);
+        let sub = self.sub_compiler(co, sub_alias.clone());
+        let mut comodel_cond = Cond::all();
+        let mut parts = vec![
+            Self::field_domain_cond(&sub, field, co, self.model)?,
+            sub.active_filter(field, co, None)?,
+        ];
+        if let Some(rules) = sub.comodel_rules(co, field.bypass_search_access)? {
+            parts.push(sub.compile_rules(rules)?);
+        }
+        for part in parts.into_iter().filter(|c| !c.is_empty()) {
+            comodel_cond = comodel_cond.add(part);
+        }
+        self.ctx.touch(&self.model.name, &field.name);
+        let mut on = Cond::all()
+            .add(col(&self.alias, "id").equals((Alias::new(rel_alias.as_str()), Alias::new(c1))));
+        if !comodel_cond.is_empty() {
+            let mut select = sea_query::Query::select();
+            select
+                .expr(col(&sub_alias, "id"))
+                .from_as(Alias::new(&co.table), Alias::new(sub_alias.as_str()))
+                .cond_where(comodel_cond);
+            on = on.add(col(&rel_alias, c2).in_subquery(select));
+        }
+        tracing::debug!(
+            target: "odoo_kernel::compile",
+            model = %self.model.name,
+            field = %field.name,
+            relation = %rel,
+            alias = %rel_alias,
+            comodel_filtered = on.len() > 1,
+            "grouping by a many2many through a left join of its relation table"
+        );
+        Ok((rel.to_string(), rel_alias, on))
+    }
+
     fn active_filter(
         &self,
         field: &Field,

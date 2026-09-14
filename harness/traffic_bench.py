@@ -53,6 +53,25 @@ calls = [
 
 
 ROUTED = {}
+SERVED = set()
+
+
+def serve(index, call):
+    cenv = env(user=call.get("uid") or 2, context=dict(call.get("context") or {}))  # noqa: F821
+    if call["model"] not in cenv:
+        return
+    try:
+        call_kw(
+            cenv[call["model"]],
+            call["method"],
+            call.get("args") or [],
+            call.get("kwargs") or {},
+        )
+    except Exception:
+        cenv.cr.rollback()
+    else:
+        SERVED.add(index)
+    cenv.invalidate_all()
 
 
 def replay(mode):
@@ -60,9 +79,9 @@ def replay(mode):
     spent = collections.defaultdict(float)
     count = collections.Counter()
     for index, call in enumerate(calls):
-        cenv = env(user=call.get("uid") or 2, context=dict(call.get("context") or {}))  # noqa: F821
-        if call["model"] not in cenv:
+        if index not in SERVED:
             continue
+        cenv = env(user=call.get("uid") or 2, context=dict(call.get("context") or {}))  # noqa: F821
         started = time.perf_counter()
         routed_before = rust_orm_shim.STATS["kernel"]
         try:
@@ -73,7 +92,6 @@ def replay(mode):
                 call.get("kwargs") or {},
             )
         except Exception:
-            # a call Python refuses is timed as it fails
             cenv.cr.rollback()
         elapsed = time.perf_counter() - started
         if mode == "on":
@@ -92,6 +110,14 @@ previous_mode, previous_sample = rust_orm_shim.MODE, rust_orm_shim.SAMPLE
 rust_orm_shim.set_sample(0.0)
 best = {}
 try:
+    rust_orm_shim.set_mode("off")
+    for index, call in enumerate(calls):
+        serve(index, call)
+    print(
+        "TRAFFIC %d of %d captured calls succeed in Python on this database; the "
+        "rest name records the recorded run created and are not timed"
+        % (len(SERVED), len(calls))
+    )
     replay("on")
     replay("off")
     for n in range(ROUNDS):

@@ -73,6 +73,9 @@ class F:
     ) -> None:
         self.type, self.store, self.related = type_, store, related
         self.comodel_name, self.domain = comodel_name, domain
+        self.column_type = (
+            (type_, type_) if store and type_ not in ("one2many", "many2many") else None
+        )
 
 
 def test_dbname_keyword_and_dict_specs() -> None:
@@ -1361,7 +1364,27 @@ def test_read_fields_and_reorder() -> None:
     check("a binary does not", rfo(_M(), ["img"]), False)
     check("an unknown field does not", rfo(_M(), ["nope"]), False)
 
-    rr = orm_shim._read_reorder
+    class _Stored:
+        rows = {1, 2, 3}
+        _fields = {
+            "name": F("char"),
+            "partner_id": F("many2one"),
+            "tag_ids": F("many2many", store=True),
+            "label": F("char", store=False),
+        }
+
+        def browse(self, ids):
+            present = [i for i in ids if i in self.rows]
+
+            class _Records:
+                def exists(self):
+                    return present
+
+            return _Records()
+
+    def rr(ids, records, load, fields=("name",)):
+        return orm_shim._read_reorder(_Stored(), ids, records, load, fields)
+
     recs = [
         {"id": 2, "name": "b", "partner_id": (7, "Seven")},
         {"id": 1, "name": "a", "partner_id": False},
@@ -1387,7 +1410,17 @@ def test_read_fields_and_reorder() -> None:
         rr([2], recs, False)[0]["partner_id"],
         7,
     )
-    check("a missing id is not answered", rr([1, 3], recs, None), None)
+    check("a row the kernel hid is not answered", rr([1, 3], recs, None), None)
+    check(
+        "an id with no row is dropped when a column is read, as read drops it",
+        [r["id"] for r in rr([9, 1, 8], recs, None)],
+        [1],
+    )
+    check(
+        "an id with no row is kept by read when no column is read, so it refuses",
+        rr([9, 1], recs, None, ("tag_ids", "label")),
+        None,
+    )
     check("an unrequested row is ignored", [r["id"] for r in rr([1], recs, None)], [1])
 
 

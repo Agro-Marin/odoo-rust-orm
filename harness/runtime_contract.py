@@ -544,6 +544,105 @@ print(
     flush=True,
 )
 
+shim.reset_breaker()
+previous_mode, previous_sample = shim.MODE, shim.SAMPLE
+try:
+    with env_for() as e:
+        partners = e["res.partner"]
+        seeded = partners.create(
+            [
+                {"name": "selection array A", "type": "contact"},
+                {"name": "selection array B", "type": "invoice"},
+                {"name": "selection array C", "type": "delivery"},
+            ]
+        )
+        e.flush_all()
+        args = ([("id", "in", seeded.ids)], ["active"], ["type:array_agg"])
+        shim.MODE, shim.SAMPLE = "off", 0.0
+        expected = partners._read_group(*args)
+        e.invalidate_all()
+        shim.MODE = "on"
+        routed_before = shim.STATS["kernel"]
+        got = partners._read_group(*args)
+        assert shim.STATS["kernel"] == routed_before + 1, (
+            "the selection array_agg did not route"
+        )
+        assert [sorted(row[1]) for row in got] == [
+            sorted(row[1]) for row in expected
+        ], "routed %r, python %r" % (got, expected)
+        e.cr.rollback()
+finally:
+    shim.MODE, shim.SAMPLE = previous_mode, previous_sample
+print(
+    "CONTRACT an array_agg over a selection field routes and reads as Python's list",
+    flush=True,
+)
+
+shim.reset_breaker()
+previous_mode, previous_sample = shim.MODE, shim.SAMPLE
+try:
+    with env_for(2) as e:
+        categories = (
+            e["res.partner.tag"]
+            .sudo()
+            .create(
+                [
+                    {"name": "m2m group contract A"},
+                    {"name": "m2m group contract B"},
+                    {"name": "m2m group contract archived", "active": False},
+                ]
+            )
+        )
+        partners = (
+            e["res.partner"]
+            .sudo()
+            .create(
+                [
+                    {
+                        "name": "m2m group two",
+                        "tag_ids": [(6, 0, categories[:2].ids)],
+                    },
+                    {"name": "m2m group none"},
+                    {
+                        "name": "m2m group archived only",
+                        "tag_ids": [(6, 0, categories[2:].ids)],
+                    },
+                ]
+            )
+        )
+        e.flush_all()
+        model = e["res.partner"]
+        args = (
+            [("id", "in", partners.ids)],
+            ["tag_ids"],
+            ["__count", "id:array_agg"],
+        )
+        shim.MODE, shim.SAMPLE = "off", 0.0
+        expected = model._read_group(*args)
+        e.invalidate_all()
+        shim.MODE = "on"
+        routed_before = shim.STATS["kernel"]
+        got = model._read_group(*args)
+        assert shim.STATS["kernel"] == routed_before + 1, (
+            "the many2many groupby did not route"
+        )
+
+        def rows(result):
+            return [(g.ids, n, sorted(ids)) for g, n, ids in result]
+
+        assert rows(got) == rows(expected), "routed %r, python %r" % (
+            rows(got),
+            rows(expected),
+        )
+        assert len(expected) == 3, expected
+        e.cr.rollback()
+finally:
+    shim.MODE, shim.SAMPLE = previous_mode, previous_sample
+print(
+    "CONTRACT a many2many groupby joins its relation table as Python does",
+    flush=True,
+)
+
 # A write to res.users taints the cursor only through the fields Odoo itself
 # invalidates its user caches for. A preference or an avatar leaves the cursor
 # routable and the answer Python's; a group change still gates it.

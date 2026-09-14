@@ -804,8 +804,28 @@ impl<'a> Orm<'a> {
 
         let mut gb_exprs: Vec<Expr> = Vec::new();
         let mut gb_ordinals: Vec<usize> = Vec::new();
+        let group_compiler = Compiler::root(&ctx, model, &rules, env.su);
         for gb in &gbs {
-            let base = ctx.read_expr(model, gb.field, &model.table)?;
+            let base = if gb.field.ttype == FieldType::Many2many {
+                if gb.granularity.is_some() {
+                    refuse!(
+                        "a granularity on the many2many groupby {}.{}",
+                        model.name,
+                        gb.field.name
+                    );
+                }
+                let (rel, rel_alias, on) = group_compiler.many2many_group_join(gb.field)?;
+                select.join_as(
+                    JoinType::LeftJoin,
+                    Alias::new(rel),
+                    Alias::new(rel_alias.as_str()),
+                    on,
+                );
+                let (_, _, c2) = gb.field.m2m_columns()?;
+                Expr::col((Alias::new(rel_alias.as_str()), Alias::new(c2)))
+            } else {
+                ctx.read_expr(model, gb.field, &model.table)?
+            };
             let expr = match &gb.granularity {
                 Some(g) => sqlgen::granularity_expr(
                     g,
@@ -895,7 +915,7 @@ impl<'a> Orm<'a> {
                 "array_agg" | "array_agg_distinct" => match f.ttype {
                     FieldType::Integer | FieldType::Many2one => AggKind::IntArray,
                     FieldType::Float | FieldType::Monetary => AggKind::FloatArray,
-                    t if t.is_text() => AggKind::TextArray,
+                    t if t.is_text() || t == FieldType::Selection => AggKind::TextArray,
                     other => refuse!(
                         "{func} over a {other:?} field ({}.{}) is not decoded by this kernel",
                         model.name,
@@ -1063,6 +1083,10 @@ impl<'a> Orm<'a> {
                             _ => ColKind::Datetime,
                         }
                     }
+                } else if gb.field.ttype == FieldType::Many2many {
+                    ColKind::M2o {
+                        comodel: gb.field.relation.clone().unwrap_or_default(),
+                    }
                 } else {
                     col_kind(final_field(&ctx, model, gb.field)?)?
                 };
@@ -1118,7 +1142,9 @@ impl<'a> Orm<'a> {
             let t_labels = std::time::Instant::now();
             let mut labelled = 0usize;
             for (i, gb) in gbs.iter().enumerate() {
-                if gb.field.ttype != FieldType::Many2one || !gb.field.has_column {
+                let relational = (gb.field.ttype == FieldType::Many2one && gb.field.has_column)
+                    || gb.field.ttype == FieldType::Many2many;
+                if !relational {
                     continue;
                 }
                 labelled += 1;
