@@ -2320,6 +2320,32 @@ stays refused.
   prefix now. `project.task._read_group`, which only renames a `triage_id`
   groupby, joined the transparent-hook table.
 
+## What the read gates compare
+
+A routed read is admitted only when every Python method that would have
+produced the same rows is the base one. The list is `_READ_PATH_NEEDS` in
+`rust_orm_shim.py`; two families were missing from it and are compared now:
+
+- `fetch` / `_fetch_query` for `read`, `search_read`, `web_search_read` and
+  `name_search`: every row Python returns goes through `_fetch_query`, and a
+  model that overrides it answers differently from its columns.
+  `calendar.event._fetch_query` masks a private event the caller does not
+  attend ("Busy", `False` for every other private field);
+  `mail.message.fetch` decides a portal user's access and then reads as sudo.
+  Routed, the kernel served the columns: the real title of somebody else's
+  private meeting, and a portal user's messages under the user's rules instead
+  of Python's decision. Those models fall back to Python now.
+- `_read_group_select`, `_read_group_groupby`, `_read_group_orderby`,
+  `_read_group_having`, `_read_group_postprocess_groupby`,
+  `_read_group_postprocess_aggregate` and `_read_group_empty_value` for
+  `_read_group`: the fork composes and post-processes grouped SQL through
+  them. `stock.quant._read_group_select` answers `NULL` for
+  `inventory_quantity:sum` under `inventory_report_mode`; the kernel summed
+  the column. A model overriding any of them is served from Python.
+
+The cost is routed share on those models, not correctness: a gate that admits
+a model it cannot mirror is the failure mode this list exists to prevent.
+
 ## Known gaps
 
 What is NOT on this list any more, because it was closed: the binary COPY
@@ -2392,6 +2418,10 @@ above).
   too few rows and skipping them with too many, and neither is safe to
   assume. A comodel with no rules is the same answer either way and still
   compiles.
+  On an x2many the kernel used to drop the `!` and hand the field's own flag
+  to the comodel's rules — applying rules Odoo skips, so `child_of` on a
+  many2many (which `optimize_full` spells as `any!`) answered with fewer rows
+  or a denial. Both relational paths honour the operator now.
 - **A `like` over a translated `index="trigram"` field could not use the
   index Odoo built for it, and now does.** This is the one entry here that is
   about SPEED rather than answers, and it points the wrong way: the kernel

@@ -398,13 +398,37 @@ def _order_drifted(model, order, groupby=()):
 # Python's search_read, search_count and _read_group never call read(), so a
 # read() override (res.users reading its own record under sudo) leaves them on
 # the kernel; the ids of a read() travel as a search_read
+# Every row a routed read returns is a row Python would have produced through
+# `_fetch_query` (`search_fetch`, `read` -> `fetch`), and every grouped cell
+# through the `_read_group_*` hooks that compose and post-process the SQL. A
+# model that overrides one of them answers differently from its columns --
+# `calendar.event._fetch_query` masks a private event the caller does not
+# attend, `mail.message.fetch` decides a portal user's access before reading as
+# sudo, `stock.quant._read_group_select` turns an aggregate into NULL under a
+# context key -- and the gate must see that, or the kernel serves the column.
+_FETCH_HOOKS = ("_fetch_query",)
+_READ_GROUP_HOOKS = (
+    "_read_group_select",
+    "_read_group_groupby",
+    "_read_group_orderby",
+    "_read_group_having",
+    "_read_group_postprocess_groupby",
+    "_read_group_postprocess_aggregate",
+    "_read_group_empty_value",
+)
 _READ_PATH_NEEDS = {
-    "read": ("read", "_check_access"),
-    "search_read": ("_search", "search_read", "search_fetch"),
-    "web_search_read": ("_search", "search_read", "search_fetch", "search_count"),
+    "read": ("read", "_check_access", "fetch", *_FETCH_HOOKS),
+    "search_read": ("_search", "search_read", "search_fetch", *_FETCH_HOOKS),
+    "web_search_read": (
+        "_search",
+        "search_read",
+        "search_fetch",
+        "search_count",
+        *_FETCH_HOOKS,
+    ),
     "search_count": ("_search", "search_count"),
-    "_read_group": ("_search", "_read_group"),
-    "name_search": ("_search",),
+    "_read_group": ("_search", "_read_group", *_READ_GROUP_HOOKS),
+    "name_search": ("_search", *_FETCH_HOOKS),
 }
 
 
@@ -1364,6 +1388,9 @@ def install():
         "name_search",
         "_check_access",
         "search_fetch",
+        "fetch",
+        *_FETCH_HOOKS,
+        *_READ_GROUP_HOOKS,
     ):
         _BASE_METHODS[name] = getattr(BaseModel, name)
 

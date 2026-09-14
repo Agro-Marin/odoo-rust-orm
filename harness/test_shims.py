@@ -1213,6 +1213,85 @@ def test_taints_clear_on_commit_and_rollback() -> None:
     check("untaint is idempotent", cr in orm_shim.DIRTY_CRS, False)
 
 
+def test_the_read_gates_see_fetch_and_read_group_overrides() -> None:
+    # A row a routed read returns is one Python would have produced through
+    # `_fetch_query`, and a grouped cell through the `_read_group_*` hooks.
+    # `calendar.event._fetch_query` masks a private event's title as "Busy",
+    # `mail.message.fetch` decides a portal user's access before reading as
+    # sudo, `stock.quant._read_group_select` answers NULL for an aggregate
+    # under a context key: a gate that compares `read` and `_check_access`
+    # alone lets the kernel serve the column instead.
+    orm_shim = _shims()[1]
+    base_mod, _ = _odoo()
+    orm_shim.install()
+
+    class _Registry:
+        db_name = "probe"
+
+    class _Env:
+        registry = _Registry()
+
+    def model(name, **overrides):
+        cls = type(
+            name.replace(".", "_"),
+            (base_mod.BaseModel,),
+            {
+                # what MetaModel needs to accept a class it will not register
+                "__module__": "odoo.addons.probe.models",
+                "_register": False,
+                "_name": name,
+                "sudo": lambda self: self,
+                **overrides,
+            },
+        )
+        obj = object.__new__(cls)
+        obj.env = _Env()
+        return obj
+
+    orm_shim.forget_gates()
+    plain = model("probe.plain")
+    masked = model("probe.masked", _fetch_query=lambda *_a: None)
+    fetched = model("probe.fetched", fetch=lambda *_a, **_k: None)
+    grouped = model("probe.grouped", _read_group_select=lambda *_a: None)
+    for method in ("read", "search_read", "web_search_read", "name_search"):
+        check(
+            "%s: a plain model is clean" % method,
+            orm_shim._clean_model(plain, method),
+            True,
+        )
+        check(
+            "%s: a _fetch_query override is not" % method,
+            orm_shim._clean_model(masked, method),
+            False,
+        )
+    check(
+        "read: a fetch override is not clean",
+        orm_shim._clean_model(fetched, "read"),
+        False,
+    )
+    check(
+        "search_read does not go through fetch, so that override does not gate it",
+        orm_shim._clean_model(fetched, "search_read"),
+        True,
+    )
+    check(
+        "_read_group: a _read_group_select override is not clean",
+        orm_shim._clean_model(grouped, "_read_group"),
+        False,
+    )
+    check(
+        "_read_group: the plain model is",
+        orm_shim._clean_model(plain, "_read_group"),
+        True,
+    )
+    check(
+        "search_read: the grouping override does not gate a plain read",
+        orm_shim._clean_model(grouped, "search_read"),
+        True,
+    )
+    orm_shim.forget_gates()
+
+
 def test_gate_reasons_and_stats() -> None:
     orm_shim = _shims()[1]
 
