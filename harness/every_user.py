@@ -83,6 +83,15 @@ def shapes(model):
             ],
             "web_read_group": lambda: model.web_read_group([], [m2o[0]], ["__count"]),
         }
+    expandable = [
+        n
+        for n, f in fields.items()
+        if f.store and f.group_expand and f.type in ("many2one", "selection")
+    ]
+    if expandable:
+        out["web_read_group group_expand"] = lambda: model.with_context(
+            read_group_expand=True
+        ).web_read_group([], [expandable[0]], ["__count"])
     if x2m:
         out |= {
             "web_search_read x2many": lambda: model.web_search_read(

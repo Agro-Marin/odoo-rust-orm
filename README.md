@@ -3339,6 +3339,26 @@ through: `project.task._read_group` renames a `triage_id` groupby to
 into one by `id`. Each refuses every grouped call on its model, whatever it
 groups by.
 
+## `group_expand` routes
+
+A kanban column list asks for its groupby with `read_group_expand` in the
+context, and a field with `group_expand` then adds the columns no record is in
+yet -- the empty stages. The routed `formatted_read_group` refused that shape.
+It now takes the kernel's groups, rebuilds them as the records web's
+`_web_read_group_expand` expects, and calls that hook unchanged: the
+`group_expand` method is business logic and stays Python, under the same
+`offset` and `limit` conditions web applies. The kernel's labels are kept for
+the groups it returned; only the columns the expansion added are labelled by
+web's own formatter, and since display-name visibility is decided per record,
+labelling that subset gives the answer labelling all of them would. `__fold`
+is read under sudo from the stage, as web does.
+
+Every-user gained the shape -- `web_read_group` with `read_group_expand` over a
+stored many2one or selection that has `group_expand` -- and compares 100 such
+calls with 0 mismatches. The captured kanban traffic moves little yet:
+`knowledge.article` routes, `project.task` and `helpdesk.ticket` stay behind
+the argument-rewriting overrides above.
+
 ## A computed x2many was read as its inverse
 
 Every-user on the enterprise database found routed `search_read` answering

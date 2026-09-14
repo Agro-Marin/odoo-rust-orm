@@ -1797,8 +1797,6 @@ def install():
             fill_temporal = model.env.context.get("fill_temporal")
             if fill_temporal or isinstance(fill_temporal, dict):
                 return _refuse("fill_temporal")
-            if model._web_read_group_get_field_expand(groupby):
-                return _refuse("group_expand")
             for aggregate in aggregates:
                 if (
                     aggregate != "__count"
@@ -1823,6 +1821,56 @@ def install():
                     return _refuse(f"groupby {spec}: labels decided in python")
                 fields.append(field)
             return fields
+
+        def _format_routed_groups(
+            model, groupby, gb_fields, aggregates, groups, labels, expand_field
+        ):
+            result = [{} for _group in groups]
+            extra_domains = [[] for _group in groups]
+            columns = list(zip(*groups, strict=True)) if groups else []
+            for index, (spec, field) in enumerate(zip(groupby, gb_fields, strict=True)):
+                values = columns[index] if columns else ()
+                if field.type == "many2one":
+                    unlabelled = [
+                        value
+                        for value in values
+                        if value and (field.name, value.id) not in labels
+                    ]
+                    formatter = (
+                        model._web_read_group_get_groupby_formatter(spec, unlabelled)
+                        if unlabelled
+                        else None
+                    )
+                    for value, group, domains in zip(
+                        values, result, extra_domains, strict=True
+                    ):
+                        if not value:
+                            group[spec] = False
+                            domains.append([(spec, "=", False)])
+                        elif (field.name, value.id) in labels:
+                            group[spec] = (value.id, labels[field.name, value.id])
+                            domains.append([(spec, "=", value.id)])
+                        else:
+                            group[spec], domain = formatter(value)
+                            domains.append(domain)
+                else:
+                    for value, group, domains in zip(
+                        values, result, extra_domains, strict=True
+                    ):
+                        group[spec] = value
+                        domains.append([(spec, "=", value)])
+                if expand_field is not None and expand_field.relational:
+                    comodel = model.env[expand_field.comodel_name]
+                    fold_name = comodel._fold_name
+                    if fold_name in comodel._fields:
+                        for value, group in zip(values, result, strict=True):
+                            group["__fold"] = value.sudo()[fold_name]
+            for group, domains in zip(result, extra_domains, strict=True):
+                group["__extra_domain"] = _wrg_helpers.AND(domains)
+            for offset_, spec in enumerate(aggregates, start=len(groupby)):
+                for group, values in zip(result, groups, strict=True):
+                    group[spec] = values[offset_]
+            return result
 
         def formatted_read_group(
             self,
@@ -1873,28 +1921,49 @@ def install():
                         else self._fields.get(a.rsplit(":", 1)[0])
                         for a in aggregates
                     ]
-                    result = []
+                    labels = {}
+                    groups = []
                     for row in rows:
-                        group = {}
-                        extra_domains = []
-                        for spec, field, value in zip(
-                            groupby, gb_fields, row, strict=False
-                        ):
-                            if field.type == "many2one":
-                                value = (value[0], value[1]) if value else False
-                                extra_domains.append(
-                                    [(spec, "=", value[0] if value else False)]
-                                )
+                        item = []
+                        for field, value in zip(gb_fields, row, strict=False):
+                            if field.type != "many2one":
+                                item.append(_revive_temporal(field, value))
+                                continue
+                            comodel = self.env[field.comodel_name]
+                            if value:
+                                labels[field.name, value[0]] = value[1]
+                                item.append(comodel.browse(value[0]))
                             else:
-                                value = _revive_temporal(field, value)
-                                extra_domains.append([(spec, "=", value)])
-                            group[spec] = value
-                        group["__extra_domain"] = _wrg_helpers.AND(extra_domains)
-                        for spec, field, value in zip(
-                            aggregates, agg_fields, row[len(groupby) :], strict=False
-                        ):
-                            group[spec] = _revive_temporal(field, value)
-                        result.append(group)
+                                item.append(comodel)
+                        item.extend(
+                            map(
+                                _revive_temporal,
+                                agg_fields,
+                                row[len(groupby) :],
+                                strict=False,
+                            )
+                        )
+                        groups.append(tuple(item))
+                    expand_field = self._web_read_group_get_field_expand(groupby)
+                    if (
+                        expand_field
+                        and not offset
+                        and (not limit or len(groups) < limit)
+                    ):
+                        expanded = self._web_read_group_expand(
+                            domain, groups, groupby[0], aggregates, order
+                        )
+                        if not limit or len(expanded) <= limit:
+                            groups = expanded
+                    result = _format_routed_groups(
+                        self,
+                        groupby,
+                        gb_fields,
+                        aggregates,
+                        groups,
+                        labels,
+                        expand_field,
+                    )
                     if MODE != "shadow" and not _verify_this_one():
                         return result
                 except Exception as e:
