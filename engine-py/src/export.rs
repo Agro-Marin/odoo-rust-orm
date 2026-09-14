@@ -68,8 +68,6 @@ TRANSPARENT_HOOKS = {
     ("odoo.addons.analytic.models.analytic_account", "AccountAnalyticAccount",
      "_read_group_postprocess_aggregate"):
         ("balance", "debit", "credit"),
-    ("odoo.addons.project.models.project_task", "ProjectTask", "_read_group"):
-        ("triage_id",),
     # geoengine patches every model: the two hooks act only on geo_* aggregate
     # functions, which the kernel refuses as unsupported, so a geometry field is
     # the whole surface they touch
@@ -86,6 +84,22 @@ TRANSPARENT_HOOKS = {
     ("odoo.addons.hr_appraisal.models.hr_employee", "HrEmployee", "fetch"):
         ("next_appraisal_date",),
 }
+
+
+KERNEL_SEARCHES = {
+    ("odoo.addons.mail.models.mixin_mail_thread", "MixinMailThread",
+     "_search_message_partner_ids"): "mail_followers_partner",
+}
+
+
+def _kernel_search(m, f):
+    name = getattr(f, "search", None)
+    if not isinstance(name, str):
+        return None
+    owner = next((k for k in type(m).__mro__ if name in vars(k)), None)
+    if owner is None:
+        return None
+    return KERNEL_SEARCHES.get((owner.__module__, owner.__qualname__, name))
 
 
 def export_registry(reg):
@@ -128,6 +142,7 @@ def export_registry(reg):
                 "domain": domain,
                 "model_field": _s(getattr(f, "model_field", None)),
                 "custom_search": bool(getattr(f, "search", None)),
+                "search_kind": _kernel_search(m, f),
                 "groups": _s(getattr(f, "groups", None)),
                 "context": (
                     dict(f.context)

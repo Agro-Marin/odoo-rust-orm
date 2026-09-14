@@ -60,6 +60,7 @@ PROTOCOL_METHODS = (
     "set_parent_paths",
     "move_parent_paths",
     "records_with_parent_changed",
+    "timezone_names",
 )
 
 STATS = {
@@ -240,6 +241,10 @@ class RustBackend:
     def records_with_parent_changed(self, *args, **kwargs):
         _delegated("records_with_parent_changed", "not implemented natively")
         return self._delegate.records_with_parent_changed(*args, **kwargs)
+
+    def timezone_names(self, *args, **kwargs):
+        _delegated("timezone_names", "not implemented natively")
+        return self._delegate.timezone_names(*args, **kwargs)
 
     def ancestors(self, *args, **kwargs):
         _delegated("ancestors", "not implemented natively")

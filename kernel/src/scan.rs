@@ -332,7 +332,7 @@ impl<'a> Orm<'a> {
         };
         select.cond_where(cond);
         let order_items =
-            sqlgen::parse_order(&ctx, model, &model.table, order.unwrap_or(&model.order))?;
+            sqlgen::parse_total_order(&ctx, model, &model.table, order.unwrap_or(&model.order))?;
         Self::apply_order(&mut select, order_items);
         if let Some(l) = limit {
             select.limit(l);
@@ -652,7 +652,7 @@ impl<'a> Orm<'a> {
                     select.cond_where(rc);
                 }
                 let order_items =
-                    sqlgen::parse_order(&ctx, comodel, &comodel.table, &comodel.order)?;
+                    sqlgen::parse_total_order(&ctx, comodel, &comodel.table, &comodel.order)?;
                 Self::apply_order(&mut select, order_items);
             }
             FieldType::Many2many => {
@@ -672,7 +672,7 @@ impl<'a> Orm<'a> {
                     select.cond_where(rc);
                 }
                 let order_items =
-                    sqlgen::parse_order(&ctx, comodel, &comodel.table, &comodel.order)?;
+                    sqlgen::parse_total_order(&ctx, comodel, &comodel.table, &comodel.order)?;
                 Self::apply_order(&mut select, order_items);
             }
             _ => unreachable!(),

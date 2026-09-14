@@ -144,6 +144,7 @@ pub struct Field {
     pub required: bool,
     pub group_by_field: Option<String>,
     pub order_by_field: Option<String>,
+    pub search_kind: Option<String>,
 }
 
 impl Field {
@@ -1001,6 +1002,7 @@ impl Registry {
                     required: false,
                     group_by_field: None,
                     order_by_field: None,
+                    search_kind: None,
                 },
             );
         }
@@ -1116,6 +1118,7 @@ impl Registry {
                         required: ef["required"].as_bool().unwrap_or(false),
                         group_by_field: ef["group_by_field"].as_str().map(str::to_string),
                         order_by_field: ef["order_by_field"].as_str().map(str::to_string),
+                        search_kind: ef["search_kind"].as_str().map(str::to_string),
                     },
                 );
             }

@@ -52,6 +52,7 @@ fn field(name: &str, ttype: FieldType) -> Field {
         required: false,
         group_by_field: None,
         order_by_field: None,
+        search_kind: None,
     }
 }
 
@@ -785,6 +786,23 @@ fn an_order_on_a_field_with_a_stand_in_sorts_by_the_stand_in() {
     assert!(!sql.contains(r#""res_partner"."name""#), "{sql}");
     let reversed = order_sql(&reg, "res.partner", "name").unwrap();
     assert!(reversed.contains(r#""res_partner"."id" ASC"#), "{reversed}");
+}
+
+#[test]
+fn a_search_order_is_made_total_with_id_unless_it_names_id() {
+    let reg = base_registry();
+    let ctx = ExprCtx::new(&reg, "en_US", 1);
+    let m = reg.get("res.partner").unwrap();
+    let items = odoo_kernel::sqlgen::parse_total_order(&ctx, m, &m.table, "name desc").unwrap();
+    assert_eq!(items.len(), 2, "ties on name are broken by id");
+    assert!(matches!(items[1].order, sea_query::Order::Asc));
+    for order in ["name, id desc", "id", "credit_limit, id asc"] {
+        let plain = parse_order(&ctx, m, &m.table, order).unwrap().len();
+        let total = odoo_kernel::sqlgen::parse_total_order(&ctx, m, &m.table, order)
+            .unwrap()
+            .len();
+        assert_eq!(plain, total, "{order} already ends ties");
+    }
 }
 
 fn order_sql(reg: &Registry, model: &str, order: &str) -> anyhow::Result<String> {
@@ -2679,7 +2697,9 @@ fn a_computed_x2many_is_refused_even_when_it_names_its_relation() {
         .get_mut("line_ids")
         .unwrap();
     lines.stored = false;
-    let err = lines.o2m_inverse().expect_err("a computed one2many has no inverse to read");
+    let err = lines
+        .o2m_inverse()
+        .expect_err("a computed one2many has no inverse to read");
     assert!(err.to_string().contains("computed in Python"), "{err}");
     let err = compile_res(&reg, json!([["line_ids.name", "=", "X"]])).expect_err("must refuse");
     assert!(format!("{err:#}").contains("computed in Python"), "{err:#}");
@@ -2710,6 +2730,140 @@ fn a_one2many_read_refuses_an_inverse_with_no_column() {
         .o2m_inverse_column(&owner.name, co)
         .expect_err("must refuse");
     assert!(err.to_string().contains("no column to join on"), "{err}");
+}
+
+fn followed_registry() -> Registry {
+    let mut partners = m2m(
+        "message_partner_ids",
+        "res.partner",
+        "unused_rel",
+        "res_id",
+        "partner_id",
+    );
+    partners.stored = false;
+    partners.custom_search = true;
+    partners.search_kind = Some("mail_followers_partner".into());
+    registry(vec![
+        model(
+            "project.project",
+            "id",
+            vec![
+                field("id", FieldType::Integer),
+                field("name", FieldType::Char),
+                partners,
+            ],
+        ),
+        model(
+            "mail.followers",
+            "id",
+            vec![
+                field("id", FieldType::Integer),
+                field("res_model", FieldType::Char),
+                field("res_id", FieldType::Integer),
+                m2o("partner_id", "res.partner"),
+            ],
+        ),
+        model("res.partner", "id", vec![field("name", FieldType::Char)]),
+    ])
+}
+
+fn compile_as(
+    reg: &Registry,
+    model: &str,
+    su: bool,
+    dom: serde_json::Value,
+) -> anyhow::Result<String> {
+    let ctx = ExprCtx::new(reg, "en_US", 1);
+    let m = reg.get(model)?;
+    let rules = RuleSet::default();
+    let c = Compiler::root(&ctx, m, &rules, su);
+    Ok(sql_of(c.compile(&domain::parse(&dom)?)?))
+}
+
+#[test]
+fn a_rule_on_followers_compiles_to_the_subselect_python_builds() {
+    let reg = followed_registry();
+    let sql = compile_as(
+        &reg,
+        "project.project",
+        true,
+        json!([["message_partner_ids", "in", [7, 9]]]),
+    )
+    .unwrap();
+    assert!(
+        sql.contains(r#""project_project"."id" IN (SELECT "s0_mail_followers"."res_id" FROM "mail_followers" AS "s0_mail_followers" WHERE "s0_mail_followers"."res_model" = 'project.project' AND"#),
+        "{sql}"
+    );
+    assert!(sql.contains(r#""s0_mail_followers"."partner_id""#), "{sql}");
+    let single = compile_as(
+        &reg,
+        "project.project",
+        true,
+        json!([["message_partner_ids", "=", 7]]),
+    )
+    .unwrap();
+    assert!(single.contains("IN (SELECT"), "{single}");
+    let negated = compile_as(
+        &reg,
+        "project.project",
+        true,
+        json!([["message_partner_ids", "not in", [7]]]),
+    )
+    .unwrap();
+    assert!(
+        negated.contains("NOT") && negated.contains("IN (SELECT"),
+        "Python negates the positive search: {negated}"
+    );
+    let empty = compile_as(
+        &reg,
+        "project.project",
+        true,
+        json!([["message_partner_ids", "in", []]]),
+    )
+    .unwrap();
+    assert!(empty.contains("FALSE"), "{empty}");
+}
+
+#[test]
+fn a_follower_search_python_would_answer_differently_is_refused() {
+    let reg = followed_registry();
+    let as_user = compile_as(
+        &reg,
+        "project.project",
+        false,
+        json!([["message_partner_ids", "in", [7]]]),
+    );
+    assert!(format!("{:#}", as_user.unwrap_err()).contains("portal partners"));
+    for dom in [
+        json!([["message_partner_ids", "child_of", [7]]]),
+        json!([["message_partner_ids", "in", [false]]]),
+        json!([["message_partner_ids", "ilike", "bob"]]),
+    ] {
+        assert!(
+            compile_as(&reg, "project.project", true, dom.clone()).is_err(),
+            "{dom}"
+        );
+    }
+    let mut unreviewed = followed_registry();
+    unreviewed
+        .models
+        .get_mut("project.project")
+        .unwrap()
+        .fields
+        .get_mut("message_partner_ids")
+        .unwrap()
+        .search_kind = None;
+    let err = compile_as(
+        &unreviewed,
+        "project.project",
+        true,
+        json!([["message_partner_ids", "in", [7]]]),
+    )
+    .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("custom search method"),
+        "{err:#}"
+    );
 }
 
 fn trigram_registry() -> Registry {

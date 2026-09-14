@@ -1086,6 +1086,9 @@ impl<'a> Compiler<'a> {
             .get(&path[0])
             .ok_or_else(|| refusal!("unknown field {}.{}", self.model.name, path[0]))?;
 
+        if field.search_kind.as_deref() == Some("mail_followers_partner") {
+            return self.followed_by_partners(field, &leaf.op, &leaf.value);
+        }
         if field.custom_search {
             refuse!(
                 "{}.{} defines a custom search method; its domain cannot be \
@@ -1603,6 +1606,64 @@ impl<'a> Compiler<'a> {
             return Ok(aggregate(parts));
         }
         Ok(matching(op, value))
+    }
+
+    fn followed_by_partners(&self, field: &Field, op: &str, value: &Json) -> Result<Expr> {
+        if !self.su {
+            refuse!(
+                "{}.{} searches followers as the requesting user, where \
+                 _search_message_partner_ids checks portal partners in Python",
+                self.model.name,
+                field.name
+            );
+        }
+        let positive = match op {
+            "in" | "=" => true,
+            "not in" | "!=" => false,
+            other => refuse!(
+                "{}.{} {other}: _search_message_partner_ids is compiled for in and = only",
+                self.model.name,
+                field.name
+            ),
+        };
+        let items: Vec<&Json> = match value {
+            Json::Array(items) => items.iter().collect(),
+            other => vec![other],
+        };
+        let partner_ids = items
+            .into_iter()
+            .map(|v| {
+                v.as_i64().ok_or_else(|| {
+                    refusal!(
+                        "{}.{} {op} {v}: a follower search by anything but partner ids \
+                         is left to Python",
+                        self.model.name,
+                        field.name
+                    )
+                })
+            })
+            .collect::<Result<Vec<i64>>>()?;
+        if partner_ids.is_empty() {
+            return Ok(Expr::cust(if positive { "FALSE" } else { "TRUE" }));
+        }
+        let followers = self.ctx.registry.get("mail.followers")?;
+        for column in ["res_model", "res_id", "partner_id"] {
+            if !followers.fields.get(column).is_some_and(|f| f.has_column) {
+                refuse!("mail.followers.{column} is not a column this registry reads");
+            }
+        }
+        let alias = format!("s{}_{}", self.depth, followers.table);
+        let mut select = sea_query::Query::select();
+        select
+            .expr(col(&alias, "res_id"))
+            .from_as(Alias::new(&followers.table), Alias::new(alias.as_str()))
+            .and_where(col(&alias, "res_model").eq(self.model.name.as_str()))
+            .and_where(id_membership(
+                col(&alias, "partner_id"),
+                partner_ids.iter().map(|id| *id as i32),
+            ));
+        let followed = col(&self.alias, "id").in_subquery(select);
+        Ok(if positive { followed } else { followed.not() })
     }
 
     fn m2o_any(
@@ -2249,6 +2310,27 @@ pub fn parse_order(
         "parsed the ORDER BY"
     );
     Ok(out)
+}
+
+pub fn parse_total_order(
+    ctx: &ExprCtx,
+    model: &Model,
+    alias: &str,
+    order: &str,
+) -> Result<Vec<OrderItem>> {
+    let mut items = parse_order(ctx, model, alias, order)?;
+    let names_id = order
+        .split(',')
+        .any(|part| part.split_whitespace().next() == Some("id"));
+    if !names_id {
+        items.push(OrderItem {
+            expr: col(alias, "id"),
+            order: Order::Asc,
+            nulls: None,
+            joins: Vec::new(),
+        });
+    }
+    Ok(items)
 }
 
 pub struct OrderTerm<'t> {

@@ -3359,6 +3359,46 @@ calls with 0 mismatches. The captured kanban traffic moves little yet:
 `knowledge.article` routes, `project.task` and `helpdesk.ticket` stay behind
 the argument-rewriting overrides above.
 
+## Record rules through followers compile
+
+With the overrides gone, project and helpdesk kanban views refused on their
+record rules: `project.project` and `helpdesk.team` restrict follower-only
+records with `('message_partner_ids', 'in', [user.partner_id.id])`, a
+non-stored many2many whose search is `mail.thread._search_message_partner_ids`,
+and the kernel refused every leaf on a field with a Python search method. Forty
+active rules on the enterprise database go through that field, most of them
+from a model to its project.
+
+The search method is plain SQL over `mail.followers`: a sudo search on
+`res_model = <model> AND partner_id <op> <operand>`, returned as `id IN (that
+subselect)`, with negative operators left to the ORM, which negates the positive
+form. The export now marks a field whose search method is that one, unchanged,
+by its owner class (`KERNEL_SEARCHES`), and the kernel compiles `in` and `=`
+over partner ids to the same subselect, `not in` and `!=` as its negation, and
+an empty list to FALSE or TRUE. It does so only under sudo: Python evaluates
+record rules on `model.sudo()`, while a request domain naming the field is
+resolved by the shim before dispatch, and its portal check is Python's.
+`child_of` -- the portal rules -- and any other operator still refuse.
+
+Two differences with Python surfaced on the models this opened, and neither is
+the rule.
+
+**A many2many the record rules traverse is read from a sudo cache.** Reading
+`project.workflow.step.project_ids` as a user returned all eleven linked
+projects in Python and the six the user may see in the kernel. The step's own
+rules go through `project_ids`, so `read` and `web_read` run `_check_access`,
+which evaluates them with `sudo().filtered_domain` and caches the unfiltered
+relation; the fetch that follows builds the rule-filtered query and then answers
+from that cache. The shim now refuses a `read` or `web_read` of an x2many that
+is the head of a condition in the user's read rules on the model; a search path
+does not check access first and still routes.
+
+**Rows tied on the order had no order.** Three milestones equal on every term
+of `_order` came back 7, 8, 9 from the kernel and 7, 9, 8 from Python. odoo
+2e8e8fc55a99 makes a search's ORDER BY end in the record id unless it names id,
+and the kernel's search_read and x2many reads now do the same
+(`parse_total_order`).
+
 ## A field can name the field it groups and orders through
 
 Two overrides kept every grouped kanban call on their models in Python, and

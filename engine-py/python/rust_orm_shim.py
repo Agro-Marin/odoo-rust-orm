@@ -529,6 +529,27 @@ def _label_in_python(model, records, names):
     return records
 
 
+def _rules_read_through_x2many(model, fields):
+    if model.env.su:
+        return None
+    x2many = {
+        name
+        for name in fields or ()
+        if getattr(model._fields.get(name), "type", None) in ("one2many", "many2many")
+    }
+    if not x2many:
+        return None
+    domain = model.env["ir.rule"]._get_domain_accessible_records(model._name, "read")
+    return next(
+        (
+            head
+            for condition in domain.iter_conditions()
+            if (head := condition.field_expr.split(".", 1)[0]) in x2many
+        ),
+        None,
+    )
+
+
 def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: ARG001  order and domain are the routed call shape, kept for the reasons log
     if not _policy_allows(model._name):
         # _policy_allows has already recorded which policy it was
@@ -544,6 +565,11 @@ def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: AR
         return _refuse("unhashable cursor")
     if not _clean_model(model, method):
         return _refuse("read path overridden in python")
+    if method == "read" and (through := _rules_read_through_x2many(model, fields)):
+        return _refuse(
+            f"{through}: the record rules read it under sudo before the fetch, "
+            "so python answers from that unfiltered cache"
+        )
     if ORDERS and _order_drifted(
         model, order, fields if method == "_read_group" else ()
     ):
