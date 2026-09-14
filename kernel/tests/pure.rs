@@ -50,6 +50,8 @@ fn field(name: &str, ttype: FieldType) -> Field {
         bypass_search_access: Some(false),
         compute_sudo: false,
         required: false,
+        group_by_field: None,
+        order_by_field: None,
     }
 }
 
@@ -763,6 +765,26 @@ fn parse_py_dotted_names() {
         }
         other => panic!("expected Name, got {other:?}"),
     }
+}
+
+#[test]
+fn an_order_on_a_field_with_a_stand_in_sorts_by_the_stand_in() {
+    let mut reg = base_registry();
+    reg.models
+        .get_mut("res.partner")
+        .unwrap()
+        .fields
+        .get_mut("name")
+        .unwrap()
+        .order_by_field = Some("id".into());
+    let sql = order_sql(&reg, "res.partner", "credit_limit, name desc nulls last").unwrap();
+    assert!(
+        sql.contains(r#""res_partner"."id" DESC NULLS LAST"#),
+        "the direction and nulls travel to the stand-in: {sql}"
+    );
+    assert!(!sql.contains(r#""res_partner"."name""#), "{sql}");
+    let reversed = order_sql(&reg, "res.partner", "name").unwrap();
+    assert!(reversed.contains(r#""res_partner"."id" ASC"#), "{reversed}");
 }
 
 fn order_sql(reg: &Registry, model: &str, order: &str) -> anyhow::Result<String> {

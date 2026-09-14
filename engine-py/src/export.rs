@@ -138,6 +138,8 @@ def export_registry(reg):
                 "company_dependent_fallback": _cd_fallback(m, f),
                 "falsy_value": _s(getattr(f, "falsy_value", None)),
                 "bypass_search_access": bool(getattr(f, "bypass_search_access", False)),
+                "group_by_field": _s(getattr(f, "group_by_field", None)),
+                "order_by_field": _s(getattr(f, "order_by_field", None)),
                 "compute_sudo": bool(getattr(f, "compute_sudo", False)),
                 "required": bool(getattr(f, "required", False)),
             }

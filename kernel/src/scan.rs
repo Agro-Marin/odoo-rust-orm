@@ -778,11 +778,20 @@ impl<'a> Orm<'a> {
                 Some((f, g)) => (f, Some(g.to_string())),
                 None => (spec.as_str(), None),
             };
-            let field = model
+            let mut field = model
                 .fields
                 .get(fname)
                 .ok_or_else(|| refusal!("unknown groupby field {model_name}.{fname}"))?;
             self.check_field_access(field, env)?;
+            if let Some(stand_in) = field.group_by_field.as_deref() {
+                field = model.fields.get(stand_in).ok_or_else(|| {
+                    refusal!(
+                        "{model_name}.{fname} groups through {stand_in}, which this \
+                         registry does not read"
+                    )
+                })?;
+                self.check_field_access(field, env)?;
+            }
             gbs.push(GbSpec {
                 field,
                 granularity: gran,

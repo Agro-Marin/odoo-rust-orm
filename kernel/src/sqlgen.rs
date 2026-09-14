@@ -2337,6 +2337,20 @@ fn order_terms(
             continue;
         }
 
+        if let Some(stand_in) = field.order_by_field.as_deref() {
+            let mut stand_in_term = stand_in.to_string();
+            if term.desc {
+                stand_in_term.push_str(" desc");
+            }
+            match term.nulls {
+                Some(sea_query::NullOrdering::First) => stand_in_term.push_str(" nulls first"),
+                Some(sea_query::NullOrdering::Last) => stand_in_term.push_str(" nulls last"),
+                None => {}
+            }
+            order_terms(ctx, model, alias, &stand_in_term, reverse, seen, joins, out)?;
+            continue;
+        }
+
         if !field.has_column {
             if field.related.is_none() {
                 refuse!("cannot order {} by non-stored {fname}", model.name);

@@ -1808,7 +1808,12 @@ def install():
                 if ":" in spec or "." in spec or spec == "id":
                     return _refuse(f"groupby {spec}")
                 field = model._fields.get(spec)
-                if field is None or field.type in (
+                grouped = (
+                    model._fields.get(field.group_by_field)
+                    if field is not None and getattr(field, "group_by_field", None)
+                    else field
+                )
+                if grouped is None or grouped.type in (
                     "many2many",
                     "date",
                     "datetime",

@@ -142,6 +142,8 @@ pub struct Field {
 
     pub compute_sudo: bool,
     pub required: bool,
+    pub group_by_field: Option<String>,
+    pub order_by_field: Option<String>,
 }
 
 impl Field {
@@ -997,6 +999,8 @@ impl Registry {
                     bypass_search_access: None,
                     compute_sudo: false,
                     required: false,
+                    group_by_field: None,
+                    order_by_field: None,
                 },
             );
         }
@@ -1110,6 +1114,8 @@ impl Registry {
                             .and_then(serde_json::Value::as_bool),
                         compute_sudo: ef["compute_sudo"].as_bool().unwrap_or(false),
                         required: ef["required"].as_bool().unwrap_or(false),
+                        group_by_field: ef["group_by_field"].as_str().map(str::to_string),
+                        order_by_field: ef["order_by_field"].as_str().map(str::to_string),
                     },
                 );
             }

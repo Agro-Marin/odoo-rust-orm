@@ -3359,6 +3359,34 @@ calls with 0 mismatches. The captured kanban traffic moves little yet:
 `knowledge.article` routes, `project.task` and `helpdesk.ticket` stay behind
 the argument-rewriting overrides above.
 
+## A field can name the field it groups and orders through
+
+Two overrides kept every grouped kanban call on their models in Python, and
+neither decided anything: `project.task._read_group` renamed a `triage_id`
+groupby to `triage_ids`, and `helpdesk.ticket._search` turned an order by
+`ticket_ref` into one by `id`. The gate keys on method identity -- it cannot
+see what an override touches -- so a view grouped by stage refused because a
+different groupby would have been renamed.
+
+The fork now says it declaratively. `Field.group_by_field` names the stored
+field a groupby on this one resolves to, and `Field.order_by_field` the field an
+order term on it sorts by; setup refuses a stand-in that does not exist or
+groups other values. Core resolves them where the SQL is built --
+`_read_group_groupby`, the grouping-sets row-duplication check, the group
+ordering, `_order_field_to_sql` -- so group keys, order terms and web's
+`__extra_domain` keep the name the caller used, and the override that renamed
+both the groupby and the order is gone, as is `_read_grouping_sets`' missing
+twin of it. The export carries both attributes; the kernel resolves a groupby
+through its stand-in, orders a many2one stand-in by its comodel's `_order`, and
+rewrites an order term to its stand-in with the direction and nulls intact.
+A many2many stand-in still falls back, as a many2many groupby does.
+
+On the captured traffic the override refusal is gone from `project.task` and
+`helpdesk.ticket`. What refuses next is their record rules: `project.project`
+and `helpdesk.team` rules go through `message_partner_ids`, whose custom search
+the kernel does not compile -- the access layer again, now without an override
+in front of it.
+
 ## A computed x2many was read as its inverse
 
 Every-user on the enterprise database found routed `search_read` answering
