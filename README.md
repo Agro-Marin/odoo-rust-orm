@@ -1466,8 +1466,8 @@ for a real comparison, missing users, fully gated traffic and native failures.
 | value | behaviour |
 |---|---|
 | `on` (default) | route it, fall back to Python on any refusal |
-| `off` | route nothing; the kernel is loaded and idle |
-| `shadow` | run BOTH, compare, log any divergence, and return PYTHON'S answer |
+| `off` | route nothing and write nothing natively; the kernel is loaded and idle. The persistence port asks the same mode before composing an `UPDATE` or an `INSERT`, so the kill switch turns the writes off too |
+| `shadow` | run BOTH, compare, log any divergence, and return PYTHON'S answer. A write has no shadow to compare against, so the port leaves it to Python in this mode |
 
 `shadow` is what makes a first deployment defensible: real traffic becomes the
 comparison corpus -- the one kind of test no generated corpus can be -- at no

@@ -2121,6 +2121,58 @@ class _RecordingDelegate:
         return record
 
 
+def test_the_port_follows_the_routing_mode_and_policy() -> None:
+    # `off` is off and `shadow` is Python's answer -- for a write as for a
+    # read. The port used to compose UPDATE/INSERT in both, and the DB kill
+    # switch could not stop it.
+    backend = _backend()
+    orm_shim = _shims()[1]
+
+    class _Model:
+        _name = "probe.port"
+
+    saved = (orm_shim.MODE, set(orm_shim.EXCEPT))
+    try:
+        backend.reset_stats()
+        orm_shim.set_mode("off")
+        check(
+            "off: no native write",
+            backend._routing_allows(_Model(), "update_rows"),
+            False,
+        )
+        orm_shim.set_mode("shadow")
+        check(
+            "shadow: Python writes",
+            backend._routing_allows(_Model(), "create_rows"),
+            False,
+        )
+        orm_shim.set_mode("on")
+        check(
+            "on: the port may answer",
+            backend._routing_allows(_Model(), "update_rows"),
+            True,
+        )
+        orm_shim.EXCEPT = {"probe.port"}
+        check(
+            "except: the policy excludes the model",
+            backend._routing_allows(_Model(), "update_rows"),
+            False,
+        )
+        check(
+            "the delegations are counted with their reason",
+            backend.STATS["reasons"]["routing mode is off"],
+            1,
+        )
+        check(
+            "the shadow one too",
+            backend.STATS["reasons"]["routing mode is shadow"],
+            1,
+        )
+    finally:
+        orm_shim.set_mode(saved[0])
+        orm_shim.EXCEPT = saved[1]
+
+
 def test_an_unarmed_port_is_its_delegate() -> None:
     # The port is installed before any method is native, so "installed"
     # must mean "no answer changed". Every protocol method is called here,
@@ -2388,13 +2440,20 @@ def test_a_column_group_the_kernel_refuses_falls_through_to_the_delegate() -> No
     backend.reset_stats()
 
     class _Model:
+        _name = "probe.model"  # the routing policy is asked by name first
         env = object()
 
     model = _Model()
     backend.KERNEL_FOR = lambda _env: None
+    orm_shim = _shims()[1]
+    saved_mode = orm_shim.MODE
+    orm_shim.set_mode(
+        "on"
+    )  # the mode gates the port first; the kernel is what this test asks about
     try:
         got = port.update_rows(model, ("name",), [(1, "a")])
     finally:
+        orm_shim.set_mode(saved_mode)
         backend.KERNEL_FOR = None
     check("the delegate answered", got, ("delegated", "update_rows"))
     check(
