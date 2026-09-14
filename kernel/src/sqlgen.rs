@@ -51,6 +51,8 @@ pub struct ExprCtx<'a> {
     pub touched: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<(String, String)>>>,
 
     pub sql_nonce: Option<String>,
+
+    pub order_fragments: std::sync::Arc<Vec<Json>>,
 }
 
 impl<'a> ExprCtx<'a> {
@@ -76,6 +78,7 @@ impl<'a> ExprCtx<'a> {
             tz: None,
             touched: Default::default(),
             sql_nonce: None,
+            order_fragments: Default::default(),
         }
     }
 
@@ -2533,6 +2536,28 @@ fn order_terms(
         };
         let dir = if desc { Order::Desc } else { Order::Asc };
         let fname = term.field;
+
+        if let Some(index) = fname.strip_prefix('$') {
+            if alias != model.table || !joins.is_empty() {
+                refuse!(
+                    "an order term Python resolved to SQL names {}'s own table; it \
+                     cannot order a traversal",
+                    model.name
+                );
+            }
+            let fragment = index
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| ctx.order_fragments.get(i))
+                .ok_or_else(|| refusal!("order term {fname} names no fragment of this request"))?;
+            out.push(OrderItem {
+                expr: crate::fragment::subselect(fragment, ctx.sql_nonce.as_deref())?,
+                order: dir,
+                nulls,
+                joins: Vec::new(),
+            });
+            continue;
+        }
 
         let field = model
             .fields

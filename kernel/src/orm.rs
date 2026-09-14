@@ -229,6 +229,9 @@ pub struct Request {
 
     #[serde(default)]
     pub sql_nonce: Option<String>,
+
+    #[serde(default)]
+    pub order_fragments: Vec<serde_json::Value>,
 }
 
 impl Request {
@@ -298,6 +301,8 @@ pub struct Env {
     pub groups: Arc<std::collections::HashSet<i32>>,
 
     pub sql_nonce: Option<String>,
+
+    pub order_fragments: Arc<Vec<Json>>,
 
     /// The columns every compile under this environment read; see
     /// `ExprCtx::touched`.
@@ -597,6 +602,7 @@ impl<'a> Orm<'a> {
             groups,
             dynamic,
             sql_nonce: req.sql_nonce.clone(),
+            order_fragments: Arc::new(req.order_fragments.clone()),
             touched: Default::default(),
         })
     }
@@ -1571,6 +1577,7 @@ impl<'a> Orm<'a> {
         let mut ctx = ctx.with_tz(env.comparand_tz.clone());
         ctx.touched = env.touched.clone();
         ctx.sql_nonce = env.sql_nonce.clone();
+        ctx.order_fragments = env.order_fragments.clone();
         if env.su {
             ctx
         } else {

@@ -27,6 +27,7 @@ fn req(model: &str, fields: &[&str], limit: Option<u64>) -> Request {
         groupby_hidden_labels_empty: false,
         resolved_rules: Default::default(),
         sql_nonce: None,
+        order_fragments: Vec::new(),
         active_test: None,
         x2many_active_test: None,
         tz: None,

@@ -931,6 +931,40 @@ def _wire_encoder(nonce):
     return encode
 
 
+_ORDER_WORDS = {("asc",), ("desc",), ("nulls", "first"), ("nulls", "last")}
+
+
+def _order_fragments(model, order):
+    from odoo.tools import SQL, Query
+
+    terms, fragments = [], []
+    for part in order.split(","):
+        words = part.split()
+        if not words:
+            continue
+        name, rest = words[0], [w.lower() for w in words[1:]]
+        if rest[:1] in (["asc"], ["desc"]):
+            tail = rest[1:]
+        else:
+            tail = rest
+        if tail and tuple(tail) not in _ORDER_WORDS:
+            return order, []
+        field = model._fields.get(name)
+        if field is None or field.store or field.related:
+            terms.append(part.strip())
+            continue
+        query = Query(model.env, model._table, model._table_sql)
+        try:
+            expr = model._order_field_to_sql(model._table, name, SQL(), SQL(), query)
+        except ValueError:
+            return order, []
+        if query._joins or not expr:
+            return order, []
+        terms.append(" ".join(["$%d" % len(fragments), *words[1:]]))
+        fragments.append(expr)
+    return ", ".join(terms), fragments
+
+
 def _resolved_rules(model, kw, encode):
     env = model.env
     if env.su:
@@ -1016,6 +1050,10 @@ def _request(model, method, **kw):
                     "resolving a Python search method raised %s" % type(exc).__name__
                 ) from exc
             kw["trusted_domain"] = True
+    if method == "search_read" and kw.get("order"):
+        kw["order"], fragments = _order_fragments(model, kw["order"])
+        if fragments:
+            kw["order_fragments"] = fragments
     nonce = secrets.token_hex(16)
     encode = _wire_encoder(nonce)
     if resolved := _resolved_rules(model, kw, encode):

@@ -3113,6 +3113,7 @@ fn a_request_naming_no_groupby_is_answered_not_refused() {
         groupby_hidden_labels_empty: false,
         resolved_rules: Default::default(),
         sql_nonce: None,
+        order_fragments: Vec::new(),
         active_test: None,
         x2many_active_test: None,
         tz: None,
@@ -3569,4 +3570,31 @@ fn a_sql_comparand_is_refused_where_odoo_would_not_build_a_subselect_from_it() {
         assert!(compile_with_nonce(&reg, dom.clone()).is_err(), "{dom}");
     }
     assert!(compile_res(&reg, json!([["id", "any!", fragment()]])).is_err());
+}
+
+#[test]
+fn an_order_term_python_resolved_orders_by_its_fragment_in_place() {
+    let reg = base_registry();
+    let mut ctx = ExprCtx::new(&reg, "en_US", 1);
+    ctx.sql_nonce = Some("n".into());
+    ctx.order_fragments = std::sync::Arc::new(vec![json!({
+        "$sql": "\"res_partner\".\"id\" IN (SELECT partner_id FROM fav WHERE user_id = %s)",
+        "$params": [2],
+        "$nonce": "n",
+    })]);
+    let m = reg.get("res.partner").unwrap();
+    let items = parse_order(&ctx, m, "res_partner", "$0 desc, name").unwrap();
+    let mut q = Query::select();
+    q.expr(Expr::cust("1")).from(Alias::new("res_partner"));
+    for item in items {
+        q.order_by_expr(item.expr, item.order);
+    }
+    assert_eq!(
+        q.to_string(PostgresQueryBuilder),
+        r#"SELECT 1 FROM "res_partner" ORDER BY ("res_partner"."id" IN (SELECT partner_id FROM fav WHERE user_id = 2::int8)) DESC, "res_partner"."name" ASC"#
+    );
+    assert!(parse_order(&ctx, m, "res_partner", "$1").is_err());
+    assert!(parse_order(&ctx, m, "p2", "$0").is_err());
+    let without_nonce = ExprCtx::new(&reg, "en_US", 1);
+    assert!(parse_order(&without_nonce, m, "res_partner", "$0").is_err());
 }

@@ -1063,6 +1063,54 @@ def test_wire_encoder() -> None:
         raise AssertionError("an object with no wire form was sent")
 
 
+def test_order_fragments() -> None:
+    from odoo.tools import SQL
+
+    orm_shim = _shims()[1]
+
+    class M:
+        _name = "probe.order"
+        _table = "probe_order"
+        _table_sql = SQL.identifier("probe_order")
+        env = None
+        _fields = {
+            "name": F("char"),
+            "is_user_favorite": F("boolean", store=False),
+            "joined": F("char", store=False),
+            "plain": F("char", store=False),
+            "cur": F("many2one", store=False, related="company_id.currency_id"),
+        }
+
+        def _order_field_to_sql(self, alias, name, direction, nulls, query):
+            if name == "is_user_favorite":
+                expr = SQL("%s IN (SELECT 1 WHERE %s)", SQL.identifier(alias, "id"), 2)
+                return SQL("%s %s %s", expr, direction, nulls)
+            if name == "joined":
+                query.add_join("LEFT JOIN", "j", SQL.identifier("t"), SQL("TRUE"))
+                return SQL.identifier("j", "x")
+            raise ValueError("not stored")
+
+    order, fragments = orm_shim._order_fragments(
+        M(), "is_user_favorite DESC, name asc, cur"
+    )
+    check("the hooked term names its fragment", order, "$0 DESC, name asc, cur")
+    check(
+        "the fragment is the hook's expression",
+        [(f.code, f.params) for f in fragments],
+        [('"probe_order"."id" IN (SELECT 1 WHERE %s)  ', (2,))],
+    )
+    for label, spec in (
+        ("a hook that joins", "joined"),
+        ("a non-stored field Python cannot order", "plain desc"),
+        ("an unparsable term", "is_user_favorite sideways"),
+    ):
+        check(
+            "%s leaves the order to the kernel" % label,
+            orm_shim._order_fragments(M(), spec),
+            (spec, []),
+        )
+
+
 def test_web_spec_plan() -> None:
     orm_shim = _shims()[1]
 

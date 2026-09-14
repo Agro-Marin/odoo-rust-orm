@@ -3359,6 +3359,28 @@ calls with 0 mismatches. The captured kanban traffic moves little yet:
 `knowledge.article` routes, `project.task` and `helpdesk.ticket` stay behind
 the argument-rewriting overrides above.
 
+## An order term only Python can write reaches the kernel as its SQL
+
+The project kanban reads `is_user_favorite DESC, sequence ASC, name ASC, id ASC`, and
+`is_user_favorite` is ordered by `mixin.user.favorite._order_field_to_sql`, which the
+export records as a hook on that one field. The kernel drops a hooked field, so every
+kanban read refused over its first order term. For a `search_read`, the shim now asks
+the model's own `_order_field_to_sql` for each non-stored, non-related term, on an empty
+`Query` of the model's table and with no direction; a hook that adds a join, or a field
+Python cannot order either, leaves the order as it was. The expression travels with the
+request's nonce as `order_fragments`, the term becomes `$n` with its direction and nulls,
+and the kernel places the fragment there -- on the root table only, never through a
+traversal.
+
+The export's purity check looked at the first class in the MRO defining a hook. Every
+class defining it must be transparent, and their scopes add up: project.project's
+`_order_field_to_sql` comes from the activity mixin first and the favorite mixin after,
+so `is_user_favorite` was not recorded as hooked. It is non-stored, so nothing was ordered
+wrongly; a deeper hook on a stored field would have been.
+
+On the grouped-view tours the refused calls fall from 67 to 33 and routing reads 0.92x
+Python; routed `web_search_read` goes from 0.96x to 0.81x.
+
 ## A many2many groupby joins its relation table, and a read of a vanished id is answered
 
 The kernel had no many2many groupby. project.task's dependency counts group by

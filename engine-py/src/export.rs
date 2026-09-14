@@ -174,13 +174,16 @@ def export_registry(reg):
             for n in names:
                 if getattr(cls, n, None) is getattr(base, n, None):
                     continue
-                owner = next((k for k in cls.__mro__ if n in vars(k)), None)
-                key = (owner.__module__, owner.__qualname__, n) if owner else None
-                if key in TRANSPARENT_HOOKS:
+                keys = [
+                    (k.__module__, k.__qualname__, n)
+                    for k in cls.__mro__
+                    if n in vars(k) and k not in base.__mro__
+                ]
+                if not keys or any(key not in TRANSPARENT_HOOKS for key in keys):
+                    return False
+                for key in keys:
                     scope = TRANSPARENT_HOOKS[key]
                     hooked.update(scope(m) if callable(scope) else scope)
-                    continue
-                return False
             return True
         search_pure = pure("_search")
         impure_read_methods = [
