@@ -150,10 +150,15 @@ class RustBackend:
         _delegated(name, "not in this port's protocol")
         return getattr(self._delegate, name)
 
+    def _armed(self, method, model) -> bool:
+        """Armed for the method, and admitted by the routing mode and policy."""
+        if method not in self.NATIVE:
+            _delegated(method, "not armed")
+            return False
+        return _routing_allows(model, method)
+
     def create_rows(self, model, stored_list, columns, col_fields):
-        if "create_rows" not in self.NATIVE:
-            _delegated("create_rows", "not armed")
-        else:
+        if self._armed("create_rows", model):
             ids = _create_rows_native(model, stored_list, columns, col_fields)
             if ids is not None:
                 _count("native", "create_rows")
@@ -161,9 +166,9 @@ class RustBackend:
         return self._delegate.create_rows(model, stored_list, columns, col_fields)
 
     def update_rows(self, model, fnames, rows) -> None:
-        if "update_rows" not in self.NATIVE:
-            _delegated("update_rows", "not armed")
-        elif _update_rows_native(model, fnames, rows):
+        if self._armed("update_rows", model) and _update_rows_native(
+            model, fnames, rows
+        ):
             _count("native", "update_rows")
             return None
         return self._delegate.update_rows(model, fnames, rows)
@@ -175,9 +180,7 @@ class RustBackend:
     def search(
         self, model, domain, offset, limit, order, *, check_access=True, prof=None
     ):
-        if "search" not in self.NATIVE:
-            _delegated("search", "not armed")
-        else:
+        if self._armed("search", model):
             query = _search_native(model, domain, offset, limit, order, check_access)
             if query is not None:
                 _count("native", "search")
@@ -273,6 +276,40 @@ def _kernel(env):
     if not rust_orm_shim._bound_db(env) or not rust_orm_shim._ensure_kernel(env):
         return None
     return rust_orm_shim.KERNEL
+
+
+#: The routing shim, bound on first use: the port asks it on every native call
+#: and an import per call is a dictionary lookup it does not need to repeat.
+_SHIM = None
+
+
+def _routing_allows(model, method) -> bool:
+    """The routing mode and policy govern a native call as they govern a read.
+
+    `off` is off: a caller who turned routing off -- in the conf, or through
+    the kill switch in the middle of a run -- must not find the port still
+    composing UPDATE and INSERT. `shadow` returns Python's answer for a read,
+    and a write has no shadow to compare against, so it is Python's too. The
+    `only`/`except` lists, the breaker and a quarantine narrow the port the
+    way they narrow the shim, through the same `_policy_allows`. Two
+    attribute reads and one function call per native call; the statement
+    it guards is a round trip.
+    """
+    global _SHIM
+    if _SHIM is None:
+        try:
+            import rust_orm_shim
+        except ImportError:
+            _delegated(method, "no routing shim in this process")
+            return False
+        _SHIM = rust_orm_shim
+    if _SHIM.MODE != "on":
+        _delegated(method, "routing mode is %s" % _SHIM.MODE)
+        return False
+    if not _SHIM._policy_allows(model._name):
+        _delegated(method, "routing policy excludes the model")
+        return False
+    return True
 
 
 def _uniform_values(rows):

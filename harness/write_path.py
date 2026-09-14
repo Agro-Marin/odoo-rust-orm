@@ -129,6 +129,12 @@ def stored(recs):
 
 
 port = engine_py.install_backend()
+# The port obeys the routing mode; this script arms methods on the class on
+# purpose, so it turns routing on for its own process rather than inherit a
+# conf that may say `shadow` -- the process ends with the script.
+import rust_orm_shim
+
+rust_orm_shim.set_mode("on")
 failures = []
 
 if port.installed() is None:

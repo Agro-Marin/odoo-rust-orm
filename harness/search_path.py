@@ -60,6 +60,12 @@ CORPUS = os.environ.get("RUSTORM_SWEEP") or os.path.join(harness_dir(), "corpus.
 MIN_NATIVE = int(os.environ.get("RUSTORM_MIN_NATIVE_SEARCH", "1000"))
 
 port = engine_py.install_backend()
+# The port obeys the routing mode; this script arms methods on the class on
+# purpose, so it turns routing on for its own process rather than inherit a
+# conf that may say `shadow` -- the process ends with the script.
+import rust_orm_shim
+
+rust_orm_shim.set_mode("on")
 backend_name = type(env.cr.transaction.backend).__name__  # noqa: F821
 if port.installed() is None or backend_name != "RustBackend":
     print("SEARCH SKIP: the port is not installed for this database")
