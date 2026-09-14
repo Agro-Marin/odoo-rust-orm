@@ -25,6 +25,7 @@ fn req(model: &str, fields: &[&str], limit: Option<u64>) -> Request {
         raw_many2one: Vec::new(),
         unredacted_many2one: Vec::new(),
         groupby_hidden_labels_empty: false,
+        resolved_rules: Default::default(),
         active_test: None,
         x2many_active_test: None,
         tz: None,

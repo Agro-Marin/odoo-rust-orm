@@ -2866,6 +2866,29 @@ fn a_follower_search_python_would_answer_differently_is_refused() {
     );
 }
 
+#[test]
+fn a_rule_granted_by_a_constant_folds_before_its_other_branches_compile() {
+    use odoo_kernel::domain::{Node, fold_constants};
+    let fold = |dom: serde_json::Value| fold_constants(domain::parse(&dom).unwrap());
+    assert!(matches!(
+        fold(json!(["|", ["user_has_access", "=", true], [1, "=", 1]])),
+        Node::True
+    ));
+    assert!(matches!(
+        fold(json!(["&", ["name", "=", "x"], [0, "=", 1]])),
+        Node::False
+    ));
+    assert!(matches!(
+        fold(json!(["&", ["name", "=", "x"], [1, "=", 1]])),
+        Node::Leaf(_)
+    ));
+    assert!(matches!(fold(json!(["!", [1, "=", 1]])), Node::False));
+    assert!(matches!(
+        fold(json!(["|", ["name", "=", "x"], "|", [0, "=", 1], ["name", "=", "y"]])),
+        Node::Or(ref kept) if kept.len() == 2
+    ));
+}
+
 fn trigram_registry() -> Registry {
     let mut name = field("name", FieldType::Char);
     name.translated = true;
@@ -3088,6 +3111,7 @@ fn a_request_naming_no_groupby_is_answered_not_refused() {
         raw_many2one: Vec::new(),
         unredacted_many2one: Vec::new(),
         groupby_hidden_labels_empty: false,
+        resolved_rules: Default::default(),
         active_test: None,
         x2many_active_test: None,
         tz: None,

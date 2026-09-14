@@ -3359,6 +3359,39 @@ calls with 0 mismatches. The captured kanban traffic moves little yet:
 `knowledge.article` routes, `project.task` and `helpdesk.ticket` stay behind
 the argument-rewriting overrides above.
 
+## Record rules Python resolves to data are handed to the kernel
+
+Knowledge articles restrict themselves with `('user_has_access', '=', True)`, and
+their members, favorites, threads and stages with `article_id.user_has_access`.
+The search method behind it reads member permissions inherited down the article
+tree with a recursive query and returns `('id', 'in', [...])`: data, but data
+computed by Python from the database, not a leaf the kernel could compile. The
+captured knowledge views refused on it 54 times.
+
+The shim now looks at the user's read rules for the request's model and for the
+comodels of its requested fields and groupbys. Where a rule reaches a field with
+a Python search method, it resolves the domain the way `_search` does --
+`optimize_full` on the model under sudo -- and when the result is plain data it
+sends it as `resolved_rules`. The kernel applies those domains over its cached
+rule set for that request only: a knowledge permission can change inside a
+transaction, and the per-identity cache would otherwise serve a stale list.
+Where the resolution is not data -- `message_partner_ids` resolves to a
+subquery -- nothing is sent and the kernel compiles the leaf itself or refuses.
+A rule whose computation raises, as it does for a context naming companies the
+user does not have, is a refusal rather than an error.
+
+**A constant group rule did not absorb the rule beside it.** An administrator
+holds both knowledge groups, so the grant `(1, '=', 1)` is ORed with
+`user_has_access`; Python's `optimize` folds that to TRUE before any search
+method runs, and the kernel compiled the OR as written and refused on the leaf.
+Rule domains now fold their constants (`fold_constants`) before they compile;
+request domains are left as they are, since folding there could answer a
+domain Python rejects for an invalid leaf in a dead branch.
+
+The captured grouped-view traffic now routes 0.58 of its calls, from 0.09 before
+grouped views routed and 0.43 after the follower rules, with no difference in
+shadow.
+
 ## Record rules through followers compile
 
 With the overrides gone, project and helpdesk kanban views refused on their

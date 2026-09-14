@@ -219,6 +219,11 @@ impl RuleSet {
         self.domains.insert(model, node);
     }
 
+    pub fn resolve(&mut self, model: String, node: crate::domain::Node) {
+        self.unevaluated.remove(&model);
+        self.insert(model, node);
+    }
+
     pub fn mark_unrestricted(&mut self, model: String) {
         self.compiled.insert(model);
     }

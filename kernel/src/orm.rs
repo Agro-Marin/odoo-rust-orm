@@ -215,6 +215,9 @@ pub struct Request {
     /// resolved through `optimize_full`.
     #[serde(default)]
     pub trusted_domain: bool,
+
+    #[serde(default)]
+    pub resolved_rules: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 impl Request {
@@ -585,6 +588,28 @@ impl<'a> Orm<'a> {
     }
 
     pub(crate) async fn uid_rules(&self, req: &Request, env: &Env) -> Result<Arc<RuleSet>> {
+        let rules = self.identity_rules(req, env).await?;
+        if env.su || req.resolved_rules.is_empty() {
+            return Ok(rules);
+        }
+        let mut per_request = (*rules).clone();
+        for (model, domain_json) in &req.resolved_rules {
+            if self.registry.lookup(model).is_none() {
+                refuse!("resolved record rules name {model}, which this registry does not have");
+            }
+            let node = domain::parse(domain_json)
+                .map_err(|e| e.context(format!("resolved record rules on {model}")))?;
+            tracing::debug!(
+                target: "odoo_kernel::rules",
+                uid = env.uid, %model,
+                "record rules resolved by Python's optimize_full apply to this request only"
+            );
+            per_request.resolve(model.clone(), node);
+        }
+        Ok(Arc::new(per_request))
+    }
+
+    async fn identity_rules(&self, req: &Request, env: &Env) -> Result<Arc<RuleSet>> {
         if env.su {
             tracing::trace!(
                 target: "odoo_kernel::rules",
@@ -674,7 +699,7 @@ impl<'a> Orm<'a> {
                             .resolve_hierarchy(&ctx, model, &domain_json, &mut memo, None)
                             .await
                             .and_then(|resolved| domain::parse(&resolved))
-                            .map(Some),
+                            .map(|node| Some(domain::fold_constants(node))),
                     },
                     Ok(None) => Ok(None),
                     Err(e) => Err(e),

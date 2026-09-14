@@ -1382,14 +1382,22 @@ def test_install_is_idempotent_and_keeps_stamps() -> None:
     check("name_search keeps api.readonly", BaseModel.name_search._readonly, True)
     from odoo.fields import Domain
 
+    class _Rules:
+        def _get_domain_accessible_records(self, model_name, mode):
+            return Domain.TRUE
+
     class _Env:
         uid, su, context = 2, False, {}
 
         class registry:
             registry_sequence = 7
 
+        def __getitem__(self, model_name):
+            return _Rules()
+
     class _Model:
         _name = "res.partner"
+        _fields = {}
         env = _Env()
 
     req = json.loads(

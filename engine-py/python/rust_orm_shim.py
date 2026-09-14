@@ -837,6 +837,78 @@ def _needs_python_search(model, domain, depth=0):
     return False
 
 
+def _domain_needs_python_search(model, domain, depth=0):
+    from odoo.fields import Domain
+
+    for condition in domain.iter_conditions():
+        current, field = model, None
+        for name in condition.field_expr.split("."):
+            field = current._fields.get(name)
+            if field is None:
+                return False
+            if (
+                not field.store
+                and field.search
+                and not field.related
+                and name != "display_name"
+            ):
+                return True
+            if not field.relational:
+                break
+            current = model.env[field.comodel_name]
+        if (
+            depth < 4
+            and field is not None
+            and field.relational
+            and isinstance(condition.value, Domain)
+            and _domain_needs_python_search(current, condition.value, depth + 1)
+        ):
+            return True
+    return False
+
+
+def _resolved_rules(model, kw):
+    env = model.env
+    if env.su:
+        return {}
+    names = {model._name}
+    for spec in [*(kw.get("fields") or ()), *(kw.get("groupby") or ())]:
+        field = (
+            model._fields.get(spec.split(":")[0].split(".")[0])
+            if isinstance(spec, str)
+            else None
+        )
+        if field is not None and field.relational:
+            names.add(field.comodel_name)
+    resolved = {}
+    for name in sorted(names):
+        try:
+            domain = env["ir.rule"]._get_domain_accessible_records(name, "read")
+        except Exception as exc:
+            raise KernelRefused(
+                "computing the record rules on %s raised %s"
+                % (name, type(exc).__name__)
+            ) from exc
+        if domain.is_true() or not _domain_needs_python_search(env[name], domain):
+            continue
+        try:
+            rules = list(
+                domain.optimize_full(env[name].sudo().with_context(active_test=False))
+            )
+        except Exception as exc:
+            raise KernelRefused(
+                "resolving the record rules on %s raised %s"
+                % (name, type(exc).__name__)
+            ) from exc
+        try:
+            json.dumps(rules)
+        except (TypeError, ValueError) as exc:
+            _logger.debug("record rules on %s do not resolve to data: %s", name, exc)
+            continue
+        resolved[name] = rules
+    return resolved
+
+
 def _sql_tz(env):
     tz = env.context.get("tz") or None
     if tz is None:
@@ -879,6 +951,8 @@ def _request(model, method, **kw):
                     "resolving a Python search method raised %s" % type(exc).__name__
                 ) from exc
             kw["trusted_domain"] = True
+    if resolved := _resolved_rules(model, kw):
+        kw["resolved_rules"] = resolved
     req.update(kw)
 
     def refuse_non_json(value) -> Never:

@@ -77,6 +77,47 @@ pub fn parse(domain: &Json) -> Result<Node> {
     Ok(node)
 }
 
+pub fn fold_constants(node: Node) -> Node {
+    match node {
+        Node::And(children) => {
+            let mut kept = Vec::with_capacity(children.len());
+            for child in children.into_iter().map(fold_constants) {
+                match child {
+                    Node::False => return Node::False,
+                    Node::True => {}
+                    other => kept.push(other),
+                }
+            }
+            match kept.len() {
+                0 => Node::True,
+                1 => kept.pop().unwrap(),
+                _ => Node::And(kept),
+            }
+        }
+        Node::Or(children) => {
+            let mut kept = Vec::with_capacity(children.len());
+            for child in children.into_iter().map(fold_constants) {
+                match child {
+                    Node::True => return Node::True,
+                    Node::False => {}
+                    other => kept.push(other),
+                }
+            }
+            match kept.len() {
+                0 => Node::False,
+                1 => kept.pop().unwrap(),
+                _ => Node::Or(kept),
+            }
+        }
+        Node::Not(inner) => match fold_constants(*inner) {
+            Node::True => Node::False,
+            Node::False => Node::True,
+            other => Node::Not(Box::new(other)),
+        },
+        leaf => leaf,
+    }
+}
+
 fn parse_leaf(leaf: &[Json]) -> Result<Node> {
     let op = leaf[1]
         .as_str()
