@@ -1331,9 +1331,14 @@ impl<'a> Compiler<'a> {
         });
         match head.ttype {
             FieldType::Many2one => self.m2o_any(head, &sub_leaf, true, head.bypass_search_access),
-            FieldType::One2many | FieldType::Many2many => {
-                self.x2many_subselect(head, Some(&sub_leaf), true, true, false)
-            }
+            FieldType::One2many | FieldType::Many2many => self.x2many_subselect(
+                head,
+                Some(&sub_leaf),
+                true,
+                true,
+                false,
+                head.bypass_search_access,
+            ),
             _ => refuse!(
                 "cannot traverse non-relational {}.{}",
                 self.model.name,
@@ -1713,7 +1718,23 @@ impl<'a> Compiler<'a> {
         match op {
             "any" | "not any" | "any!" | "not any!" => {
                 let sub = crate::domain::parse(value)?;
-                self.x2many_subselect(field, Some(&sub), !op.starts_with("not"), true, false)
+                // `any!` skips the comodel's access on EVERY relational field
+                // (`_base.py`: `bypass_access = self.bypass_search_access or
+                // operator in ("any!", "not any!")`); the many2one path
+                // honours it below and this one used to drop the `!`
+                let bypass = if op.ends_with('!') {
+                    Some(true)
+                } else {
+                    field.bypass_search_access
+                };
+                self.x2many_subselect(
+                    field,
+                    Some(&sub),
+                    !op.starts_with("not"),
+                    true,
+                    false,
+                    bypass,
+                )
             }
             "in" | "=" | "not in" | "!=" => {
                 let positive = matches!(op, "in" | "=");
@@ -1745,10 +1766,24 @@ impl<'a> Compiler<'a> {
                         op: "in".into(),
                         value: serde_json::json!(ids),
                     });
-                    Some(self.x2many_subselect(field, Some(&sub), true, false, true)?)
+                    Some(self.x2many_subselect(
+                        field,
+                        Some(&sub),
+                        true,
+                        false,
+                        true,
+                        field.bypass_search_access,
+                    )?)
                 };
                 let empty = match match_empty {
-                    true => Some(self.x2many_subselect(field, None, false, false, true)?),
+                    true => Some(self.x2many_subselect(
+                        field,
+                        None,
+                        false,
+                        false,
+                        true,
+                        field.bypass_search_access,
+                    )?),
                     false => None,
                 };
                 let combined = match (matching, empty) {
@@ -1771,6 +1806,7 @@ impl<'a> Compiler<'a> {
         positive: bool,
         apply_active: bool,
         sudo: bool,
+        bypass_access: Option<bool>,
     ) -> Result<Expr> {
         let co = self.ctx.registry.get(field.comodel()?)?;
         let sub_alias = format!("s{}_{}", self.depth, co.table);
@@ -1800,7 +1836,7 @@ impl<'a> Compiler<'a> {
                 cond = cond.add(sub_compiler.active_filter(field, co, Some(node))?);
             }
         }
-        if let Some(rules) = sub_compiler.comodel_rules(co, field.bypass_search_access)? {
+        if let Some(rules) = sub_compiler.comodel_rules(co, bypass_access)? {
             cond = cond.add(sub_compiler.compile_rules(rules)?);
         }
 

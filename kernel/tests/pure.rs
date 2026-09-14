@@ -2604,6 +2604,46 @@ fn the_any_bang_operator_is_refused_as_odoo_refuses_it() {
     assert!(sql.contains("\"code\""), "got {sql}");
 }
 
+// The same internal spelling on an x2many. Odoo's `_optimize_any_with_rights`
+// and `child_of`/`parent_of` on a many2many emit `any!` into a trusted domain,
+// and `_base.py` skips the comodel's access for it on every relational field;
+// the x2many path used to hand the field's own flag to `comodel_rules` and
+// apply the rules Odoo skips -- fewer rows, or a denial, silently.
+#[test]
+fn any_bang_on_an_x2many_skips_the_comodels_rules_as_it_does_on_a_many2one() {
+    let reg = base_registry();
+    let mut rules = RuleSet::default();
+    rules.insert(
+        "res.country".into(),
+        domain::parse(&json!([["name", "=", "secret"]])).unwrap(),
+    );
+    let guarded = compile_with(
+        &reg,
+        &rules,
+        json!([["company_ids", "any", [["name", "ilike", "x"]]]]),
+    )
+    .expect("compiles");
+    assert!(
+        guarded.contains("secret"),
+        "`any` applies the rule: {guarded}"
+    );
+    for op in ["any!", "not any!"] {
+        let bypassed = compile_with(
+            &reg,
+            &rules,
+            json!([["company_ids", op, [["name", "ilike", "x"]]]]),
+        )
+        .expect("compiles");
+        assert!(
+            !bypassed.contains("secret"),
+            "{op} must skip the rule: {bypassed}"
+        );
+        assert!(
+            bypassed.contains("partner_company_rel"),
+            "and still traverse the relation: {bypassed}"
+        );
+    }
+}
 #[test]
 fn a_registry_that_cannot_see_the_flag_refuses_rather_than_guessing() {
     // `ir_model_fields` does not record `bypass_search_access`, so a
