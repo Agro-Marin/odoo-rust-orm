@@ -142,11 +142,21 @@ def score(expected, actual):
 
 def main() -> None:
     min_compared = 0
+    # Refusals are the designed fallback and never fail a case, so a kernel
+    # that declines nine cases in ten scores zero failures; the floor on
+    # compared values catches a run that compared almost nothing, not one
+    # that quietly lost most of its coverage. The cap is on the share of the
+    # cases the baseline RAN that the kernel declined (refused or rejected):
+    # a lane sets it a little above what it measures today, and a change that
+    # de-routes a whole family of models fails the stage instead of passing.
+    max_refused_share = float(os.environ.get("RUSTORM_DIFF_MAX_REFUSED_SHARE", "0.5"))
     json_out = None
     argv = sys.argv[1:]
     for i, a in enumerate(argv):
         if a.startswith("--min-compared="):
             min_compared = int(a.split("=", 1)[1])
+        elif a.startswith("--max-refused-share="):
+            max_refused_share = float(a.split("=", 1)[1])
         elif a.startswith("--json="):
             json_out = a.split("=", 1)[1]
         elif a == "--json" and i + 1 < len(argv):
@@ -210,6 +220,21 @@ def main() -> None:
                 None,
             )
         )
+    ran = len(expected) - len(skipped)
+    declined = len(refused) + len(rejected)
+    declined_share = declined / ran if ran else 0.0
+    if ran and declined_share > max_refused_share and not failed:
+        failed.append(
+            (
+                "<declined>",
+                (
+                    f"the kernel declined {declined} of the {ran} cases the baseline ran "
+                    f"({declined_share:.0%}); the cap is {max_refused_share:.0%}"
+                ),
+                None,
+                None,
+            )
+        )
     verdict = "FAIL" if failed else "PASS"
     write_json(
         json_out,
@@ -226,7 +251,7 @@ def main() -> None:
     )
     print(
         f"{verdict} {len(passed)}/{len(expected)}"
-        f"  (COMPARED {compared}"
+        f"  (COMPARED {compared}, DECLINED {declined_share:.0%} of {ran} run, cap {max_refused_share:.0%}"
         + (
             f", DENIED {len(denied)} — both raised AccessError, which is "
             f"agreement on the access decision"
