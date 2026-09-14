@@ -1014,6 +1014,52 @@ def test_web_length() -> None:
     check("no limit: current length", L(3, 10, None, None, False, count), 13)
 
 
+def test_wire_encoder() -> None:
+    import datetime
+    import json
+
+    from odoo.tools import SQL
+
+    orm_shim = _shims()[1]
+    encode = orm_shim._wire_encoder("n")
+    check(
+        "a fragment carries its code, params and the request's nonce",
+        json.loads(json.dumps(SQL("SELECT id FROM t WHERE p = %s", 7), default=encode)),
+        {"$sql": "SELECT id FROM t WHERE p = %s", "$params": [7], "$nonce": "n"},
+    )
+    for label, param in (
+        ("a datetime", datetime.datetime(2026, 9, 14, 8)),
+        ("an empty list", []),
+        ("None", None),
+        ("a mixed list", [1, "a"]),
+    ):
+        try:
+            json.dumps(SQL("SELECT %s", param), default=encode)
+        except orm_shim.KernelRefused:
+            pass
+        else:
+            raise AssertionError("a SQL comparand binding %s was sent" % label)
+    zone = datetime.timezone(datetime.timedelta(hours=2))
+    check(
+        "a datetime is its naive UTC timestamp, the way Python compares it",
+        json.dumps(
+            [
+                datetime.datetime(2026, 9, 14, 10, 0, 0, 500, tzinfo=zone),
+                datetime.datetime(2026, 9, 14, 8),
+                datetime.date(2026, 9, 14),
+            ],
+            default=encode,
+        ),
+        '["2026-09-14 08:00:00.000500", "2026-09-14 08:00:00", "2026-09-14"]',
+    )
+    try:
+        json.dumps(object(), default=encode)
+    except orm_shim.KernelRefused:
+        pass
+    else:
+        raise AssertionError("an object with no wire form was sent")
+
+
 def test_web_spec_plan() -> None:
     orm_shim = _shims()[1]
 

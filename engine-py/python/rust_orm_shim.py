@@ -893,6 +893,16 @@ def _rules_need_python(env, name):
     return needed
 
 
+def _fragment_param_ok(param) -> bool:
+    if isinstance(param, (bool, int, float, str)):
+        return True
+    if isinstance(param, (list, tuple)) and param:
+        return all(
+            isinstance(item, int) and not isinstance(item, bool) for item in param
+        ) or all(isinstance(item, str) for item in param)
+    return False
+
+
 def _wire_encoder(nonce):
     from odoo.tools import SQL, Query
 
@@ -900,7 +910,20 @@ def _wire_encoder(nonce):
         if isinstance(value, Query):
             value = value.subselect()
         if isinstance(value, SQL):
-            return {"$sql": value.code, "$params": list(value.params), "$nonce": nonce}
+            params = list(value.params)
+            for param in params:
+                if not _fragment_param_ok(param):
+                    raise KernelRefused(
+                        "a SQL comparand binds a %s the kernel cannot type"
+                        % type(param).__name__
+                    )
+            return {"$sql": value.code, "$params": params, "$nonce": nonce}
+        if isinstance(value, datetime.datetime):
+            if value.tzinfo is not None:
+                value = value.astimezone(datetime.UTC).replace(tzinfo=None)
+            return value.isoformat(" ")
+        if isinstance(value, datetime.date):
+            return value.isoformat()
         raise KernelRefused(
             "domain carries a %s the kernel cannot receive" % type(value).__name__
         )
