@@ -128,6 +128,14 @@ impl Caches {
     }
 }
 
+fn blank_is_none<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<String> = serde::Deserialize::deserialize(deserializer)?;
+    Ok(value.filter(|s| !s.trim().is_empty()))
+}
+
 pub struct Orm<'a> {
     pub registry: &'a Registry,
     pub(crate) db: Db<'a>,
@@ -150,7 +158,7 @@ pub struct Request {
     pub limit: Option<u64>,
     #[serde(default)]
     pub offset: Option<u64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "blank_is_none")]
     pub order: Option<String>,
 
     #[serde(default)]
@@ -218,6 +226,9 @@ pub struct Request {
 
     #[serde(default)]
     pub resolved_rules: std::collections::BTreeMap<String, serde_json::Value>,
+
+    #[serde(default)]
+    pub sql_nonce: Option<String>,
 }
 
 impl Request {
@@ -285,6 +296,8 @@ pub struct Env {
     pub dynamic: Arc<crate::registry::Dynamic>,
 
     pub groups: Arc<std::collections::HashSet<i32>>,
+
+    pub sql_nonce: Option<String>,
 
     /// The columns every compile under this environment read; see
     /// `ExprCtx::touched`.
@@ -583,6 +596,7 @@ impl<'a> Orm<'a> {
             week_start,
             groups,
             dynamic,
+            sql_nonce: req.sql_nonce.clone(),
             touched: Default::default(),
         })
     }
@@ -1103,6 +1117,11 @@ impl<'a> Orm<'a> {
                     };
                     out.extend(terms);
                 }
+                "any" | "not any" | "any!" | "not any!"
+                    if crate::fragment::is_fragment(&leaf[2]) =>
+                {
+                    out.push(item.clone());
+                }
                 "any" | "not any" | "any!" | "not any!" => {
                     let path: Vec<String> = fname.split('.').map(str::to_string).collect();
                     let norm = ctx.normalize_path(model, &path)?;
@@ -1551,6 +1570,7 @@ impl<'a> Orm<'a> {
         );
         let mut ctx = ctx.with_tz(env.comparand_tz.clone());
         ctx.touched = env.touched.clone();
+        ctx.sql_nonce = env.sql_nonce.clone();
         if env.su {
             ctx
         } else {
@@ -1639,6 +1659,26 @@ mod tests {
             langs: Vec::new(),
             week_start: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn a_blank_order_reads_as_no_order_the_way_python_tests_it() {
+        for (order, expected) in [
+            (json!(""), None),
+            (json!("  "), None),
+            (json!(null), None),
+            (json!("name desc"), Some("name desc".to_string())),
+        ] {
+            let req: Request = serde_json::from_value(
+                json!({"model": "res.partner", "method": "search_read", "order": order}),
+            )
+            .unwrap();
+            assert_eq!(req.order, expected);
+        }
+        let req: Request =
+            serde_json::from_value(json!({"model": "res.partner", "method": "search_read"}))
+                .unwrap();
+        assert_eq!(req.order, None);
     }
 
     fn key(signals: &crate::registry::Signals) -> RuleKey {

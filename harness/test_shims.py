@@ -68,9 +68,11 @@ def check(name, got, want) -> None:
 
 
 class F:
-    def __init__(self, type_, store=True, related=None, comodel_name=None) -> None:
+    def __init__(
+        self, type_, store=True, related=None, comodel_name=None, domain=None
+    ) -> None:
         self.type, self.store, self.related = type_, store, related
-        self.comodel_name = comodel_name
+        self.comodel_name, self.domain = comodel_name, domain
 
 
 def test_dbname_keyword_and_dict_specs() -> None:
@@ -1015,13 +1017,33 @@ def test_web_length() -> None:
 def test_web_spec_plan() -> None:
     orm_shim = _shims()[1]
 
+    def base_search(_self, domain):
+        return domain
+
+    class Comodel:
+        _search = base_search
+
+        def sudo(self):
+            return self
+
+    class SearchingComodel(Comodel):
+        def _search(self, domain):
+            return domain
+
+    orm_shim._BASE_METHODS["_search"] = base_search
+
     class M:
         _name = "probe.web_spec"
+        env = {"probe.tag": Comodel(), "probe.activity": SearchingComodel()}
         _fields = {
             "name": F("char"),
             "partner_id": F("many2one"),
             "user_id": F("many2one"),
-            "tag_ids": F("many2many"),
+            "tag_ids": F("many2many", comodel_name="probe.tag"),
+            "activity_ids": F("one2many", comodel_name="probe.activity"),
+            "member_ids": F(
+                "many2many", comodel_name="probe.tag", domain=lambda _env: []
+            ),
             "ref_id": F("reference"),
             "props": F("properties"),
             "icon": F("char", store=False),
@@ -1062,6 +1084,8 @@ def test_web_spec_plan() -> None:
         ("a bare reference", {"ref_id": {}}),
         ("properties with spec", {"props": {"fields": {}}}),
         ("a compute", {"icon": {}}),
+        ("an x2many whose comodel searches in python", {"activity_ids": {}}),
+        ("an x2many whose domain is computed", {"member_ids": {}}),
     ):
         check("%s is left to web_read" % label, plan(M(), spec), (["id"], [], spec))
     check(

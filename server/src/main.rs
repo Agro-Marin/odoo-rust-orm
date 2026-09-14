@@ -306,6 +306,7 @@ async fn main() -> Result<()> {
                 unredacted_many2one: Vec::new(),
                 groupby_hidden_labels_empty: false,
                 resolved_rules: Default::default(),
+                sql_nonce: None,
                 active_test: no_active_test.then_some(false),
                 x2many_active_test: None,
                 tz: None,

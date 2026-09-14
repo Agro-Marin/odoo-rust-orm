@@ -49,6 +49,8 @@ pub struct ExprCtx<'a> {
     /// fields to write before the statement runs, exact because they are the
     /// columns in it.
     pub touched: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<(String, String)>>>,
+
+    pub sql_nonce: Option<String>,
 }
 
 impl<'a> ExprCtx<'a> {
@@ -73,6 +75,7 @@ impl<'a> ExprCtx<'a> {
             access: None,
             tz: None,
             touched: Default::default(),
+            sql_nonce: None,
         }
     }
 
@@ -1059,6 +1062,9 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_leaf(&self, leaf: &Leaf) -> Result<Expr> {
+        if crate::fragment::is_fragment(&leaf.value) {
+            return self.fragment_condition(leaf);
+        }
         if let Some(rewritten) = self.optimize_leaf(leaf)? {
             return Ok(Expr::expr(self.compile(&rewritten)?));
         }
@@ -1189,6 +1195,83 @@ impl<'a> Compiler<'a> {
             _ => cond,
         };
         Ok(self.company_dependent_guard(field, op, &values, cond))
+    }
+
+    fn fragment_condition(&self, leaf: &Leaf) -> Result<Expr> {
+        let positive = match leaf.op.as_str() {
+            "any" | "any!" | "in" => true,
+            "not any" | "not any!" | "not in" => false,
+            other => refuse!(
+                "{}.{} {other:?}: a SQL comparand is compiled for any and in only",
+                self.model.name,
+                leaf.field
+            ),
+        };
+        let raw_path: Vec<String> = leaf.field.split('.').map(str::to_string).collect();
+        if raw_path.len() != 1 {
+            refuse!(
+                "{}.{}: a SQL comparand on a dotted path is left to Python",
+                self.model.name,
+                leaf.field
+            );
+        }
+        self.ctx.check_path_readable(self.model, &raw_path)?;
+        let field = self
+            .model
+            .fields
+            .get(&raw_path[0])
+            .ok_or_else(|| refusal!("unknown field {}.{}", self.model.name, raw_path[0]))?;
+        let subselect = crate::fragment::subselect(&leaf.value, self.ctx.sql_nonce.as_deref())?;
+        match field.ttype {
+            FieldType::One2many | FieldType::Many2many if !field.has_column => {
+                if matches!(leaf.op.as_str(), "in" | "not in") {
+                    refuse!(
+                        "{}.{} {:?}: an x2many compares a SQL comparand through any only",
+                        self.model.name,
+                        field.name,
+                        leaf.op
+                    );
+                }
+                let sub = Node::Leaf(Leaf {
+                    field: "id".into(),
+                    op: "any".into(),
+                    value: leaf.value.clone(),
+                });
+                self.x2many_subselect(field, Some(&sub), positive, true, true)
+            }
+            FieldType::Many2one if field.has_column && !field.company_dependent => {
+                if matches!(leaf.op.as_str(), "in" | "not in") {
+                    refuse!(
+                        "{}.{} {:?}: a many2one compares a SQL comparand through any only",
+                        self.model.name,
+                        field.name,
+                        leaf.op
+                    );
+                }
+                let sql_field = self.ctx.field_expr(self.model, field, &self.alias)?;
+                Ok(match (positive, field.not_null) {
+                    (true, _) => Expr::cust_with_exprs("$1 IN $2", [sql_field, subselect]),
+                    (false, true) => Expr::cust_with_exprs("$1 NOT IN $2", [sql_field, subselect]),
+                    (false, false) => Expr::cust_with_exprs(
+                        "($1 IS NULL OR $2 NOT IN $3)",
+                        [sql_field.clone(), sql_field, subselect],
+                    ),
+                })
+            }
+            FieldType::Integer if field.name == "id" => {
+                let sql_field = self.ctx.field_expr(self.model, field, &self.alias)?;
+                let operator = if positive { "IN" } else { "NOT IN" };
+                Ok(Expr::cust_with_exprs(
+                    format!("$1 {operator} $2"),
+                    [sql_field, subselect],
+                ))
+            }
+            _ => refuse!(
+                "{}.{}: a SQL comparand is compiled against id, a stored many2one or an x2many",
+                self.model.name,
+                field.name
+            ),
+        }
     }
 
     fn related_search(&self, f: &Field, rel: &str, op: &str, value: &Json) -> Result<Expr> {

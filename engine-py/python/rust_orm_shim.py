@@ -7,10 +7,10 @@ import math
 import operator
 import os
 import random
+import secrets
 import threading
 import time
 import weakref
-from typing import Never
 
 from rust_engine_errors import KernelRefused, KernelRegistryStale
 
@@ -893,7 +893,22 @@ def _rules_need_python(env, name):
     return needed
 
 
-def _resolved_rules(model, kw):
+def _wire_encoder(nonce):
+    from odoo.tools import SQL, Query
+
+    def encode(value):
+        if isinstance(value, Query):
+            value = value.subselect()
+        if isinstance(value, SQL):
+            return {"$sql": value.code, "$params": list(value.params), "$nonce": nonce}
+        raise KernelRefused(
+            "domain carries a %s the kernel cannot receive" % type(value).__name__
+        )
+
+    return encode
+
+
+def _resolved_rules(model, kw, encode):
     env = model.env
     if env.su:
         return {}
@@ -927,8 +942,8 @@ def _resolved_rules(model, kw):
                 % (name, type(exc).__name__)
             ) from exc
         try:
-            json.dumps(rules)
-        except (TypeError, ValueError) as exc:
+            json.dumps(rules, default=encode)
+        except (TypeError, ValueError, KernelRefused) as exc:
             _logger.debug("record rules on %s do not resolve to data: %s", name, exc)
             _RULES_NEED_PYTHON[_rules_key(env, name)] = False
             continue
@@ -978,18 +993,13 @@ def _request(model, method, **kw):
                     "resolving a Python search method raised %s" % type(exc).__name__
                 ) from exc
             kw["trusted_domain"] = True
-    if resolved := _resolved_rules(model, kw):
+    nonce = secrets.token_hex(16)
+    encode = _wire_encoder(nonce)
+    if resolved := _resolved_rules(model, kw, encode):
         kw["resolved_rules"] = resolved
     req.update(kw)
-
-    def refuse_non_json(value) -> Never:
-        # a Query, a recordset or a set inside a domain is a value the kernel
-        # has no wire form for: a refusal, not a shim exception
-        raise KernelRefused(
-            "domain carries a %s the kernel cannot receive" % type(value).__name__
-        )
-
-    return json.dumps(req, default=refuse_non_json)
+    req["sql_nonce"] = nonce
+    return json.dumps(req, default=encode)
 
 
 def _dispatch(model, method, **kw):
@@ -1190,7 +1200,7 @@ def _no_plan(reason) -> None:
     _refuse(reason)
 
 
-def _web_field_in_python(f, name, spec):
+def _web_field_in_python(model, f, name, spec):
     if f.type in READ_SKIP_TYPES:
         return f"{f.type} is read in python"
     if name != "display_name" and not (f.store or f.related):
@@ -1203,8 +1213,14 @@ def _web_field_in_python(f, name, spec):
             isinstance(sub, dict) and set(sub) == {"display_name"}
         ):
             return "sub-fields other than display_name"
-    elif f.type in ("one2many", "many2many") and spec:
-        return "x2many with a sub-specification"
+    elif f.type in ("one2many", "many2many"):
+        if spec:
+            return "x2many with a sub-specification"
+        if callable(f.domain):
+            return "x2many whose domain is computed per record"
+        comodel = type(model.env[f.comodel_name].sudo())
+        if comodel._search is not _BASE_METHODS["_search"]:
+            return "x2many through a comodel that searches in python"
     return None
 
 
@@ -1219,7 +1235,7 @@ def _web_spec_plan(model, specification):
         if name == "display_name" and not _display_ok(model):
             reason = "display_name computed in python"
         else:
-            reason = _web_field_in_python(f, name, spec or {})
+            reason = _web_field_in_python(model, f, name, spec or {})
         if reason:
             _call_logger.debug(
                 "%s.%s: %s; web_read answers it", model._name, name, reason

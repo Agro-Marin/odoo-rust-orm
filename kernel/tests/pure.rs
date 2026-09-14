@@ -3112,6 +3112,7 @@ fn a_request_naming_no_groupby_is_answered_not_refused() {
         unredacted_many2one: Vec::new(),
         groupby_hidden_labels_empty: false,
         resolved_rules: Default::default(),
+        sql_nonce: None,
         active_test: None,
         x2many_active_test: None,
         tz: None,
@@ -3523,4 +3524,49 @@ fn a_dotted_leaf_compiles_as_its_any_form_for_every_operator_that_folds() {
         }
     }
     assert!(diffs.is_empty(), "{}", diffs.join("\n"));
+}
+
+fn compile_with_nonce(reg: &Registry, dom: serde_json::Value) -> anyhow::Result<String> {
+    let mut ctx = ExprCtx::new(reg, "en_US", 1);
+    ctx.sql_nonce = Some("n".into());
+    let m = reg.get("res.partner").unwrap();
+    let rules = RuleSet::default();
+    let c = Compiler::root(&ctx, m, &rules, true);
+    Ok(sql_of(c.compile(&domain::parse(&dom)?)?))
+}
+
+fn fragment() -> serde_json::Value {
+    json!({"$sql": "SELECT id FROM res_country WHERE name = %s", "$params": ["Mexico"], "$nonce": "n"})
+}
+
+#[test]
+fn a_sql_comparand_python_resolved_compiles_to_the_subselect_odoo_builds() {
+    let reg = base_registry();
+    assert_eq!(
+        compile_with_nonce(&reg, json!([["id", "any!", fragment()]])).unwrap(),
+        r#"SELECT 1 FROM "res_partner" WHERE "res_partner"."id" IN (SELECT id FROM res_country WHERE name = 'Mexico'::text)"#
+    );
+    assert_eq!(
+        compile_with_nonce(&reg, json!([["country_id", "not any!", fragment()]])).unwrap(),
+        r#"SELECT 1 FROM "res_partner" WHERE ("res_partner"."country_id" IS NULL OR "res_partner"."country_id" NOT IN (SELECT id FROM res_country WHERE name = 'Mexico'::text))"#
+    );
+    let x2many = compile_with_nonce(&reg, json!([["company_ids", "any", fragment()]])).unwrap();
+    assert!(
+        x2many.contains("IN (SELECT id FROM res_country WHERE name = 'Mexico'::text)"),
+        "{x2many}"
+    );
+}
+
+#[test]
+fn a_sql_comparand_is_refused_where_odoo_would_not_build_a_subselect_from_it() {
+    let reg = base_registry();
+    for dom in [
+        json!([["name", "any!", fragment()]]),
+        json!([["country_id.name", "any!", fragment()]]),
+        json!([["id", "like", fragment()]]),
+        json!([["country_id", "in", fragment()]]),
+    ] {
+        assert!(compile_with_nonce(&reg, dom.clone()).is_err(), "{dom}");
+    }
+    assert!(compile_res(&reg, json!([["id", "any!", fragment()]])).is_err());
 }

@@ -3359,6 +3359,38 @@ calls with 0 mismatches. The captured kanban traffic moves little yet:
 `knowledge.article` routes, `project.task` and `helpdesk.ticket` stay behind
 the argument-rewriting overrides above.
 
+## A subquery Python resolved reaches the kernel as a bound fragment
+
+A search method may answer with SQL rather than ids: knowledge's
+`_search_user_has_access` is one recursive query, so the record rules on
+`knowledge.article` and every model that reads through it optimise to
+`('id', 'any!', SQL(...))`. The shim had no wire form for an `SQL` or a `Query`,
+so those rules stayed unresolved and the kernel refused them as a traversal of a
+non-stored field -- and a domain carrying one was refused outright.
+
+The shim now sends such a value as `{"$sql", "$params", "$nonce"}`, a `Query` as
+its `subselect()`. The nonce is drawn per request and travels only in the
+request, so a domain a client wrote cannot name a fragment. The kernel turns each
+`%s` into a bound `$n` cast to its parameter's JSON type -- `int8`, `text`,
+`float8`, `bool`, or their arrays, because the Postgres client encodes a typed
+value and an `int8` is not an `int4` -- turns `%%` into `%`, drops comments, and
+refuses a dollar sign, a second statement, or a parameter with no typed form. It
+compiles the fragment where Odoo builds a subselect from one: `id [NOT] IN`, a
+stored many2one with Python's `IS NULL OR` on the negative, and an x2many through
+its comodel's `id` as the superuser. Anything else is still Python's.
+
+Three refusals went with it. A blank `order` is no order, as Python's falsy test
+reads it; the kernel ordered those reads by id alone, which knowledge's own
+`search_fetch` refusal had hidden. A web read no longer refuses whole when one
+x2many in its specification reads through a comodel that searches in Python or
+carries a domain computed per record: that field goes to web_read's half. And
+account's two field-scoped `_field_to_sql` hooks, like knowledge's
+`is_user_favorite` ordering, refuse only the fields they touch.
+
+On the captured grouped-view tours the routed share rises from 0.51 to 1.04, the
+reads verified in shadow from 141 to 236, and the refusals over both captures
+from 502 to 377.
+
 ## A rollback no longer throws the kernel's plans away
 
 The prepared-statement cache follows psycopg: a `ROLLBACK` tag -- which
