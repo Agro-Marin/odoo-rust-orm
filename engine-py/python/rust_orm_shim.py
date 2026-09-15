@@ -588,6 +588,16 @@ def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: AR
         return False
     if not _bound_db(model.env):
         return _refuse("another database")
+    if not getattr(model.env.registry, "ready", True):
+        # `Registry.new(update_module=True)` from the web client reloads the
+        # registry in THIS worker: `setup_signaling` reads the sequence before
+        # `load_modules` and the bump comes after, so the kernel built from
+        # the previous registry carries the same sequence as the one being
+        # loaded and the watermark cannot tell them apart. A registry that is
+        # not ready is one whose fields, casts and translations may differ
+        # from what the kernel exported; every read serves from Python until
+        # `_new_finalize` sets `ready` and the hook publishes a new kernel.
+        return _refuse("registry is loading")
     if not _ensure_kernel(model.env):
         return _refuse("kernel not built")
     try:

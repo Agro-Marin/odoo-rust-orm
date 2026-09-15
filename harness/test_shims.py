@@ -2196,6 +2196,60 @@ def test_the_port_follows_the_routing_mode_and_policy() -> None:
         orm_shim.EXCEPT = saved[1]
 
 
+def test_a_loading_registry_is_served_from_python_on_both_paths() -> None:
+    # Under `Registry.new(update_module=True)` in the same worker the new
+    # registry carries the kernel's sequence until the load ends; neither
+    # the routed reads nor the port may use the old kernel meanwhile.
+    orm_shim = _shims()[1]
+    backend = _backend()
+
+    class _Registry:
+        db_name = "probe"
+        ready = False
+
+    class _Env:
+        registry = _Registry()
+
+    class _Model:
+        _name = "probe.model"
+        env = _Env()
+
+    saved = (orm_shim.MODE, orm_shim.DBNAME)
+    try:
+        orm_shim.set_mode("on")
+        orm_shim.DBNAME = "probe"
+        orm_shim.GATE_REASONS.clear()
+        check(
+            "the gate refuses",
+            orm_shim._gate(_Model(), ["id"], method="search_read"),
+            False,
+        )
+        orm_shim._gated(_Model(), "search_read")  # what the routed method records
+        check(
+            "and says why",
+            orm_shim.GATE_REASONS[
+                ("probe.model", "search_read", "registry is loading")
+            ],
+            1,
+        )
+        backend.reset_stats()
+        port = backend.RustBackend(_RecordingDelegate())
+        check("the port delegates", port._armed("update_rows", _Model()), False)
+        check(
+            "with the reason counted",
+            backend.STATS["reasons"]["the registry is loading"],
+            1,
+        )
+        _Registry.ready = True
+        check(
+            "a ready registry goes on to the mode and the policy",
+            port._armed("update_rows", _Model()),
+            True,
+        )
+    finally:
+        orm_shim.MODE, orm_shim.DBNAME = saved
+
+
 def test_an_unarmed_port_is_its_delegate() -> None:
     # The port is installed before any method is native, so "installed"
     # must mean "no answer changed". Every protocol method is called here,

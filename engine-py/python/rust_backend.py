@@ -155,6 +155,15 @@ class RustBackend:
         if method not in self.NATIVE:
             _delegated(method, "not armed")
             return False
+        registry = getattr(getattr(model, "env", None), "registry", None)
+        if registry is not None and not getattr(registry, "ready", True):
+            # a registry being (re)loaded in this process keeps the sequence
+            # the kernel was built from until the load ends; a write composed
+            # from the old export against a column the upgrade just changed
+            # aborts the upgrade, so the delegate writes until the new kernel
+            # is published
+            _delegated(method, "the registry is loading")
+            return False
         return _routing_allows(model, method)
 
     def create_rows(self, model, stored_list, columns, col_fields):
