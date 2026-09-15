@@ -104,9 +104,16 @@ leg() {
 
   local rss_before conns_before
   rss_before=$(rss); conns_before=$(conns)
-  local result
+  local result bench_rc=0
+  # the bench's own failure used to be `|| true`: a wrong password or a port
+  # collision made every request fail, the workers' periodic lines still
+  # showed the warm-up's routed count, and the leg read as measured
   result=$("$PY" "$ROOT/harness/http_bench.py" --port "$PORT" --db "$DB" --password "$PASSWORD" --profile "$PROFILE" \
-      --threads "$THREADS" --seconds "$SECONDS_" --warmup 5 --label "$mode" 2>"$OUT/bench_$mode.err" | tail -1) || true
+      --threads "$THREADS" --seconds "$SECONDS_" --warmup 5 --label "$mode" 2>"$OUT/bench_$mode.err" | tail -1) || bench_rc=$?
+  if [ "$bench_rc" != 0 ] || [ -z "$result" ]; then
+    echo "  $mode: the bench did not measure (exit $bench_rc; see $OUT/bench_$mode.err)"
+    BURNIN_BUGS=$((${BURNIN_BUGS:-0} + 1))
+  fi
   local rss_after conns_after
   rss_after=$(rss); conns_after=$(conns)
 

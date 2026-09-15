@@ -24,6 +24,9 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE="${RUSTORM_WORKSPACE:-$(cd "$ROOT/.." && pwd)}"
+# the Rust binaries resolve the workspace through the same variable
+# (`config.rs`); unexported, they fell back to the hardcoded home
+export RUSTORM_WORKSPACE="$WORKSPACE"
 DB="${RUSTORM_DB:-rustorm_probe}"
 BUILD=""
 QUICK=0
