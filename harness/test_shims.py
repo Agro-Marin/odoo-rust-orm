@@ -1350,10 +1350,33 @@ def test_taints_clear_on_commit_and_rollback() -> None:
     orm_shim.WRITTEN_X2MANY[cr] = {("res.partner", "child_ids")}
     check("tainted", cr in orm_shim.DIRTY_CRS, True)
     orm_shim._untaint(cr)
-    check("security taint cleared", cr in orm_shim.DIRTY_CRS, False)
-    check("x2many taint cleared", orm_shim.WRITTEN_X2MANY.get(cr), None)
+    check("a rollback clears the security taint", cr in orm_shim.DIRTY_CRS, False)
+    check("and the x2many taint", orm_shim.WRITTEN_X2MANY.get(cr), None)
     orm_shim._untaint(cr)
     check("untaint is idempotent", cr in orm_shim.DIRTY_CRS, False)
+
+    # a commit puts the rows in the database, but the kernel's caches are
+    # keyed on signals the fork emits at the end of the scope: the security
+    # taint moves to "committed, not signalled" and the gate keeps refusing
+    cr.dbname = "probe"
+    orm_shim.DIRTY_CRS.add(cr)
+    orm_shim.WRITTEN_X2MANY[cr] = {("res.partner", "child_ids")}
+    orm_shim._untaint(cr, committed=True)
+    check("a commit keeps the security taint", cr in orm_shim.DIRTY_CRS, True)
+    check("but clears the x2many taint", orm_shim.WRITTEN_X2MANY.get(cr), None)
+    orm_shim._untaint(cr)
+    check(
+        "a rollback after that commit does not clear it either",
+        cr in orm_shim.DIRTY_CRS,
+        True,
+    )
+    orm_shim._signalled("another-db")
+    check("another database's signal is not ours", cr in orm_shim.DIRTY_CRS, True)
+    orm_shim._signalled("probe")
+    check(
+        "the registry signalling its changes clears it", cr in orm_shim.DIRTY_CRS, False
+    )
+    check("and forgets the cursor", cr in orm_shim.COMMITTED_DIRTY, False)
 
 
 def test_the_read_gates_see_fetch_and_read_group_overrides() -> None:
