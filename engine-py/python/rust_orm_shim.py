@@ -317,6 +317,14 @@ SECURITY_MODELS = frozenset(
     }
 )
 DIRTY_CRS = weakref.WeakSet()
+#: Cursors that COMMITTED a security write the registry has not signalled yet.
+#: A commit puts the rows in the database, but the kernel's per-identity
+#: caches are keyed on the `orm_signaling` sequences, and the fork bumps
+#: those at the end of the transaction scope (`_commit_and_signal_changes`),
+#: not inside `Cursor.commit`. Between the two, a routed read as the user
+#: whose groups just changed would be served from the cache the write made
+#: stale; the taint stays until `Registry.signal_changes` runs.
+COMMITTED_DIRTY = weakref.WeakSet()
 
 
 def _harmless_user_write(records, vals) -> bool:
@@ -1515,13 +1523,31 @@ def _restamp(new, orig):
 _INSTALLED = None
 
 
-def _untaint(cr) -> None:
-    # a commit or rollback ends the window the two bookkeepers guard; failing
-    # to clear is harmless (it only keeps the gate refusing), so this one stays
-    # quiet
-    DIRTY_CRS.discard(cr)
+def _untaint(cr, committed=False) -> None:
+    # a commit or rollback ends the window the x2many bookkeeper guards --
+    # after either, the relation tables the kernel reads are what Python
+    # sees. The security taint ends with a rollback too, but a COMMIT only
+    # moves it: the rows are in the database and the kernel's caches are not
+    # told until the registry signals, so the cursor stays refused until
+    # `_signalled` for its database. Failing to clear is harmless (it only
+    # keeps the gate refusing), so this one stays quiet.
     with contextlib.suppress(TypeError):
+        if committed:
+            if cr in DIRTY_CRS:
+                COMMITTED_DIRTY.add(cr)
+        elif cr not in COMMITTED_DIRTY:
+            DIRTY_CRS.discard(cr)
         WRITTEN_X2MANY.pop(cr, None)
+
+
+def _signalled(db_name) -> None:
+    """The registry of `db_name` signalled its changes: the kernel will see
+    them on its next request, and the cursors that committed them may route
+    again."""
+    for cr in list(COMMITTED_DIRTY):
+        if getattr(cr, "dbname", db_name) == db_name:
+            COMMITTED_DIRTY.discard(cr)
+            DIRTY_CRS.discard(cr)
 
 
 def install():
@@ -1835,11 +1861,25 @@ def install():
 
     def commit(self):
         result = orig_commit(self)
-        _untaint(self)
+        _untaint(self, committed=True)
         return result
 
     _cursor_mod.Cursor.rollback = rollback
     _cursor_mod.Cursor.commit = commit
+
+    # The fork signals at the end of the transaction scope, not on commit;
+    # that is the moment the kernel's caches can be trusted again.
+    from odoo.orm.runtime.registry import Registry as _Registry
+
+    orig_signal_changes = _Registry.signal_changes
+
+    def signal_changes(self):
+        result = orig_signal_changes(self)
+        if getattr(self, "ready", False):
+            _signalled(self.db_name)
+        return result
+
+    _Registry.signal_changes = signal_changes
 
     try:
         from odoo.addons.web.models import web_onchange as _web_onchange_mod
