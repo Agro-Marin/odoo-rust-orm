@@ -1458,6 +1458,64 @@ def test_the_read_gates_see_fetch_and_read_group_overrides() -> None:
     orm_shim.forget_gates()
 
 
+def test_a_constraint_raised_by_the_pre_route_flush_reaches_the_caller() -> None:
+    # Python's `_search` flushes the same fields and lets a database error
+    # propagate; a swallowed one leaves an aborted transaction for the
+    # fallback and a generic message for the user.
+    import psycopg
+
+    orm_shim = _shims()[1]
+    _odoo()
+    from odoo.exceptions import UserError
+
+    class _Store:
+        @staticmethod
+        def is_any_dirty():
+            return True
+
+    class _Engine:
+        pending = [1]
+
+    class _Tx:
+        _cache_store = _Store()
+        _compute_engine = _Engine()
+
+    def env_raising(exc):
+        class _Env:
+            transaction = _Tx()
+
+            @staticmethod
+            def flush_all():
+                raise exc
+
+        return _Env()
+
+    class _Model:
+        _name = "probe.model"
+
+    def run(exc):
+        try:
+            # `_read_dependencies` cannot resolve the fake model, so the flush
+            # is the wide `flush_all`, which is what raises here
+            return orm_shim._flush_if_needed(
+                env_raising(exc), _Model(), domain=object()
+            )
+        except Exception as raised:
+            return raised
+
+    got = run(psycopg.errors.CheckViolation("chk"))
+    check("a database error propagates", type(got).__name__, "CheckViolation")
+    got = run(UserError("no"))
+    check("a UserError propagates", type(got).__name__, "UserError")
+    before = orm_shim.STATS["fallback_flush"]
+    check(
+        "a failure of the flush machinery still falls back",
+        run(RuntimeError("x")),
+        False,
+    )
+    check("and is counted", orm_shim.STATS["fallback_flush"] - before, 1)
+
+
 def test_gate_reasons_and_stats() -> None:
     orm_shim = _shims()[1]
 

@@ -784,9 +784,30 @@ def _flush_if_needed(env, model, domain=None, order=None, fields=None) -> bool |
         )
         return True
     except Exception as e:
+        if _flush_error_is_the_callers(e):
+            # Python's own `_search` flushes the same fields and lets this
+            # propagate, and the transaction is aborted now: swallowing it
+            # would hand the fallback a dead transaction and lose the
+            # constraint's message for a generic one
+            raise
         STATS["fallback_flush"] += 1
         _logger.info("not routing: the flush the kernel needs raised %s", e)
         return False
+
+
+def _flush_error_is_the_callers(e) -> bool:
+    """Whether a flush error belongs to the caller rather than to routing.
+
+    A database error (a CHECK or unique constraint, a NOT NULL) or a
+    `UserError` raised by a compute/inverse would have reached the caller
+    from Python's own pre-search flush; only a failure of the flush
+    machinery itself is a reason to fall back.
+    """
+    import psycopg
+
+    from odoo.exceptions import UserError
+
+    return isinstance(e, (psycopg.Error, UserError))
 
 
 def _rust_conn(env):
