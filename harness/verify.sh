@@ -70,6 +70,15 @@ mkdir -p "$OUT"
 # every user all FAIL with nothing wrong in the code. So the battery derives
 # the armed conf it needs from whatever it was given, as the tours stage
 # always has, and says so.
+# A database that does not exist fails every stage one at a time, each with
+# the same `InvalidCatalogName` under a different name, and a twenty-line
+# FAIL column is worse than one refusal: it reads as the code. Measured
+# 2026-09-18 after the probe database was dropped between two runs.
+if ! psql -U marin -lqt 2>/dev/null | cut -d'|' -f1 | sed 's/ //g' | grep -qx "$DB"; then
+  echo "verify: database '$DB' does not exist; create it through odoo-bin (-d $DB -i base --stop-after-init)" >&2
+  exit 2
+fi
+
 conf_addons=$(sed -nE 's/^addons_path *= *//p' "$RUSTORM_ODOO_CONF" | tail -1)
 conf_swm=$(sed -nE 's/^server_wide_modules *= *//p' "$RUSTORM_ODOO_CONF" | tail -1)
 armed_db=$(sed -nE 's/^rust_engine_db *= *//p' "$RUSTORM_ODOO_CONF" | tail -1)
@@ -446,6 +455,52 @@ if [ -f "$ROOT/target/release/libengine_py.so" ]; then
   fi
 else
   stage "write path (port)" SKIP "no libengine_py.so; cargo build --release"
+fi
+
+# The write differential: the same generated creates, writes and unlinks over
+# every model the generator can build, once with the port routing and once
+# without, each read back with raw SQL and paired by creation order. It is the
+# corpus-wide sibling of the write path above: that one drives res.partner
+# through the shapes a unique column forbids, this one asks every stored
+# scalar column of every model whether the port's row is the fork's row. A
+# positive control corrupts the last write of a char column and must be seen.
+if [ -f "$ROOT/target/release/libengine_py.so" ]; then
+  RUSTORM_WRITE_DIFF_LEG=armed RUSTORM_WRITE_DIFF_OUT="$OUT/write_diff_armed.json" \
+    RUSTORM_WRITE_DIFF_LIMIT="${RUSTORM_WRITE_DIFF_LIMIT:-1000}" \
+    PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/write_diff.py" > "$OUT/write_diff_armed.log" 2>&1; rc=$?
+  if [ "$rc" = 3 ]; then
+    stage "write differential" SKIP "$(grep -a '^WRITE DIFF SKIP' "$OUT/write_diff_armed.log" | head -1 | cut -c1-70)"
+  elif timed_out "$rc"; then stage "write differential" FAIL "$expired"
+  elif [ "$rc" != 0 ]; then
+    stage "write differential" FAIL "armed leg rc=$rc: $(grep -aE 'Error' "$OUT/write_diff_armed.log" | tail -1 | cut -c1-60)"
+  else
+    RUSTORM_WRITE_DIFF_OUT="$OUT/write_diff_control.json" \
+      RUSTORM_WRITE_DIFF_LIMIT="${RUSTORM_WRITE_DIFF_LIMIT:-1000}" \
+      PYTHONPATH="$PYMOD" python_script "$ROOT/harness/write_diff.py" > "$OUT/write_diff_control.log" 2>&1; rc=$?
+    if timed_out "$rc"; then stage "write differential" FAIL "$expired"
+    elif [ "$rc" != 0 ]; then
+      stage "write differential" FAIL "control leg rc=$rc"
+    elif "$PY" "$ROOT/harness/write_diff_compare.py" "$OUT/write_diff_armed.json" "$OUT/write_diff_control.json" \
+        > "$OUT/write_diff.log" 2>&1; then
+      stage "write differential" OK "$(grep -a '^WRITE DIFF OK' "$OUT/write_diff.log" | head -1 | cut -c16-90)"
+    else
+      stage "write differential" FAIL "$(grep -aE '^ *MISMATCH|^ *NOT NATIVE|^WRITE DIFF' "$OUT/write_diff.log" | tail -1 | cut -c1-90)"
+    fi
+    # the positive control: res.partner alone, the fault armed, and the
+    # comparison must report every created row
+    RUSTORM_WRITE_DIFF_LEG=armed RUSTORM_WRITE_DIFF_FAULT=1 RUSTORM_WRITE_DIFF_MODELS=res.partner \
+      RUSTORM_WRITE_DIFF_OUT="$OUT/write_diff_fault.json" \
+      PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/write_diff.py" > "$OUT/write_diff_fault.log" 2>&1; rc=$?
+    if [ "$rc" = 0 ] && "$PY" "$ROOT/harness/write_diff_compare.py" "$OUT/write_diff_fault.json" \
+        "$OUT/write_diff_control.json" --expect-fault > "$OUT/write_diff_fault_compare.log" 2>&1; then
+      stage "write diff control" OK "$(grep -a 'positive control' "$OUT/write_diff_fault_compare.log" | head -1 | cut -c29-90)"
+    elif timed_out "$rc"; then stage "write diff control" FAIL "$expired"
+    else
+      stage "write diff control" FAIL "$(grep -a 'positive control' "$OUT/write_diff_fault_compare.log" | head -1 | cut -c1-90)"
+    fi
+  fi
+else
+  stage "write differential" SKIP "no libengine_py.so; cargo build --release"
 fi
 
 # The port's search, over the sweep corpus: ids, counts, the query as a

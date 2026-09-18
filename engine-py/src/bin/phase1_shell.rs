@@ -64,6 +64,10 @@ fn main() -> Result<()> {
         shim.setattr("RUST_DB", rust_db)?;
         shim.setattr("CONNINFO", odoo_kernel::config::dsn())?;
         shim.call_method0("install")?;
+        // `install` rebinds the pool factory; the layer itself is off until
+        // switched, and off means psycopg pools under a shim that reports
+        // itself installed -- the routing then raises on every model
+        shim.call_method1("set_active", (true,))?;
         println!("[shim] psycopg pool patched: all connections are rust-backed");
 
         let t = Instant::now();
