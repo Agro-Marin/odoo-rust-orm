@@ -1636,3 +1636,17 @@ two overrides that rewrite arguments -- `project.task._read_group` renames a
 `triage_id` groupby, `helpdesk.ticket._search` rewrites a `ticket_ref` order --
 which refuse every grouped call on those models because the gate keys on the
 method, not on what the override touches.
+
+### Hash map after the 2026-09-18 push
+
+Pushed 2026-09-18 evening after a rebase onto origin, which rewrote every odoo and enterprise hash cited in this session's notes and commit bodies. Old -> new, mapped by `git patch-id --stable`:
+
+    odoo        7fbcf93b365e -> ff37d8f6bafc   (group_by_sql / order_by_sql)
+    odoo        7d179f01c3f2 -> 3148b2570cab   (base, calendar declarations)
+    odoo        bd9a5298f74f -> 45f81c4b2ba5   (value_sql, guideline)
+    odoo        2792038b5cdb -> 1700ca96ddc1   (non-stored aggregate)
+    odoo        82c9b8ed9a12 -> b39df298cdf2   (document is_folder)
+    enterprise  6c1e5964516  -> 347828acc10    (knowledge order_by_sql)
+
+A commit body citing the left column is citing a hash no fresh clone has; the
+right column is what resolves.
