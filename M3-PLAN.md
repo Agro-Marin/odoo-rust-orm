@@ -1520,9 +1520,10 @@ crm, hr, account, document,          3255      946   0   (2 failed + 1 error on 
 sale, purchase, stock                2634     1992   0*  (2 failed on both legs, purchase
                                                         portal routes; *2 product-catalog
                                                         "add section" tours failed only in
-                                                        the lane and pass 4/4 rerun routed
-                                                        alone -- a tour timing under a
-                                                        2,600-test lane, not reproduced)
+                                                        the lane once; 4/4 rerun routed
+                                                        alone and green on a second full
+                                                        routed leg of the same lane -- a
+                                                        one-off timing, not reproduced)
 ```
 
 The two later rows ran on odoo 1de39b4d2228 and enterprise a666e8d127a from
