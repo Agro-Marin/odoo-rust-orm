@@ -12,6 +12,8 @@ crate-type = ["cdylib", "rlib"]
 odoo-kernel = { path = "../kernel" }
 tokio = { workspace = true }
 tokio-postgres = { workspace = true }
+postgres-protocol = "0.6"
+fallible-iterator = "0.2"
 serde_json = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }

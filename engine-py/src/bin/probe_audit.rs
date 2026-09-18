@@ -323,6 +323,19 @@ for query, params in (
     ("  (  ( select 2 as a ) )", None),
     ("-- leading comment\nSELECT 3 AS a", None),
     ("/* c */ (WITH x AS (SELECT 4 AS a) TABLE x)", None),
+    # a list of strings under an array cast: psycopg sends text the server
+    # casts, so the cursor's element encoder must accept the text form too
+    ("SELECT %s::int[] AS a", (["5", "7"],)),
+    ("SELECT %s::int8[] AS a", (["9223372036854775807"],)),
+    ("SELECT %s::float8[] AS a", (["1.5", "-2"],)),
+    ("SELECT %s::bool[] AS a", (["true", "f"],)),
+    ("SELECT 5 = ANY(%s::int[]) AS a", (["5", "7"],)),
+    # a list of lists is a multi-dimensional array, as the analytic filter
+    # binds it: psycopg sends {{226}} and `&&` still finds 226
+    ("SELECT %s && ARRAY['226'] AS a", ([["226"]],)),
+    ("SELECT %s::text[] AS a, array_dims(%s::text[]) AS d", ([["a", "b"], ["c", "d"]], [["x"]])),
+    ("SELECT %s::int[] AS a", ([[1, 2], [3, 4]],)),
+    ("SELECT %s::text[] AS a", ([["it's", "q\"q", None, "back\\slash", ""]],)),
 ):
     checked += 1
     rcur.execute(query, params)

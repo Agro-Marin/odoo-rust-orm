@@ -347,6 +347,43 @@ impl<'a> tokio_postgres::types::FromSql<'a> for JsonText {
     }
 }
 
+/// A numeric array element: the native value, or its text parsed as
+/// PostgreSQL would parse the literal psycopg sends.
+macro_rules! conv_parsed {
+    ($name:ident, $t:ty) => {
+        fn $name(v: &Bound<'_, PyAny>) -> PyResult<$t> {
+            match v.extract::<$t>() {
+                Ok(x) => Ok(x),
+                Err(e) if is_py_str(v) => {
+                    let s: String = v.extract()?;
+                    s.trim().parse::<$t>().map_err(|_| PyErr::from(e))
+                }
+                Err(e) => Err(PyErr::from(e)),
+            }
+        }
+    };
+}
+conv_parsed!(conv_i16, i16);
+conv_parsed!(conv_i32, i32);
+conv_parsed!(conv_i64, i64);
+conv_parsed!(conv_f32, f32);
+conv_parsed!(conv_f64, f64);
+
+fn conv_bool(v: &Bound<'_, PyAny>) -> PyResult<bool> {
+    match v.extract::<bool>() {
+        Ok(x) => Ok(x),
+        Err(e) if is_py_str(v) => {
+            let s: String = v.extract()?;
+            match s.trim().to_ascii_lowercase().as_str() {
+                "t" | "true" | "yes" | "y" | "on" | "1" => Ok(true),
+                "f" | "false" | "no" | "n" | "off" | "0" => Ok(false),
+                _ => Err(PyErr::from(e)),
+            }
+        }
+        Err(e) => Err(PyErr::from(e)),
+    }
+}
+
 fn conv_numeric(v: &Bound<'_, PyAny>) -> PyResult<rust_decimal::Decimal> {
     let s: String = v.str()?.extract()?;
     rust_decimal::Decimal::from_str(&s).map_err(rerr)
@@ -520,13 +557,29 @@ fn py_to_sql(
                 });
             }
             if let tokio_postgres::types::Kind::Array(elem) = ty.kind() {
+                // a list whose elements are lists is a multi-dimensional array:
+                // psycopg sends `{{226}}` and PostgreSQL's `&&` finds 226 in it,
+                // where a one-dimensional encoder wrote the inner list's repr as
+                // one text element and matched nothing. The analytic filter
+                // binds `[['226']]`, so every analytic report read that way.
+                let nested = v
+                    .try_iter()?
+                    .filter_map(Result::ok)
+                    .any(|item| item.is_instance_of::<PyList>() || item.is_instance_of::<PyTuple>());
+                if nested {
+                    return Ok(Box::new(TextParam(Some(py_seq_to_array_literal(v)?))));
+                }
                 return Ok(match *elem {
-                    Type::INT2 => Box::new(v.extract::<Vec<Option<i16>>>()?),
-                    Type::INT4 => Box::new(v.extract::<Vec<Option<i32>>>()?),
-                    Type::INT8 => Box::new(v.extract::<Vec<Option<i64>>>()?),
-                    Type::FLOAT4 => Box::new(v.extract::<Vec<Option<f32>>>()?),
-                    Type::FLOAT8 => Box::new(v.extract::<Vec<Option<f64>>>()?),
-                    Type::BOOL => Box::new(v.extract::<Vec<Option<bool>>>()?),
+                    // an element may arrive as its text -- `%s::int[]` over a
+                    // list of strings, as the analytic search hook binds ids --
+                    // and psycopg sends text the server casts, so the element
+                    // encoder accepts the text form as the scalar one does
+                    Type::INT2 => Box::new(extract_opt_vec(v, conv_i16)?),
+                    Type::INT4 => Box::new(extract_opt_vec(v, conv_i32)?),
+                    Type::INT8 => Box::new(extract_opt_vec(v, conv_i64)?),
+                    Type::FLOAT4 => Box::new(extract_opt_vec(v, conv_f32)?),
+                    Type::FLOAT8 => Box::new(extract_opt_vec(v, conv_f64)?),
+                    Type::BOOL => Box::new(extract_opt_vec(v, conv_bool)?),
                     Type::OID => Box::new(v.extract::<Vec<Option<u32>>>()?),
                     Type::BYTEA => Box::new(v.extract::<Vec<Option<Vec<u8>>>>()?),
                     Type::NUMERIC => Box::new(extract_opt_vec(v, conv_numeric)?),
@@ -1150,25 +1203,18 @@ fn cell_to_py(py: Python<'_>, row: &tokio_postgres::Row, i: usize) -> PyResult<P
             if let tokio_postgres::types::Kind::Array(elem) = ty.kind() {
                 macro_rules! arr {
                     ($t:ty) => {
-                        match row.try_get::<_, Option<Vec<Option<$t>>>>(i).map_err(rerr)? {
-                            Some(v) => return v.into_py_any(py),
+                        match row.try_get::<_, Option<MultiArray<$t>>>(i).map_err(rerr)? {
+                            Some(v) => {
+                                return multi_array_to_py(py, v, &|py, x: $t| x.into_py_any(py))
+                            }
                             None => return Ok(py.None()),
                         }
                     };
                 }
                 macro_rules! arr_with {
                     ($t:ty, $conv:expr) => {
-                        match row.try_get::<_, Option<Vec<Option<$t>>>>(i).map_err(rerr)? {
-                            Some(v) => {
-                                let list = PyList::empty(py);
-                                for item in v {
-                                    match item {
-                                        Some(x) => list.append($conv(py, x)?)?,
-                                        None => list.append(py.None())?,
-                                    }
-                                }
-                                return list.into_py_any(py);
-                            }
+                        match row.try_get::<_, Option<MultiArray<$t>>>(i).map_err(rerr)? {
+                            Some(v) => return multi_array_to_py(py, v, &$conv),
                             None => return Ok(py.None()),
                         }
                     };
@@ -1202,22 +1248,7 @@ fn cell_to_py(py: Python<'_>, row: &tokio_postgres::Row, i: usize) -> PyResult<P
                         .into_py_any(py)),
 
                     Type::JSON | Type::JSONB => {
-                        match row
-                            .try_get::<_, Option<Vec<Option<JsonText>>>>(i)
-                            .map_err(rerr)?
-                        {
-                            Some(v) => {
-                                let list = PyList::empty(py);
-                                for item in &v {
-                                    match item {
-                                        Some(j) => list.append(json_text_to_py(py, &j.0)?)?,
-                                        None => list.append(py.None())?,
-                                    }
-                                }
-                                return list.into_py_any(py);
-                            }
-                            None => return Ok(py.None()),
-                        }
+                        arr_with!(JsonText, |py, j: JsonText| json_text_to_py(py, &j.0))
                     }
                     _ => {}
                 }
@@ -2363,6 +2394,75 @@ fn py_to_copy_text(v: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
         return Ok(Some(py_json_text(v)?));
     }
     Ok(Some(v.str()?.to_string_lossy().into_owned()))
+}
+
+/// An array column with its dimensions. `Vec<T>` reads one dimension and
+/// fails on `{{226}}`, which the analytic filter's `[['226']]` round-trips
+/// as; psycopg hands back nested lists, and so does this.
+struct MultiArray<T> {
+    dims: Vec<usize>,
+    values: Vec<Option<T>>,
+}
+
+impl<'a, T: tokio_postgres::types::FromSql<'a>> tokio_postgres::types::FromSql<'a> for MultiArray<T> {
+    fn from_sql(
+        ty: &Type,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        use fallible_iterator::FallibleIterator;
+        let member = match ty.kind() {
+            tokio_postgres::types::Kind::Array(member) => member,
+            _ => return Err("not an array type".into()),
+        };
+        let array = postgres_protocol::types::array_from_sql(raw)?;
+        let dims: Vec<usize> = array
+            .dimensions()
+            .map(|d| Ok(d.len.max(0) as usize))
+            .collect()?;
+        let values: Vec<Option<T>> = array
+            .values()
+            .map(|v| match v {
+                Some(bytes) => T::from_sql(member, bytes).map(Some),
+                None => Ok(None),
+            })
+            .collect()?;
+        Ok(MultiArray { dims, values })
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        matches!(ty.kind(), tokio_postgres::types::Kind::Array(member) if T::accepts(member))
+    }
+}
+
+fn multi_array_to_py<T>(
+    py: Python<'_>,
+    array: MultiArray<T>,
+    conv: &dyn Fn(Python<'_>, T) -> PyResult<Py<PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    fn build<T>(
+        py: Python<'_>,
+        dims: &[usize],
+        values: &mut std::vec::IntoIter<Option<T>>,
+        conv: &dyn Fn(Python<'_>, T) -> PyResult<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let list = PyList::empty(py);
+        let Some((&len, rest)) = dims.split_first() else {
+            return list.into_py_any(py);
+        };
+        for _ in 0..len {
+            if rest.is_empty() {
+                match values.next().flatten() {
+                    Some(x) => list.append(conv(py, x)?)?,
+                    None => list.append(py.None())?,
+                }
+            } else {
+                list.append(build(py, rest, values, conv)?)?;
+            }
+        }
+        list.into_py_any(py)
+    }
+    let mut values = array.values.into_iter();
+    build(py, &array.dims, &mut values, conv)
 }
 
 fn py_seq_to_array_literal(v: &Bound<'_, PyAny>) -> PyResult<String> {
