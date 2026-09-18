@@ -315,6 +315,24 @@ for query, params in (
     if by_rust != by_py:
         bad.append(("percent", query[:30], repr(by_rust), repr(by_py)))
 
+# the statement's first keyword decides whether the rust cursor fetches rows;
+# a parenthesised or commented opener must classify as the query it wraps
+for query, params in (
+    ("(SELECT 1 AS a)", None),
+    ("(WITH x AS (SELECT 1 AS document_id, '3_day' AS date) SELECT document_id, date FROM x WHERE document_id = ANY(%s))", ([1],)),
+    ("  (  ( select 2 as a ) )", None),
+    ("-- leading comment\nSELECT 3 AS a", None),
+    ("/* c */ (WITH x AS (SELECT 4 AS a) TABLE x)", None),
+):
+    checked += 1
+    rcur.execute(query, params)
+    by_rust = (rcur.fetchall(), [d[0] for d in rcur.description])
+    rust.commit()
+    pcur.execute(query, params)
+    by_py = (pcur.fetchall(), [d[0] for d in pcur.description])
+    if by_rust != by_py:
+        bad.append(("opener", query[:40], repr(by_rust), repr(by_py)))
+
 print("PROBE types checked=%d mismatches=%d" % (checked, len(bad)))
 for b in bad:
     print("PROBE types MISMATCH %-12s value=%-20s rust=%-42s psycopg=%s" % b)

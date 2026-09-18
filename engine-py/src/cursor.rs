@@ -1591,14 +1591,38 @@ fn declared_type(v: &Bound<'_, PyAny>) -> Type {
     }
 }
 
+/// The first keyword of the statement: past leading whitespace, comments and
+/// opening parentheses. `(WITH ... SELECT ...)` is a row-returning statement
+/// PostgreSQL accepts and Odoo composes -- `document.document`'s last-access
+/// compute wraps its CTE in parentheses -- and reading the first
+/// whitespace-separated token took `(WITH` as no keyword at all, so the
+/// statement ran without fetching and answered no rows and no description.
+fn leading_keyword(sql: &str) -> String {
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_whitespace() || bytes[i] == b'(' {
+            i += 1;
+            continue;
+        }
+        if let Some(end) = skip_opaque(bytes, i) {
+            if matches!(bytes[i], b'-' | b'/') {
+                i = end;
+                continue;
+            }
+        }
+        break;
+    }
+    let start = i;
+    while i < bytes.len() && is_ident_byte(bytes[i]) {
+        i += 1;
+    }
+    sql[start..i].to_ascii_uppercase()
+}
+
 fn returns_rows(sql: &str) -> bool {
-    let head = sql
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_ascii_uppercase();
     if matches!(
-        head.as_str(),
+        leading_keyword(sql).as_str(),
         "SELECT" | "WITH" | "SHOW" | "VALUES" | "TABLE" | "EXPLAIN" | "FETCH"
     ) {
         return true;
@@ -2069,7 +2093,8 @@ impl RustConn {
 #[cfg(test)]
 mod tests {
     use super::{
-        has_bare_keyword, has_multiple_statements, numeric_binary_to_text, returns_rows,
+        has_bare_keyword, has_multiple_statements, leading_keyword, numeric_binary_to_text,
+        returns_rows,
         translate_placeholders,
     };
 
@@ -2155,6 +2180,21 @@ mod tests {
         let (sql, _) = translate_placeholders("SELECT $1 FROM t WHERE a = %s");
         assert_eq!(sql, "SELECT $1 FROM t WHERE a = $1");
         assert!(has_bare_keyword("SELECT a$b RETURNING", "RETURNING"));
+    }
+
+    #[test]
+    fn a_parenthesised_or_commented_query_still_returns_rows() {
+        assert!(returns_rows("(SELECT 1)"));
+        assert!(returns_rows(
+            "(WITH last_access AS (SELECT 1 AS document_id) SELECT document_id FROM last_access WHERE document_id = ANY($1))"
+        ));
+        assert!(returns_rows("  (  ( select 1 ) )"));
+        assert!(returns_rows("-- leading comment\nSELECT 1"));
+        assert!(returns_rows("/* c */ (WITH x AS (SELECT 1) TABLE x)"));
+        assert!(!returns_rows("(UPDATE t SET a = 1)"));
+        assert!(!returns_rows("-- SELECT in a comment\nUPDATE t SET a = 1"));
+        assert_eq!(leading_keyword("  (with x as (select 1) select 1)"), "WITH");
+        assert_eq!(leading_keyword(""), "");
     }
 
     #[test]
