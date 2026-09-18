@@ -28,16 +28,6 @@ TRANSPARENT_HOOKS = {
         "MixinAnalytic",
         "_read_group_select",
     ): ("analytic_distribution",),
-    (
-        "odoo.addons.analytic.models.analytic_account",
-        "AccountAnalyticAccount",
-        "_read_group_select",
-    ): ("balance", "debit", "credit"),
-    (
-        "odoo.addons.analytic.models.analytic_account",
-        "AccountAnalyticAccount",
-        "_read_group_postprocess_aggregate",
-    ): ("balance", "debit", "credit"),
     # geoengine patches every model: the two hooks act only on geo_* aggregate
     # functions, which the kernel refuses as unsupported, so a geometry field is
     # the whole surface they touch
