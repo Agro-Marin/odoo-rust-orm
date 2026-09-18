@@ -1506,6 +1506,23 @@ approval, approval_app, base_install  829       10   0
 enterprise: helpdesk, planning,       811     1561   0
   sale_planning, sale_subscription,
   timesheet_grid, knowledge, sign
+2026-09-18, odoo bd9a5298f74f / enterprise 6c1e5964516 / agromarin b496ededd,
+  siblings live, one 153- then 181-module database (53 enterprise):
+project, calendar, appointment,      1625     1929   0   (1 failed + 1 error on both legs:
+  knowledge, document, /base device                     document user-folder setUpClass,
+                                                        knowledge invite-members query count)
+crm, hr, account, document,          3255      946   0   (2 failed + 1 error on both legs:
+  /base properties mixin                                the same setUpClass, two crm
+                                                        lead-assign query counts; 5 account
+                                                        analytic reports failed only routed
+                                                        until engine 8030cb7, the cursor's
+                                                        nested-list parameter)
+sale, purchase, stock                2634     1992   0*  (2 failed on both legs, purchase
+                                                        portal routes; *2 product-catalog
+                                                        "add section" tours failed only in
+                                                        the lane and pass 4/4 rerun routed
+                                                        alone -- a tour timing under a
+                                                        2,600-test lane, not reproduced)
 ```
 
 The two later rows ran on odoo 1de39b4d2228 and enterprise a666e8d127a from
