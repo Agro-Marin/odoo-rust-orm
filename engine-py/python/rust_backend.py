@@ -423,8 +423,8 @@ def _update_rows_native(model, fnames, rows) -> bool:
 def _create_rows_native(model, stored_list, columns, col_fields):
     """Run the kernel's `INSERT` for these rows, or return None to delegate.
 
-    Only the INSERT strategy. `PostgresBackend.create_rows` sends ten rows or
-    more as a binary `COPY` unless the cursor is in a pipeline, and that path
+    Only the INSERT strategy. `PostgresBackend.create_rows` sends `COPY_THRESHOLD`
+    rows or more as a binary `COPY` unless the cursor is in a pipeline, and that path
     is the cursor's: it preallocates the ids, resolves the column type OIDs and
     streams the rows, all through `RustCopy`, which already encodes the stream
     in Rust and is verified by `harness/copy_path.py`. The decision is taken

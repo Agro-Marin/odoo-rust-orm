@@ -373,7 +373,14 @@ def check_created(label, vals, recs):
         )
 
 
-for small, strategy in ((5, "INSERT"), (12, "COPY")):
+from odoo.orm.runtime.backend import COPY_THRESHOLD
+
+# The split is the fork's constant, read rather than restated: it moved from
+# 10 to 50 on 2026-09-13 and a literal 12 then measured the INSERT leg twice.
+for small, strategy in (
+    (min(5, COPY_THRESHOLD - 1), "INSERT"),
+    (COPY_THRESHOLD + 2, "COPY"),
+):
     port.reset_stats()
     vals, recs = create_leg("create%d" % small, small)
     after = port.stats()
@@ -404,29 +411,50 @@ for small, strategy in ((5, "INSERT"), (12, "COPY")):
                 % (small, after["reasons"])
             )
 
-# Twelve rows INSIDE a pipeline: the fork takes the INSERT strategy there
-# whatever the row count, because COPY cannot run in pipeline mode. It is the
-# one create above the threshold the kernel composes, and the one place the
-# strategy split is decided by the cursor's state rather than the row count.
+# Rows above the threshold INSIDE a pipeline: the fork takes the INSERT
+# strategy there whatever the row count, because COPY cannot run in pipeline
+# mode, so on a psycopg cursor this is the one create above the threshold the
+# kernel composes. The rust cursor's `pipeline()` is a nullcontext by design
+# (README, "The cursor's type layer"; tokio-postgres has no libpq pipeline
+# mode), so there the block enters no pipeline and the fork takes COPY as it
+# would outside one. The leg asserts against what the cursor actually did,
+# which the literal twelve rows of the earlier version never reached once the
+# threshold moved to fifty.
 port.reset_stats()
 model = env["res.partner"]  # noqa: F821
 piped_vals = [
-    dict(CASES[i % len(CASES)], name="%s-piped-%d" % (RUN, i)) for i in range(12)
+    dict(CASES[i % len(CASES)], name="%s-piped-%d" % (RUN, i))
+    for i in range(COPY_THRESHOLD + 2)
 ]
 with env.cr.pipeline():  # noqa: F821
+    entered_pipeline = env.cr.in_pipeline  # noqa: F821
     piped = model.create(piped_vals)
 env.cr.flush()  # noqa: F821
 env.cr.commit()  # noqa: F821
 after_piped = port.stats()
 print(
-    "WRITE create of 12 in a pipeline: native create_rows %d, reasons %r"
-    % (after_piped["native"].get("create_rows", 0), after_piped["reasons"])
+    "WRITE create of %d in a pipeline (%s): native create_rows %d, reasons %r"
+    % (
+        len(piped_vals),
+        "entered"
+        if entered_pipeline
+        else "not entered: the cursor has no pipeline mode",
+        after_piped["native"].get("create_rows", 0),
+        after_piped["reasons"],
+    )
 )
-check_created("create of 12 in a pipeline", piped_vals, piped)
-if not after_piped["native"].get("create_rows"):
+check_created("create of %d in a pipeline" % len(piped_vals), piped_vals, piped)
+if entered_pipeline and not after_piped["native"].get("create_rows"):
     failures.append(
-        "a create of 12 rows in a pipeline did not reach the kernel's INSERT: %r"
-        % (after_piped["reasons"],)
+        "a create of %d rows in a pipeline did not reach the kernel's INSERT: %r"
+        % (len(piped_vals), after_piped["reasons"])
+    )
+if not entered_pipeline and not after_piped["reasons"].get(
+    "COPY strategy: the cursor owns it"
+):
+    failures.append(
+        "a create of %d rows outside pipeline mode did not report the COPY delegation: %r"
+        % (len(piped_vals), after_piped["reasons"])
     )
 
 # the same creates with the port disarmed, compared row for row with the armed
