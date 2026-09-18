@@ -18,19 +18,6 @@ TRANSPARENT_HOOKS = {
         "MixinPropertiesBaseDefinition",
         "_field_to_sql",
     ): ("properties_base_definition_id",),
-    ("odoo.addons.base.models.res_device", "ResDeviceLog", "_order_field_to_sql"): (
-        "is_current",
-    ),
-    (
-        "odoo.addons.base.models.mixin_user_favorite",
-        "MixinUserFavorite",
-        "_order_field_to_sql",
-    ): ("is_user_favorite",),
-    (
-        "odoo.addons.knowledge.models.knowledge_article",
-        "KnowledgeArticle",
-        "_order_field_to_sql",
-    ): ("is_user_favorite",),
     ("odoo.addons.crm.models.crm_lead", "CrmLead", "_field_to_sql"): (
         "company_currency",
     ),
