@@ -14,31 +14,6 @@ def _geo_fields(m):
 
 TRANSPARENT_HOOKS = {
     (
-        "odoo.addons.base.models.mixin_properties_base_definition",
-        "MixinPropertiesBaseDefinition",
-        "_field_to_sql",
-    ): ("properties_base_definition_id",),
-    ("odoo.addons.crm.models.crm_lead", "CrmLead", "_field_to_sql"): (
-        "company_currency",
-    ),
-    (
-        "odoo.addons.account.models.account_analytic_line_reports",
-        "AccountAnalyticLine",
-        "_field_to_sql",
-    ): ("analytic_coverage",),
-    ("odoo.addons.account.models.account_move", "AccountMove", "_field_to_sql"): (
-        "display_state",
-        "move_sent_values",
-    ),
-    ("odoo.addons.hr.models.hr_employee", "HrEmployee", "_field_to_sql"): (
-        "version_id",
-    ),
-    (
-        "odoo.addons.document.models.document_document_search_panel",
-        "DocumentsDocument",
-        "_field_to_sql",
-    ): ("last_access_date_group",),
-    (
         "odoo.addons.document.models.document_document_search_panel",
         "DocumentsDocument",
         "_order_field_to_sql",

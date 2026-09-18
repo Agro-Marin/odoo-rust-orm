@@ -178,7 +178,9 @@ def export_registry(reg):
         # read through code no column expresses, as a transparent override is
         hooked.update(
             n for n, f in m._fields.items()
-            if getattr(f, "group_by_sql", None) or getattr(f, "order_by_sql", None)
+            if getattr(f, "group_by_sql", None)
+            or getattr(f, "order_by_sql", None)
+            or getattr(f, "value_sql", None)
         )
         # a field composing its own groupby or order SQL through a hook is
         # read through code no column expresses, as a transparent override is
