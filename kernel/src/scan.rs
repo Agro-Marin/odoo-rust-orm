@@ -781,6 +781,10 @@ impl<'a> Orm<'a> {
 
         let group_compiler = Compiler::root(&ctx, model, &rules, env.su);
         let mut gbs: Vec<GbSpec> = Vec::new();
+        // two specs walking the same hop share its join: `group_id.name` and
+        // `group_id.privilege_id.name` both bind `ir_model_access__group_id`
+        // once, or PostgreSQL refuses the alias specified twice
+        let mut joined: BTreeSet<String> = BTreeSet::new();
         for spec in groupby {
             let (path, gran) = match spec.split_once(':') {
                 Some((f, g)) => (f, Some(g.to_string())),
@@ -800,12 +804,14 @@ impl<'a> Orm<'a> {
                 self.check_field_access(field, env)?;
                 let current = compiler.as_ref().unwrap_or(&group_compiler);
                 let (co, coalias, on) = current.many2one_hop_join(field)?;
-                select.join_as(
-                    JoinType::LeftJoin,
-                    Alias::new(&co.table),
-                    Alias::new(coalias.as_str()),
-                    on,
-                );
+                if joined.insert(coalias.clone()) {
+                    select.join_as(
+                        JoinType::LeftJoin,
+                        Alias::new(&co.table),
+                        Alias::new(coalias.as_str()),
+                        on,
+                    );
+                }
                 compiler = Some(current.hop_compiler(co, coalias.clone()));
                 holder = co;
                 alias = coalias;
