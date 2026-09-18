@@ -22,16 +22,6 @@ TRANSPARENT_HOOKS = {
         "is_current",
     ),
     (
-        "odoo.addons.mail.models.mixin_mail_activity",
-        "MixinMailActivity",
-        "_order_field_to_sql",
-    ): ("activity_date_deadline", "my_activity_date_deadline", "activity_state"),
-    (
-        "odoo.addons.mail.models.mixin_mail_activity",
-        "MixinMailActivity",
-        "_read_group_groupby",
-    ): ("activity_state",),
-    (
         "odoo.addons.base.models.mixin_user_favorite",
         "MixinUserFavorite",
         "_order_field_to_sql",

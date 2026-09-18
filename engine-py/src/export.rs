@@ -174,6 +174,18 @@ def export_registry(reg):
 
             usable = bool(fnames) and all(searchable(f) for f in fnames)
             ns = fnames if usable else None
+        # a field composing its own groupby or order SQL through a hook is
+        # read through code no column expresses, as a transparent override is
+        hooked.update(
+            n for n, f in m._fields.items()
+            if getattr(f, "group_by_sql", None) or getattr(f, "order_by_sql", None)
+        )
+        # a field composing its own groupby or order SQL through a hook is
+        # read through code no column expresses, as a transparent override is
+        hooked.update(
+            n for n, f in m._fields.items()
+            if getattr(f, "group_by_sql", None) or getattr(f, "order_by_sql", None)
+        )
         models[name] = {
             "name_search_fields": ns,
             "display_name_search_exact": exact,

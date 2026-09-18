@@ -1484,23 +1484,23 @@ def test_the_read_gates_see_fetch_and_read_group_overrides() -> None:
         orm_shim._clean_model(grouped, "search_read"),
         True,
     )
-    # an override the export lists as transparent -- mail's activity groupby,
-    # scoped to activity_state -- does not gate the model: the kernel refuses
-    # that field by itself, and every other groupby routes
+    # an override the export lists as transparent -- analytic's distribution
+    # groupby, scoped to analytic_distribution -- does not gate the model: the
+    # kernel refuses that field by itself, and every other groupby routes
     import purity
 
     key = (
-        "odoo.addons.mail.models.mixin_mail_activity",
-        "MixinMailActivity",
+        "odoo.addons.analytic.models.mixin_analytic",
+        "MixinAnalytic",
         "_read_group_groupby",
     )
     check(
-        "the table carries the mail hook this test stands on",
+        "the table carries the analytic hook this test stands on",
         key in purity.TRANSPARENT_HOOKS,
         True,
     )
     Hook = type(
-        "MixinMailActivity",
+        "MixinAnalytic",
         (base_mod.BaseModel,),
         {
             "__module__": key[0],
@@ -1540,7 +1540,7 @@ def test_the_read_gates_see_fetch_and_read_group_overrides() -> None:
         purity.hooked_fields(
             transparent, type(transparent), base_mod.BaseModel, "_read_group_groupby"
         ),
-        {"activity_state"},
+        {"analytic_distribution"},
     )
     orm_shim.forget_gates()
 
