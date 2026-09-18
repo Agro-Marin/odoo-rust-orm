@@ -1889,7 +1889,15 @@ impl RustConn {
                                 .insert(sql.clone(), s.clone());
                             Some(s)
                         }
-                        Err(_) => None,
+                        // A failed Parse is the statement's own error -- a
+                        // dropped column, a bad identifier -- and inside a
+                        // transaction it has already aborted it. Retrying the
+                        // statement unprepared, as this did, ran a second
+                        // statement on the aborted transaction and answered
+                        // InFailedSqlTransaction where psycopg answers
+                        // UndefinedColumn; analytic's plan-deletion test read
+                        // the wrong exception class for it.
+                        Err(e) => return Err(db_err(e)),
                     },
                 };
             }

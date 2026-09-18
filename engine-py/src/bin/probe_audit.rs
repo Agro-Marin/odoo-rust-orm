@@ -346,6 +346,27 @@ for query, params in (
     if by_rust != by_py:
         bad.append(("opener", query[:40], repr(by_rust), repr(by_py)))
 
+# the exception class a statement raises must be the statement's own, on
+# both cursors: a select of a column dropped earlier in the transaction is
+# UndefinedColumn, not the aborted transaction a retry would meet
+def drop_column_sequence(cur, conn):
+    cur.execute("BEGIN")
+    cur.execute("CREATE TEMPORARY TABLE probe_drop_col (id int, x_col int) ON COMMIT DROP")
+    cur.execute("SELECT x_col FROM probe_drop_col LIMIT 1"); cur.fetchall()
+    cur.execute("ALTER TABLE probe_drop_col DROP COLUMN x_col")
+    try:
+        cur.execute("SELECT x_col FROM probe_drop_col LIMIT 1")
+        name = "no error"
+    except Exception as e:
+        name = type(e).__name__
+    conn.rollback()
+    return name
+checked += 1
+by_rust = drop_column_sequence(rcur, rust)
+by_py = drop_column_sequence(pcur, pc)
+if by_rust != by_py:
+    bad.append(("error class", "select after drop column", by_rust, by_py))
+
 print("PROBE types checked=%d mismatches=%d" % (checked, len(bad)))
 for b in bad:
     print("PROBE types MISMATCH %-12s value=%-20s rust=%-42s psycopg=%s" % b)
