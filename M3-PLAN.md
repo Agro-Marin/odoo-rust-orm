@@ -1637,6 +1637,18 @@ two overrides that rewrite arguments -- `project.task._read_group` renames a
 which refuse every grouped call on those models because the gate keys on the
 method, not on what the override touches.
 
+### Re-verified on the pushed tips (2026-09-18 evening)
+
+The six replayed commits were verified against trees 30 (odoo) and 45
+(enterprise) commits older than the ones they now sit on. On the pushed tips,
+odoo `b39df298cdf2` / enterprise `347828acc10`, siblings live, engine `9c3d13e`:
+
+    test_orm + the four ORM test modules   1508    630   0   (0 failed either leg)
+    /document, Python + JS over HTTP        516    180   0   (1 error either leg:
+                                                              TestDocumentsUserFolder
+                                                              setUpClass, the fork's)
+    test_read_group alone                   149          (0 failed)
+
 ### Hash map after the 2026-09-18 push
 
 Pushed 2026-09-18 evening after a rebase onto origin, which rewrote every odoo and enterprise hash cited in this session's notes and commit bodies. Old -> new, mapped by `git patch-id --stable`:
