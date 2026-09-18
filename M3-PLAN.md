@@ -1524,6 +1524,16 @@ sale, purchase, stock                2634     1992   0*  (2 failed on both legs,
                                                         alone and green on a second full
                                                         routed leg of the same lane -- a
                                                         one-off timing, not reproduced)
+hr_payroll, l10n_mx_edi_payslip       257     1509   0   (24 failed + 9 errors on BOTH legs,
+  (fresh 152-module database,                           on a closure the fork's lanes do not
+   54 enterprise, 7 agromarin)                          run: wage and worked-day arithmetic
+                                                        in hr_payroll's own computation
+                                                        tests, two flows with no running
+                                                        contract, a Mexican name format, a
+                                                        dispersion permission, a memoryview
+                                                        given a bool, a journal missing on a
+                                                        structure, and §4's payslip tour --
+                                                        the fork's, not the engine's)
 ```
 
 The two later rows ran on odoo 1de39b4d2228 and enterprise a666e8d127a from
