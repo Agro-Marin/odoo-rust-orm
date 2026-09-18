@@ -400,6 +400,20 @@ def probes(model, uid):
         add(method="search_read", fields=read, domain=[], limit=5)
     for name in m2o:
         add(method="read_group", groupby=[name], aggregates=["__count"], domain=[])
+        # a dotted spec: the comodel's first stored scalars and many2ones, each
+        # a left join of the comodel under its rules
+        cofields = model.env[fields[name].comodel_name]._fields
+        for sub in sorted(
+            f.name
+            for f in cofields.values()
+            if stored(f) and f.type in ("char", "selection", "many2one", "integer")
+        )[:2]:
+            add(
+                method="read_group",
+                groupby=["%s.%s" % (name, sub)],
+                aggregates=["__count"],
+                domain=[],
+            )
     if m2o:
         add(
             method="search_read",

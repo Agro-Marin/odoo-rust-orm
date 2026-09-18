@@ -771,40 +771,77 @@ impl<'a> Orm<'a> {
         struct GbSpec<'f> {
             field: &'f Field,
             granularity: Option<String>,
-        }
-        let mut gbs: Vec<GbSpec> = Vec::new();
-        for spec in groupby {
-            let (fname, gran) = match spec.split_once(':') {
-                Some((f, g)) => (f, Some(g.to_string())),
-                None => (spec.as_str(), None),
-            };
-            let mut field = model
-                .fields
-                .get(fname)
-                .ok_or_else(|| refusal!("unknown groupby field {model_name}.{fname}"))?;
-            self.check_field_access(field, env)?;
-            if let Some(stand_in) = field.group_by_field.as_deref() {
-                field = model.fields.get(stand_in).ok_or_else(|| {
-                    refusal!(
-                        "{model_name}.{fname} groups through {stand_in}, which this \
-                         registry does not read"
-                    )
-                })?;
-                self.check_field_access(field, env)?;
-            }
-            gbs.push(GbSpec {
-                field,
-                granularity: gran,
-            });
+            holder: &'f Model,
+            alias: String,
         }
 
         let mut select = Query::select();
         select.from(Alias::new(&model.table));
         select.cond_where(cond);
 
+        let group_compiler = Compiler::root(&ctx, model, &rules, env.su);
+        let mut gbs: Vec<GbSpec> = Vec::new();
+        for spec in groupby {
+            let (path, gran) = match spec.split_once(':') {
+                Some((f, g)) => (f, Some(g.to_string())),
+                None => (spec.as_str(), None),
+            };
+            // a dotted spec walks many2one hops to the field it groups by,
+            // each hop a left join of the comodel under its own rules
+            let hops: Vec<&str> = path.split('.').collect();
+            let (last, heads) = hops.split_last().expect("a spec has a name");
+            let mut holder = model;
+            let mut alias = model.table.clone();
+            let mut compiler = None;
+            for hop in heads {
+                let field = holder.fields.get(*hop).ok_or_else(|| {
+                    refusal!("unknown groupby field {}.{hop} in {spec}", holder.name)
+                })?;
+                self.check_field_access(field, env)?;
+                let current = compiler.as_ref().unwrap_or(&group_compiler);
+                let (co, coalias, on) = current.many2one_hop_join(field)?;
+                select.join_as(
+                    JoinType::LeftJoin,
+                    Alias::new(&co.table),
+                    Alias::new(coalias.as_str()),
+                    on,
+                );
+                compiler = Some(current.hop_compiler(co, coalias.clone()));
+                holder = co;
+                alias = coalias;
+            }
+            let fname = *last;
+            let mut field = holder
+                .fields
+                .get(fname)
+                .ok_or_else(|| refusal!("unknown groupby field {}.{fname}", holder.name))?;
+            self.check_field_access(field, env)?;
+            if let Some(stand_in) = field.group_by_field.as_deref() {
+                field = holder.fields.get(stand_in).ok_or_else(|| {
+                    refusal!(
+                        "{}.{fname} groups through {stand_in}, which this \
+                         registry does not read",
+                        holder.name
+                    )
+                })?;
+                self.check_field_access(field, env)?;
+            }
+            if !heads.is_empty() && field.ttype == FieldType::Many2many {
+                refuse!(
+                    "grouping {model_name} by {spec}: a many2many at the end of a path \
+                     can duplicate rows, which Python's grouping-sets check decides"
+                );
+            }
+            gbs.push(GbSpec {
+                field,
+                granularity: gran,
+                holder,
+                alias,
+            });
+        }
+
         let mut gb_exprs: Vec<Expr> = Vec::new();
         let mut gb_ordinals: Vec<usize> = Vec::new();
-        let group_compiler = Compiler::root(&ctx, model, &rules, env.su);
         for gb in &gbs {
             let base = if gb.field.ttype == FieldType::Many2many {
                 if gb.granularity.is_some() {
@@ -824,7 +861,7 @@ impl<'a> Orm<'a> {
                 let (_, _, c2) = gb.field.m2m_columns()?;
                 Expr::col((Alias::new(rel_alias.as_str()), Alias::new(c2)))
             } else {
-                ctx.read_expr(model, gb.field, &model.table)?
+                ctx.read_expr(gb.holder, gb.field, &gb.alias)?
             };
             let expr = match &gb.granularity {
                 Some(g) => sqlgen::granularity_expr(
@@ -990,6 +1027,12 @@ impl<'a> Orm<'a> {
                     .ok()
                     .and_then(|c| self.registry.get(c).ok())
                     .is_some_and(|c| c.order.trim() != "id");
+            if traverse_many2one && gb.granularity.is_none() && comodel_ordered && gb.alias != model.table {
+                refuse!(
+                    "ordering the path groupby {spec} through its comodel's _order; \
+                     the kernel orders a path by its ordinal only"
+                );
+            }
             if traverse_many2one && gb.granularity.is_none() && comodel_ordered {
                 // ordering a many2one group by the COMODEL's _order rather
                 // than by its id: the join it needs is wrapped in ANY_VALUE
@@ -1088,7 +1131,7 @@ impl<'a> Orm<'a> {
                         comodel: gb.field.relation.clone().unwrap_or_default(),
                     }
                 } else {
-                    col_kind(final_field(&ctx, model, gb.field)?)?
+                    col_kind(final_field(&ctx, gb.holder, gb.field)?)?
                 };
                 item.push(decode_group(row, i, &kind)?);
             }

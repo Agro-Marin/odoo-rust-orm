@@ -642,12 +642,31 @@ def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: AR
     for fname in fields or ():
         if fname == "display_name" and not _display_ok(model):
             return _refuse("display_name computed in python")
-        f = model._fields.get(fname)
+        holder, f = (
+            _path_field(model, fname)
+            if "." in fname
+            else (model, model._fields.get(fname))
+        )
         if f is None:
             return _refuse(f"unknown field {fname}")
-        if f.type in ("one2many", "many2many") and _x2many_cached(model, f):
+        if f.type in ("one2many", "many2many") and _x2many_cached(holder, f):
             return _refuse(f"{fname} written in this transaction")
     return True
+
+
+def _path_field(model, spec):
+    """The (holder, field) a dotted groupby spec ends on, walking stored
+    many2one hops as `_read_group_groupby_many2one_path` does; (None, None)
+    where a hop is not one."""
+    holder = model
+    parts = spec.split(".")
+    for hop in parts[:-1]:
+        f = holder._fields.get(hop)
+        if f is None or f.type != "many2one" or not f.store:
+            return None, None
+        holder = model.env[f.comodel_name]
+    f = holder._fields.get(parts[-1])
+    return (holder, f) if f is not None else (None, None)
 
 
 WRITTEN_X2MANY = weakref.WeakKeyDictionary()
@@ -1769,10 +1788,17 @@ def install():
                     self,
                     domain,
                     order,
-                    [g.split(":")[0] for g in groupby]
+                    [g.split(":")[0].split(".")[0] for g in groupby]
                     + [a.rsplit(":", 1)[0] for a in aggregates if a != "__count"],
                 ):
                     raise KernelRefused("flush failed; not routing")
+                for g in groupby:
+                    # the hops and the field at the end of a dotted spec live
+                    # on other models, which the flush above does not reach
+                    if "." in g:
+                        holder, f = _path_field(self, g.split(":")[0])
+                        if holder is not None:
+                            holder.flush_model([f.name])
                 rows = _dispatch(
                     self,
                     "read_group",
@@ -1786,7 +1812,7 @@ def install():
                 )
                 STATS["kernel"] += 1
                 out = []
-                gb_fields = [self._fields[g.split(":")[0]] for g in groupby]
+                gb_fields = [_path_field(self, g.split(":")[0])[1] for g in groupby]
                 # Every group record of a column prefetches with the others,
                 # as `_read_group_postprocess_groupby` builds them. Browsed one
                 # by one, each was its own prefetch set, and a caller reading a

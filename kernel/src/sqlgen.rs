@@ -1564,6 +1564,54 @@ impl<'a> Compiler<'a> {
         Ok((rel.to_string(), rel_alias, on))
     }
 
+    /// One many2one hop of a dotted groupby path, as
+    /// `_read_group_groupby_many2one_path` composes it: a LEFT JOIN of the
+    /// comodel's table under the comodel's record rules (an ACL check and
+    /// `_search([])` in Python, so no active filter and no field domain), the
+    /// rows the rules exclude grouping as NULL. Returns the comodel, the alias
+    /// the join binds and the ON condition; the caller chains the next hop
+    /// through `hop_compiler`.
+    pub fn many2one_hop_join(&self, field: &Field) -> Result<(&'a Model, String, Condition)> {
+        if field.ttype != FieldType::Many2one || !field.has_column {
+            refuse!(
+                "grouping through {}.{} needs a stored many2one; Python traverses \
+                 the path with `_field_to_sql`, which this kernel does not for it",
+                self.model.name,
+                field.name
+            );
+        }
+        let co = self.ctx.registry.get(field.comodel()?)?;
+        let coalias = format!("{}__{}", self.alias, field.name);
+        let sub = self.sub_compiler(co, coalias.clone());
+        let mut on = Cond::all().add(
+            col(&self.alias, &field.name)
+                .equals((Alias::new(coalias.as_str()), Alias::new("id"))),
+        );
+        // `_search([])` on the comodel: its rules apply whatever the field
+        // declares, so the bypass question is answered, not asked
+        if let Some(rules) = sub.comodel_rules(co, Some(false))? {
+            let cond = sub.compile_rules(rules)?;
+            if !cond.is_empty() {
+                on = on.add(cond);
+            }
+        }
+        self.ctx.touch(&self.model.name, &field.name);
+        tracing::debug!(
+            target: "odoo_kernel::compile",
+            model = %self.model.name,
+            field = %field.name,
+            comodel = %co.name,
+            alias = %coalias,
+            ruled = on.len() > 1,
+            "grouping through a many2one by a left join of its comodel"
+        );
+        Ok((co, coalias, on))
+    }
+
+    pub fn hop_compiler(&self, co: &'a Model, alias: String) -> Compiler<'a> {
+        self.sub_compiler(co, alias)
+    }
+
     fn active_filter(
         &self,
         field: &Field,
