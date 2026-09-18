@@ -1,4 +1,3 @@
-import contextlib
 import logging
 import os
 import threading
@@ -114,6 +113,14 @@ def _error_class_with_diag(cls):
 
 
 def _raise_pg(exc) -> Never:
+    # The rust error becomes the psycopg error's __context__, and its
+    # traceback runs from the shim's execute back through the fork's
+    # Cursor.execute to whoever called it -- so anything holding the raised
+    # error (a captured log record, assertRaises) held every frame on that
+    # path and the cursor in them. A cursor dropped after a lost backend was
+    # then never collected inside the block that watched for its __del__.
+    # psycopg raises from C with no context at all; this is the same shape.
+    exc.__traceback__ = None
     msg = str(exc)
     if not msg.startswith("SQLSTATE:"):
         # no SQLSTATE means the failure was in the transport, not the server;
@@ -370,6 +377,13 @@ class FakeConnection:
 
     @property
     def pgconn(self):
+        # psycopg's adapter machinery (Composable.as_string, the COPY dumper
+        # lookup, DDL client-side formatting) reads the connection encoding
+        # off this handle and casts it to its own PGconn type, so it has to
+        # be a real one. The ONE call the fork makes on it that must reach
+        # this connection -- libpq's simple query, for the session reset on
+        # every return and the liveness probe on borrow -- is routed in
+        # `install()` by rebinding `lifecycle._run_simple_query` instead.
         return _adapt_cnx().pgconn
 
     @property
@@ -427,7 +441,23 @@ class FakeConnection:
         return cur
 
     def pipeline(self):
-        return contextlib.nullcontext()
+        # The rust cursor runs every statement immediately and already holds
+        # its result, so a pipeline block has nothing to sync; what the
+        # fork's cursor needs is an object to hold while the mode is on,
+        # since `in_pipeline` is "the pipeline is not None" and the
+        # savepoint and COPY refusals inside a block read that.
+        return _Pipeline()
+
+
+class _Pipeline:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def sync(self) -> None:
+        return None
 
 
 INSTALLED = {
@@ -798,6 +828,12 @@ class _RustPool:
     def closed(self):
         return self._closed
 
+    @property
+    def _pool(self):
+        # psycopg_pool's idle deque, which the fork's health-check test reads
+        # to probe an idle connection by hand
+        return [conn for conn, _gen in self._idle]
+
     @staticmethod
     def check_connection(conn):
         conn.execute("")
@@ -1064,6 +1100,34 @@ def install():
     pool_factory.check_connection = psycopg_pool_class.check_connection
     pool_module._PsycopgPool = pool_factory
     lifecycle_module._PsycopgPool = pool_factory
+
+    # `_reset_connection` and `_probe_liveness` drive libpq's simple query
+    # through `conn.pgconn.exec_`, and `pgconn` above is the shared adapter
+    # connection's handle: through it every cursor return reset a connection
+    # nobody was using, and six returning threads drove one PGconn at once --
+    # `tcache_thread_shutdown(): unaligned tcache chunk detected` under the
+    # fork's race test, two runs in three. A rust-backed connection answers
+    # the call itself; anything else keeps the fork's own.
+    original_simple_query = getattr(lifecycle_module, "_run_simple_query", None)
+
+    def run_simple_query(conn, sql, expected):
+        # by type, not by attribute: the fork's own tests hand this a Mock,
+        # which answers every attribute
+        if not isinstance(conn, FakeConnection):
+            return original_simple_query(conn, sql, expected)
+        rust = conn._rust
+        if isinstance(sql, bytes):
+            sql = _decode_query(sql)
+        status, message = rust.exec_simple(sql)
+        if status != expected:
+            raise psycopg.OperationalError(message)
+        return None
+
+    if original_simple_query is not None and not getattr(
+        original_simple_query, "_rust_shim", False
+    ):
+        run_simple_query._rust_shim = True
+        lifecycle_module._run_simple_query = run_simple_query
 
     # A pool is built ONCE per dsn and cached, so rebinding the class alone
     # only reaches pools created after this point -- and by the time the

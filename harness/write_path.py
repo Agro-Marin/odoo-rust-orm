@@ -427,8 +427,12 @@ piped_vals = [
     for i in range(COPY_THRESHOLD + 2)
 ]
 with env.cr.pipeline():  # noqa: F821
-    entered_pipeline = env.cr.in_pipeline  # noqa: F821
     piped = model.create(piped_vals)
+    # read AFTER the create: the fork enters the mode on the block's second
+    # statement, so a reading at the top of the block is always False and
+    # sent the check below down the "no pipeline mode" arm while the create
+    # had in fact run pipelined, natively, through the kernel's INSERT
+    entered_pipeline = env.cr.in_pipeline  # noqa: F821
 env.cr.flush()  # noqa: F821
 env.cr.commit()  # noqa: F821
 after_piped = port.stats()

@@ -183,7 +183,29 @@ impl rustls::client::danger::ServerCertVerifier for EncryptOnly {
     }
 }
 
+/// What ended the connection task, as `SQLSTATE:<code>|<message>`, once
+/// it has ended. A backend PostgreSQL terminates answers one FATAL (class
+/// 57) and closes the socket; the driver task receives that reply and
+/// stops, so the next statement fails with a bare "connection closed"
+/// that carries no SQLSTATE. psycopg raises the FATAL itself, and the
+/// fork classifies a loss with a SQLSTATE differently from one without
+/// (logged plain against logged with a traceback), so the reply is kept
+/// here for the cursor to raise in the socket error's place.
+pub type FaultSlot = Arc<std::sync::Mutex<Option<String>>>;
+
+fn describe_fault(e: &tokio_postgres::Error) -> String {
+    match e.as_db_error() {
+        Some(d) => format!("SQLSTATE:{}|{}", d.code().code(), d.message()),
+        None => format!("SQLSTATE:|{e}"),
+    }
+}
+
 pub async fn connect(dsn: &str) -> Result<Client> {
+    connect_with_fault(dsn).await.map(|(client, _)| client)
+}
+
+pub async fn connect_with_fault(dsn: &str) -> Result<(Client, FaultSlot)> {
+    let fault: FaultSlot = Arc::new(std::sync::Mutex::new(None));
     let t0 = std::time::Instant::now();
     let parsed = Dsn::parse(dsn)?;
     let tls = parsed.tls()?;
@@ -202,22 +224,30 @@ pub async fn connect(dsn: &str) -> Result<Client> {
         None => {
             let (client, conn) = parsed.config.connect(tokio_postgres::NoTls).await?;
             opened(t0);
+            let slot = fault.clone();
             tokio::spawn(async move {
                 if let Err(e) = conn.await {
                     tracing::error!(error = %e, "postgres connection dropped");
+                    if let Ok(mut s) = slot.lock() {
+                        *s = Some(describe_fault(&e));
+                    }
                 }
             });
-            Ok(client)
+            Ok((client, fault))
         }
         Some(tls) => {
             let (client, conn) = parsed.config.connect(tls).await?;
             opened(t0);
+            let slot = fault.clone();
             tokio::spawn(async move {
                 if let Err(e) = conn.await {
                     tracing::error!(error = %e, "postgres connection dropped");
+                    if let Ok(mut s) = slot.lock() {
+                        *s = Some(describe_fault(&e));
+                    }
                 }
             });
-            Ok(client)
+            Ok((client, fault))
         }
     }
 }

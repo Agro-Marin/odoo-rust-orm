@@ -1327,6 +1327,7 @@ pub struct RustConn {
     autocommit: AtomicBool,
     pub readonly: AtomicBool,
     closed: AtomicBool,
+    fault: odoo_kernel::connect::FaultSlot,
 }
 
 fn statement_is_ddl(sql: &str) -> bool {
@@ -1438,6 +1439,26 @@ impl RustConn {
             autocommit: AtomicBool::new(false),
             readonly: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            fault: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    pub fn with_fault(mut self, fault: odoo_kernel::connect::FaultSlot) -> Self {
+        self.fault = fault;
+        self
+    }
+
+    /// The error a statement raises on a connection whose task has ended:
+    /// the server's own FATAL when the task recorded one, so the caller
+    /// sees the SQLSTATE psycopg would have raised, else the socket error.
+    fn lost_backend_error(&self, py: Python<'_>, err: PyErr) -> PyErr {
+        let msg = err.value(py).to_string();
+        if !msg.starts_with("SQLSTATE:|") {
+            return err;
+        }
+        match self.fault.lock().ok().and_then(|s| s.clone()) {
+            Some(fault) => rerr(fault),
+            None => err,
         }
     }
 
@@ -1504,6 +1525,32 @@ impl RustConn {
         F::Output: Send,
     {
         py.detach(|| self.handle.block_on(fut))
+    }
+
+    /// A backend that PostgreSQL terminated answers one FATAL (class 57)
+    /// and closes the socket; psycopg marks the connection closed on that
+    /// reply, synchronously, and the pool's permit accounting reads the
+    /// flag right after the raise. tokio-postgres learns of the close on
+    /// its own task a moment later, so the flag is set here, from the
+    /// error, rather than waited for.
+    fn note_lost_backend(&self, py: Python<'_>, err: &PyErr) {
+        let msg = err.value(py).to_string();
+        let fatal = msg.starts_with("SQLSTATE:57P")
+            || msg.starts_with("SQLSTATE:08")
+            || msg.contains("connection closed")
+            || self
+                .client
+                .read()
+                .map(|slot| slot.as_ref().is_some_and(|c| c.is_closed()))
+                .unwrap_or(false);
+        if fatal {
+            self.closed.store(true, Ordering::SeqCst);
+            self.in_tx.store(false, Ordering::SeqCst);
+        }
+    }
+
+    fn clear_statement_flags(&self) {
+        self.ddl_in_tx.store(false, Ordering::SeqCst);
     }
 
     fn execute_simple(&self, py: Python<'_>, sql: &str) -> PyResult<RustResult> {
@@ -1977,7 +2024,68 @@ impl RustConn {
     ) -> PyResult<RustResult> {
         let result = self.execute_statement(py, query, params);
         self.track_abort(py, query, &result);
-        result
+        match result {
+            Err(e) => {
+                let e = self.lost_backend_error(py, e);
+                self.note_lost_backend(py, &e);
+                Err(e)
+            }
+            ok => ok,
+        }
+    }
+
+    /// libpq's `PQexec` as the fork's lifecycle calls it through
+    /// `conn.pgconn.exec_`: one simple-query round trip, no BEGIN folded in,
+    /// answered as `(ExecStatus, error message)` rather than raised. The
+    /// session reset on every cursor return and the liveness probe on borrow
+    /// both go through it, so it has to run on THIS connection: before it
+    /// existed the shim handed out the shared adapter connection's handle,
+    /// which reset a connection nobody was using and, driven from several
+    /// returning threads at once, corrupted libpq's heap.
+    fn exec_simple(&self, py: Python<'_>, sql: &str) -> (i32, String) {
+        use tokio_postgres::SimpleQueryMessage as M;
+        const EMPTY_QUERY: i32 = 0;
+        const COMMAND_OK: i32 = 1;
+        const TUPLES_OK: i32 = 2;
+        const FATAL_ERROR: i32 = 7;
+        if self.closed.load(Ordering::SeqCst) {
+            return (FATAL_ERROR, "connection is closed".into());
+        }
+        let client = match self.client() {
+            Ok(c) => c,
+            Err(e) => return (FATAL_ERROR, e.to_string()),
+        };
+        match self.block(py, client.simple_query(sql)) {
+            Ok(messages) => {
+                if sql.trim().is_empty() {
+                    return (EMPTY_QUERY, String::new());
+                }
+                if !self.in_tx.load(Ordering::SeqCst) {
+                    self.clear_statement_flags();
+                }
+                // libpq answers with the LAST statement's status: the
+                // fork's reset string carries a SELECT in the middle and
+                // ends on DISCARD, and expects COMMAND_OK
+                let mut status = COMMAND_OK;
+                let mut pending_rows = false;
+                for m in &messages {
+                    match m {
+                        M::RowDescription(_) | M::Row(_) => pending_rows = true,
+                        M::CommandComplete(_) => {
+                            status = if pending_rows { TUPLES_OK } else { COMMAND_OK };
+                            pending_rows = false;
+                        }
+                        _ => {}
+                    }
+                }
+                (status, String::new())
+            }
+            Err(e) => {
+                let err = self.lost_backend_error(py, db_err(e));
+                self.note_lost_backend(py, &err);
+                (FATAL_ERROR, err.value(py).to_string())
+            }
+        }
     }
 
     #[getter]
@@ -2813,10 +2921,10 @@ impl RustDb {
             "opening a rust-backed connection for a Python cursor"
         );
         let for_conn = handle.clone();
-        let client = py
-            .detach(move || handle.block_on(odoo_kernel::connect::connect(&dsn)))
+        let (client, fault) = py
+            .detach(move || handle.block_on(odoo_kernel::connect::connect_with_fault(&dsn)))
             .map_err(|e| rerr(format!("{e:#}")))?;
-        Ok(RustConn::new(Arc::new(client), for_conn))
+        Ok(RustConn::new(Arc::new(client), for_conn).with_fault(fault))
     }
 }
 
