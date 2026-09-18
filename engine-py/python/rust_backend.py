@@ -37,7 +37,6 @@ _port_logger = logging.getLogger("odoo.rust_kernel.port")
 PROTOCOL_FLAGS = (
     "sequences",
     "columns",
-    "supports_recursive_queries",
 )
 
 PROTOCOL_METHODS = (
@@ -61,6 +60,10 @@ PROTOCOL_METHODS = (
     "records_with_parent_changed",
     "timezone_names",
     "count_m2m_groups",
+    "read_grouping_sets_rows",
+    "has_rows_beyond",
+    "has_cycle",
+    "increment_columns_skip_locked",
 )
 
 STATS = {
@@ -139,10 +142,6 @@ class RustBackend:
     @property
     def columns(self):
         return self._delegate.columns
-
-    @property
-    def supports_recursive_queries(self) -> bool:
-        return self._delegate.supports_recursive_queries
 
     def __getattr__(self, name):
         if name == "_delegate" or name.startswith("__"):
@@ -261,6 +260,22 @@ class RustBackend:
     def ancestors(self, *args, **kwargs):
         _delegated("ancestors", "not implemented natively")
         return self._delegate.ancestors(*args, **kwargs)
+
+    def read_grouping_sets_rows(self, *args, **kwargs):
+        _delegated("read_grouping_sets_rows", "not implemented natively")
+        return self._delegate.read_grouping_sets_rows(*args, **kwargs)
+
+    def has_rows_beyond(self, *args, **kwargs):
+        _delegated("has_rows_beyond", "not implemented natively")
+        return self._delegate.has_rows_beyond(*args, **kwargs)
+
+    def has_cycle(self, *args, **kwargs):
+        _delegated("has_cycle", "not implemented natively")
+        return self._delegate.has_cycle(*args, **kwargs)
+
+    def increment_columns_skip_locked(self, *args, **kwargs):
+        _delegated("increment_columns_skip_locked", "not implemented natively")
+        return self._delegate.increment_columns_skip_locked(*args, **kwargs)
 
 
 #: Set by the addon to the same callable `rust_orm_shim` uses, so the port

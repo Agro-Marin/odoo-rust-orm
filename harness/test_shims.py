@@ -2189,8 +2189,6 @@ def test_the_ports_signatures_match_the_delegates() -> None:
 
 
 class _RecordingDelegate:
-    supports_recursive_queries = True
-
     def __init__(self) -> None:
         self.calls = []
 
@@ -2363,6 +2361,20 @@ def test_an_unarmed_port_is_its_delegate() -> None:
         "records_with_parent_changed": (("model", {1: [2]}), {}),
         "timezone_names": (("env",), {}),
         "count_m2m_groups": (("records", "rel", "c1", "c2", "query"), {}),
+        "read_grouping_sets_rows": (
+            ("model", "select"),
+            {
+                "domain": "domain",
+                "query": "query",
+                "grouping_sets": [["a"]],
+                "groupby_terms": {"a": "sql"},
+                "aggregates": ["count"],
+                "order": None,
+            },
+        ),
+        "has_rows_beyond": (("model", 80), {}),
+        "has_cycle": (("model", "rel", "c1", "c2", [1]), {}),
+        "increment_columns_skip_locked": (("model", ["seq"], [1]), {}),
     }
     check(
         "every protocol method is exercised",
