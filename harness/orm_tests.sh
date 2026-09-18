@@ -29,7 +29,7 @@ base() {
 
 failures() {
   grep -aoE '(odoo\.addons\.[a-z_]+\.tests\.[a-z_0-9]+|odoo\.tests\.suite): (FAIL|ERROR): [^ ]+( [A-Za-z_(.]+[A-Za-z_0-9)]+)?' "$1" \
-    | sed -E 's/^[^:]+: //' | sort -u
+    | sed -E 's/^[^:]+: //' | LC_ALL=C sort -u
 }
 
 free_port() {
@@ -47,7 +47,7 @@ done
 off_line=$(grep -ao '[0-9]* failed, [0-9]* error(s) of [0-9]* tests' "$OUT/off.log" | tail -1)
 on_line=$(grep -ao '[0-9]* failed, [0-9]* error(s) of [0-9]* tests' "$OUT/on.log" | tail -1)
 routed=$(grep -ao 'rust kernel (final): mode=on [^ ]* routed=[0-9]*' "$OUT/on.log" | tail -1 | sed 's/.*routed=//')
-only_on=$(comm -13 "$OUT/off.failures" "$OUT/on.failures")
+only_on=$(LC_ALL=C comm -13 "$OUT/off.failures" "$OUT/on.failures")
 refusing=$(grep -ac "refusing to arm" "$OUT/on.log")
 
 echo "ORM TESTS off: ${off_line:-no result}; on: ${on_line:-no result}; routed=${routed:-0} (artifacts in $OUT)"
