@@ -53,6 +53,7 @@ off_line=$(grep -ao '[0-9]* failed, [0-9]* error(s) of [0-9]* tests' "$OUT/off.l
 on_line=$(grep -ao '[0-9]* failed, [0-9]* error(s) of [0-9]* tests' "$OUT/on.log" | tail -1)
 routed=$(grep -ao 'rust kernel (final): mode=on [^ ]* routed=[0-9]*' "$OUT/on.log" | tail -1 | sed 's/.*routed=//')
 only_on=$(LC_ALL=C comm -13 "$OUT/off.failures" "$OUT/on.failures")
+only_off=$(LC_ALL=C comm -23 "$OUT/off.failures" "$OUT/on.failures")
 refusing=$(grep -ac "refusing to arm" "$OUT/on.log")
 
 echo "ORM TESTS off: ${off_line:-no result}; on: ${on_line:-no result}; routed=${routed:-0} (artifacts in $OUT)"
@@ -66,7 +67,14 @@ unavailable=$(grep -ac "INFRASTRUCTURE UNAVAILABLE" "$OUT/on.log")
 if [ "$unavailable" != 0 ]; then
   echo "ORM TESTS FAILED: $unavailable test class(es) could not run in the routing leg"; exit 1
 fi
-if [ "${off_line%% of *}" != "${on_line%% of *}" ] && [ -z "$only_on" ]; then
+if [ -n "$only_off" ]; then
+  # a test red without the engine and green with it is not a routing
+  # regression; it is a flake or a Python-side red the differential is not
+  # for, and it is named so the reader can decide which
+  echo "ORM TESTS note: failing only WITHOUT routing (not a routing regression):"
+  printf '%s\n' "$only_off" | sed 's/^/  /'
+fi
+if [ "${off_line%% of *}" != "${on_line%% of *}" ] && [ -z "$only_on" ] && [ -z "$only_off" ]; then
   echo "ORM TESTS FAILED: the legs report different totals ($off_line vs $on_line) but no failure name differs"; exit 1
 fi
 if [ -n "$only_on" ]; then
