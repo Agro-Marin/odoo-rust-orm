@@ -13,6 +13,8 @@ pub fn odoo_root() -> String {
 const EXPORT_ALL: &str = r#"
 import json
 
+import purity
+
 def _s(v):
     return v if isinstance(v, (str, int, float, bool)) or v is None else None
 
@@ -27,71 +29,7 @@ def _cd_fallback(model, f):
         return v.id or None
     return _s(v)
 
-def _geo_fields(m):
-    return tuple(n for n, f in m._fields.items() if f.type.startswith("geo_"))
 
-
-TRANSPARENT_HOOKS = {
-    ("odoo.addons.base.models.mixin_properties_base_definition",
-     "MixinPropertiesBaseDefinition", "_field_to_sql"):
-        ("properties_base_definition_id",),
-    ("odoo.addons.base.models.res_device", "ResDeviceLog", "_order_field_to_sql"):
-        ("is_current",),
-    ("odoo.addons.mail.models.mixin_mail_activity", "MixinMailActivity",
-     "_order_field_to_sql"):
-        ("activity_date_deadline", "my_activity_date_deadline", "activity_state"),
-    ("odoo.addons.mail.models.mixin_mail_activity", "MixinMailActivity",
-     "_read_group_groupby"):
-        ("activity_state",),
-    ("odoo.addons.base.models.mixin_user_favorite", "MixinUserFavorite",
-     "_order_field_to_sql"):
-        ("is_user_favorite",),
-    ("odoo.addons.knowledge.models.knowledge_article", "KnowledgeArticle",
-     "_order_field_to_sql"):
-        ("is_user_favorite",),
-    ("odoo.addons.crm.models.crm_lead", "CrmLead", "_field_to_sql"):
-        ("company_currency",),
-    ("odoo.addons.account.models.account_analytic_line_reports",
-     "AccountAnalyticLine", "_field_to_sql"):
-        ("analytic_coverage",),
-    ("odoo.addons.account.models.account_move", "AccountMove", "_field_to_sql"):
-        ("display_state", "move_sent_values"),
-    ("odoo.addons.hr.models.hr_employee", "HrEmployee", "_field_to_sql"):
-        ("version_id",),
-    ("odoo.addons.document.models.document_document_search_panel",
-     "DocumentsDocument", "_field_to_sql"):
-        ("last_access_date_group",),
-    ("odoo.addons.document.models.document_document_search_panel",
-     "DocumentsDocument", "_order_field_to_sql"):
-        ("last_access_date_group",),
-    ("odoo.addons.analytic.models.mixin_analytic", "MixinAnalytic",
-     "_read_group_groupby"):
-        ("analytic_distribution",),
-    ("odoo.addons.analytic.models.mixin_analytic", "MixinAnalytic",
-     "_read_group_select"):
-        ("analytic_distribution",),
-    ("odoo.addons.analytic.models.analytic_account", "AccountAnalyticAccount",
-     "_read_group_select"):
-        ("balance", "debit", "credit"),
-    ("odoo.addons.analytic.models.analytic_account", "AccountAnalyticAccount",
-     "_read_group_postprocess_aggregate"):
-        ("balance", "debit", "credit"),
-    # geoengine patches every model: the two hooks act only on geo_* aggregate
-    # functions, which the kernel refuses as unsupported, so a geometry field is
-    # the whole surface they touch
-    ("odoo.addons.geoengine.models.base", "Base", "_read_group_select"):
-        _geo_fields,
-    ("odoo.addons.geoengine.models.base", "Base", "_read_group_postprocess_aggregate"):
-        _geo_fields,
-    # res.groups sorts in Python only for an order on full_name; hr_appraisal
-    # narrows hr.employee only when the domain names next_appraisal_date
-    ("odoo.addons.base.models.res_groups", "ResGroups", "_search"):
-        ("full_name",),
-    ("odoo.addons.hr_appraisal.models.hr_employee", "HrEmployee", "_search"):
-        ("next_appraisal_date",),
-    ("odoo.addons.hr_appraisal.models.hr_employee", "HrEmployee", "fetch"):
-        ("next_appraisal_date",),
-}
 
 
 KERNEL_SEARCHES = {
@@ -177,18 +115,10 @@ def export_registry(reg):
 
         def pure(*names):
             for n in names:
-                if getattr(cls, n, None) is getattr(base, n, None):
-                    continue
-                keys = [
-                    (k.__module__, k.__qualname__, n)
-                    for k in cls.__mro__
-                    if n in vars(k) and k not in base.__mro__
-                ]
-                if not keys or any(key not in TRANSPARENT_HOOKS for key in keys):
+                ok, _keys = purity.transparent(cls, base, n)
+                if not ok:
                     return False
-                for key in keys:
-                    scope = TRANSPARENT_HOOKS[key]
-                    hooked.update(scope(m) if callable(scope) else scope)
+                hooked.update(purity.hooked_fields(m, cls, base, n))
             return True
         search_pure = pure("_search")
         impure_read_methods = [
@@ -345,6 +275,7 @@ pub fn boot_registry(py: Python<'_>, config: &str, db: &str) -> PyResult<Py<PyAn
 
 pub fn export_registry(py: Python<'_>, reg: &Py<PyAny>) -> PyResult<String> {
     let t0 = std::time::Instant::now();
+    crate::register_purity(py)?;
     let ns = pyo3::types::PyDict::new(py);
     py.run(
         &std::ffi::CString::new(EXPORT_ALL).unwrap(),

@@ -38,8 +38,9 @@ fn export_registry(py: Python<'_>, registry: Py<PyAny>) -> PyResult<String> {
     export::export_registry(py, &registry)
 }
 
-const SHIM_SOURCES: [(&str, &str); 3] = [
+const SHIM_SOURCES: [(&str, &str); 4] = [
     ("wire", include_str!("../python/wire.py")),
+    ("purity", include_str!("../python/purity.py")),
     ("rust_db_shim", include_str!("../python/rust_db_shim.py")),
     ("rust_orm_shim", include_str!("../python/rust_orm_shim.py")),
 ];
@@ -72,10 +73,19 @@ fn register<'py>(py: Python<'py>, name: &str, src: &str) -> PyResult<Bound<'py, 
     Ok(module)
 }
 
+/// The table of read-path overrides the export and the shim's gate both read
+/// (`purity.py`); registered on its own so the export, which runs without the
+/// shims in the `export_registry` binary, sees the same table the gate does.
+pub fn register_purity(py: Python<'_>) -> PyResult<()> {
+    let (name, src) = SHIM_SOURCES[1];
+    register(py, name, src).map(|_| ())
+}
+
 pub fn install_backend_py<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyModule>> {
     errors::register(py)?;
     let (wire_name, wire_src) = SHIM_SOURCES[0];
     register(py, wire_name, wire_src)?;
+    register_purity(py)?;
     let (name, src) = BACKEND_SOURCE;
     register(py, name, src)
 }
@@ -87,7 +97,7 @@ pub fn install_shims_py<'py>(
     let mut out: Vec<Bound<'py, PyModule>> = Vec::new();
     for (name, src) in SHIM_SOURCES {
         let module = register(py, name, src)?;
-        if name != "wire" {
+        if name != "wire" && name != "purity" {
             out.push(module);
         }
     }

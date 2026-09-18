@@ -1379,6 +1379,35 @@ def test_taints_clear_on_commit_and_rollback() -> None:
     check("and forgets the cursor", cr in orm_shim.COMMITTED_DIRTY, False)
 
 
+def test_the_order_snapshot_is_the_exports_not_the_class_attribute() -> None:
+    # res.partner's `_order` is a property ranking by a context search mode:
+    # read off the class it is the descriptor, and a snapshot holding one
+    # refuses the model on every call as drifted. The snapshot is what the
+    # kernel was built from -- the export's order -- so a plain call agrees
+    # and only a call whose context changes the order is refused.
+    _db_shim, orm_shim = _shims()
+    saved = dict(orm_shim.ORDERS)
+    try:
+        orm_shim.snapshot_orders(
+            json.dumps(
+                {
+                    "models": {
+                        "res.partner": {"order": "complete_name ASC, id DESC"},
+                        "res.country": {"order": "name, id"},
+                    }
+                }
+            )
+        )
+        check(
+            "the snapshot holds the export's strings",
+            dict(orm_shim.ORDERS),
+            {"res.partner": "complete_name ASC, id DESC", "res.country": "name, id"},
+        )
+    finally:
+        orm_shim.ORDERS.clear()
+        orm_shim.ORDERS.update(saved)
+
+
 def test_the_read_gates_see_fetch_and_read_group_overrides() -> None:
     # A row a routed read returns is one Python would have produced through
     # `_fetch_query`, and a grouped cell through the `_read_group_*` hooks.
@@ -1454,6 +1483,64 @@ def test_the_read_gates_see_fetch_and_read_group_overrides() -> None:
         "search_read: the grouping override does not gate a plain read",
         orm_shim._clean_model(grouped, "search_read"),
         True,
+    )
+    # an override the export lists as transparent -- mail's activity groupby,
+    # scoped to activity_state -- does not gate the model: the kernel refuses
+    # that field by itself, and every other groupby routes
+    import purity
+
+    key = (
+        "odoo.addons.mail.models.mixin_mail_activity",
+        "MixinMailActivity",
+        "_read_group_groupby",
+    )
+    check(
+        "the table carries the mail hook this test stands on",
+        key in purity.TRANSPARENT_HOOKS,
+        True,
+    )
+    Hook = type(
+        "MixinMailActivity",
+        (base_mod.BaseModel,),
+        {
+            "__module__": key[0],
+            "__qualname__": key[1],
+            "_register": False,
+            "_name": "probe.hook",
+            "_read_group_groupby": lambda *_a: None,
+        },
+    )
+    transparent = object.__new__(
+        type(
+            "probe_transparent",
+            (Hook,),
+            {
+                "__module__": "odoo.addons.probe.models",
+                "_register": False,
+                "_name": "probe.transparent",
+                "sudo": lambda self: self,
+            },
+        )
+    )
+    transparent.env = _Env()
+    check(
+        "_read_group: a transparent override is clean",
+        orm_shim._clean_model(transparent, "_read_group"),
+        True,
+    )
+    check(
+        "_read_group: an override outside the table is not",
+        orm_shim._clean_model(
+            model("probe.opaque", _read_group_groupby=lambda *_a: None), "_read_group"
+        ),
+        False,
+    )
+    check(
+        "the export would drop the hooked field",
+        purity.hooked_fields(
+            transparent, type(transparent), base_mod.BaseModel, "_read_group_groupby"
+        ),
+        {"activity_state"},
     )
     orm_shim.forget_gates()
 

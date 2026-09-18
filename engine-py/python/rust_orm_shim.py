@@ -372,9 +372,20 @@ def forget_gates() -> None:
 ORDERS = {}
 
 
-def snapshot_orders(registry) -> None:
+def snapshot_orders(export) -> None:
+    """Record the `_order` of every model as the kernel was built with it.
+
+    From the export, not from `registry[name]._order`: that is the class
+    attribute, and a model whose `_order` is a property -- res.partner ranks
+    by a context search mode -- yields the descriptor there, which no live
+    order ever equals, so the model drifted on every call and was refused.
+    The export reads the order through an instance in a plain environment,
+    which is what the kernel sorts by; a context that changes it at call time
+    is the drift this snapshot exists to catch.
+    """
     ORDERS.clear()
-    ORDERS.update({name: registry[name]._order for name in registry})
+    models = json.loads(export)["models"] if isinstance(export, str) else export
+    ORDERS.update({name: m["order"] for name, m in models.items()})
 
 
 def _order_names(order):
@@ -454,7 +465,16 @@ def _clean_model(model, method=None):
     cached = _GATE_CACHE.get(key)
     if cached is not None:
         return cached
-    ok = all(m is _BASE_METHODS[name] for m, name in zip(methods, needs, strict=True))
+    # an override the export lists as transparent touches only the fields it
+    # names, which the kernel's registry no longer carries, so naming one of
+    # them refuses on its own and the model stays routable for the rest
+    import purity
+
+    base = _BASE_METHODS["__class__"]
+    ok = all(
+        m is _BASE_METHODS[name] or purity.transparent(cls, base, name)[0]
+        for m, name in zip(methods, needs, strict=True)
+    )
     _GATE_CACHE[key] = ok
     return ok
 
@@ -1618,6 +1638,7 @@ def install():
         *_READ_GROUP_HOOKS,
     ):
         _BASE_METHODS[name] = getattr(BaseModel, name)
+    _BASE_METHODS["__class__"] = BaseModel
 
     orig_search_read = BaseModel.search_read
     orig_search_count = BaseModel.search_count
