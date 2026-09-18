@@ -14,11 +14,6 @@ def _geo_fields(m):
 
 TRANSPARENT_HOOKS = {
     (
-        "odoo.addons.document.models.document_document_search_panel",
-        "DocumentsDocument",
-        "_order_field_to_sql",
-    ): ("last_access_date_group",),
-    (
         "odoo.addons.analytic.models.mixin_analytic",
         "MixinAnalytic",
         "_read_group_groupby",
