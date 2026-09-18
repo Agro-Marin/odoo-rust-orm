@@ -19,6 +19,11 @@ done
 OUT="${RUSTORM_ORM_TESTS_DIR:-$(mktemp -d "${HOME}/.cache/rustorm-orm-tests-XXXXXX")}"
 mkdir -p "$OUT/pymod"
 cp "$ROOT/target/release/libengine_py.so" "$OUT/pymod/engine_py.so"
+stale=$(PYTHONPATH="$OUT/pymod" "$PY" "$ROOT/harness/stale_extension.py" "$ROOT")
+if [ -n "$stale" ]; then
+  echo "ORM TESTS FAILED: the extension is stale; $stale"
+  exit 1
+fi
 
 base() {
   grep -vE '^(addons_path|server_wide_modules|http_port|logfile|db_maxconn|rust_engine_[a-z_]+) *=' "$CONF"
