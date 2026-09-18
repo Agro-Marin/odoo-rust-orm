@@ -106,6 +106,7 @@ rust_db = engine_py.RustDb(conninfo)
 db_shim.RUST_DB = rust_db
 db_shim.CONNINFO = conninfo
 db_shim.install()
+db_shim.set_active(True)
 
 with Registry(dbname).cursor() as cr:
     e = odoo.api.Environment(cr, 2, {})

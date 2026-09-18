@@ -1,3 +1,4 @@
+import atexit
 import contextlib
 import importlib.util
 import json
@@ -32,6 +33,7 @@ rust_db = engine.RustDb(dsn)
 dbshim, shim = engine.install_shims()
 dbshim.RUST_DB, dbshim.CONNINFO, dbshim.PSYCOPG_CONNINFO = rust_db, dsn, conninfo
 dbshim.install()
+dbshim.set_active(True)
 shim.DBNAME, shim.MODE, shim.BREAKER = DB, "off", 3
 shim.install()
 
@@ -96,6 +98,23 @@ with env_for() as e:
     fid, rule_id = field.id, rule.id
     e.cr.commit()
 rebuild()
+
+
+def _release_fixture() -> None:
+    # Committed policy rows outlive a failed contract, and the rule hides a
+    # currency from every later stage on the database: the load stage read
+    # `currency_id: False` for the admin on 2026-09-18 because of one such
+    # leftover. Idempotent, so the orderly release at the end may run first.
+    with reg.cursor() as cr:
+        env_ = odoo.api.Environment(cr, 1, {})
+        env_["ir.rule"].browse(rule_id).exists().unlink()
+        field_ = env_["ir.model.fields"].browse(fid).exists()
+        if field_:
+            field_.write({"groups": [(5, 0, 0)]})
+        cr.commit()
+
+
+atexit.register(_release_fixture)
 
 # Maintenance queries must not pin an old snapshot, and an ORM dispatch
 # must never perform its multi-query read without transaction isolation.
@@ -504,24 +523,36 @@ previous_mode, previous_sample = shim.MODE, shim.SAMPLE
 shim.MODE, shim.SAMPLE = "on", 0.0
 try:
     with env_for() as e:
-        partners = e["res.partner"]
-        # two countries of its own, so the check does not depend on the
-        # fixture; the transaction rolls back with the context manager
-        seeded = partners.create(
+        # res.country: a many2one of its own and no read-path override, where
+        # res.partner carries mail's activity groupby hook on any database
+        # with mail and is refused as a whole; the transaction rolls back with
+        # the context manager
+        countries = e["res.country"]
+        seeded = countries.create(
             [
-                {"name": "prefetch contract A", "country_id": e.ref("base.be").id},
-                {"name": "prefetch contract B", "country_id": e.ref("base.fr").id},
+                {
+                    "name": "prefetch contract A",
+                    "code": "Q1",
+                    "currency_id": e.ref("base.USD").id,
+                },
+                {
+                    "name": "prefetch contract B",
+                    "code": "Q2",
+                    "currency_id": e.ref("base.GBP").id,
+                },
             ]
         )
         e.flush_all()
         routed_before = shim.STATS["kernel"]
-        rows = partners._read_group(
-            [("id", "in", seeded.ids)], ["country_id"], ["__count"]
+        rows = countries._read_group(
+            [("id", "in", seeded.ids)], ["currency_id"], ["__count"]
         )
-        assert shim.STATS["kernel"] == routed_before + 1, "the group read did not route"
+        assert shim.STATS["kernel"] == routed_before + 1, (
+            "the group read did not route: %r" % (shim.STATS,)
+        )
         groups = [row[0] for row in rows]
         assert len(groups) >= 2, (
-            "the contract needs partners in two countries; seed more"
+            "the contract needs countries in two currencies; seed more"
         )
         ids = {g.id for g in groups}
         shared = [set(g._prefetch_ids) >= ids for g in groups]
@@ -534,7 +565,7 @@ try:
             "reading the name of %d routed groups took %d queries"
             % (len(groups), queries)
         )
-        # env_for's cursor commits on a clean exit; the seeded partners are
+        # env_for's cursor commits on a clean exit; the seeded countries are
         # this check's alone
         e.cr.rollback()
 finally:
@@ -548,28 +579,51 @@ shim.reset_breaker()
 previous_mode, previous_sample = shim.MODE, shim.SAMPLE
 try:
     with env_for() as e:
-        partners = e["res.partner"]
-        seeded = partners.create(
+        countries = e["res.country"]
+        usd = e.ref("base.USD").id
+        seeded = countries.create(
             [
-                {"name": "selection array A", "type": "contact"},
-                {"name": "selection array B", "type": "invoice"},
-                {"name": "selection array C", "type": "delivery"},
+                {
+                    "name": "selection array A",
+                    "code": "Q1",
+                    "currency_id": usd,
+                    "name_position": "before",
+                },
+                {
+                    "name": "selection array B",
+                    "code": "Q2",
+                    "currency_id": usd,
+                    "name_position": "after",
+                },
+                {
+                    "name": "selection array C",
+                    "code": "Q3",
+                    "currency_id": usd,
+                    "name_position": False,
+                },
             ]
         )
         e.flush_all()
-        args = ([("id", "in", seeded.ids)], ["active"], ["type:array_agg"])
+        args = (
+            [("id", "in", seeded.ids)],
+            ["currency_id"],
+            ["name_position:array_agg"],
+        )
         shim.MODE, shim.SAMPLE = "off", 0.0
-        expected = partners._read_group(*args)
+        expected = countries._read_group(*args)
         e.invalidate_all()
         shim.MODE = "on"
         routed_before = shim.STATS["kernel"]
-        got = partners._read_group(*args)
+        got = countries._read_group(*args)
         assert shim.STATS["kernel"] == routed_before + 1, (
             "the selection array_agg did not route"
         )
-        assert [sorted(row[1]) for row in got] == [
-            sorted(row[1]) for row in expected
-        ], "routed %r, python %r" % (got, expected)
+
+        # an empty selection aggregates as None, which orders against nothing
+        def bag(rows):
+            return [sorted(row[1], key=lambda v: (v is None, v or "")) for row in rows]
+
+        assert bag(got) == bag(expected), "routed %r, python %r" % (got, expected)
         e.cr.rollback()
 finally:
     shim.MODE, shim.SAMPLE = previous_mode, previous_sample
@@ -582,39 +636,30 @@ shim.reset_breaker()
 previous_mode, previous_sample = shim.MODE, shim.SAMPLE
 try:
     with env_for(2) as e:
-        categories = (
-            e["res.partner.tag"]
+        # existing users, because creating one is a security write that
+        # taints the cursor for routing; public_user is archived in base
+        admin = e.ref("base.user_admin")
+        archived = e.ref("base.public_user")
+        assert not archived.active, "the contract needs an archived comodel record"
+        roles = (
+            e["res.role"]
             .sudo()
             .create(
                 [
-                    {"name": "m2m group contract A"},
-                    {"name": "m2m group contract B"},
-                    {"name": "m2m group contract archived", "active": False},
-                ]
-            )
-        )
-        partners = (
-            e["res.partner"]
-            .sudo()
-            .create(
-                [
-                    {
-                        "name": "m2m group two",
-                        "tag_ids": [(6, 0, categories[:2].ids)],
-                    },
+                    {"name": "m2m group one", "user_ids": [(6, 0, admin.ids)]},
                     {"name": "m2m group none"},
                     {
                         "name": "m2m group archived only",
-                        "tag_ids": [(6, 0, categories[2:].ids)],
+                        "user_ids": [(6, 0, archived.ids)],
                     },
                 ]
             )
         )
         e.flush_all()
-        model = e["res.partner"]
+        model = e["res.role"]
         args = (
-            [("id", "in", partners.ids)],
-            ["tag_ids"],
+            [("id", "in", roles.ids)],
+            ["user_ids"],
             ["__count", "id:array_agg"],
         )
         shim.MODE, shim.SAMPLE = "off", 0.0
@@ -624,7 +669,8 @@ try:
         routed_before = shim.STATS["kernel"]
         got = model._read_group(*args)
         assert shim.STATS["kernel"] == routed_before + 1, (
-            "the many2many groupby did not route"
+            "the many2many groupby did not route: %r"
+            % {k: v for k, v in shim.GATE_REASONS.items() if k[0] == "res.role"}
         )
 
         def rows(result):
@@ -634,7 +680,9 @@ try:
             rows(got),
             rows(expected),
         )
-        assert len(expected) == 3, expected
+        # every role is in exactly one group, the archived-only one included
+        grouped = sorted(id_ for _g, _n, ids in expected for id_ in ids)
+        assert grouped == sorted(roles.ids), (grouped, roles.ids, expected)
         e.cr.rollback()
 finally:
     shim.MODE, shim.SAMPLE = previous_mode, previous_sample
@@ -728,6 +776,12 @@ if "mail.mail" in reg:
     shim.MODE, shim.SAMPLE = "on", 0.0
     try:
         with env_for(2) as e:
+            # the refusal is decided per row to label, so a database with no
+            # mail yet must be given one; the transaction rolls back
+            e["mail.mail"].sudo().create(
+                {"subject": "label contract", "body_html": "<p/>"}
+            )
+            e.flush_all()
             request = {
                 "model": "mail.mail",
                 "method": "search_read",

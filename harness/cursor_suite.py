@@ -49,6 +49,7 @@ if MODE == "rust":
     db_shim.CONNINFO = conninfo
     db_shim.PSYCOPG_CONNINFO = None
     db_shim.install()
+    db_shim.set_active(True)
 
 import importlib
 import pathlib

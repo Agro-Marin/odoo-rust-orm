@@ -60,16 +60,40 @@ mkdir -p "$OUT"
 # `copy encoder` failing for a reason that has nothing to do with the code.
 # The tours stage already derived its own conf for exactly this; the rest of
 # the battery gets the same treatment here rather than five stages on.
-if grep -qE '^rust_engine_db *=' "$RUSTORM_ODOO_CONF"; then
-  armed_db=$(sed -nE 's/^rust_engine_db *= *//p' "$RUSTORM_ODOO_CONF" | head -1)
-  if [ "$armed_db" != "$DB" ]; then
-    {
-      grep -vE '^rust_engine_db *=' "$RUSTORM_ODOO_CONF"
-      printf 'rust_engine_db = %s\n' "$DB"
-    } > "$OUT/verify.conf"
+# And a conf that was never armed at all -- the workspace conf of a checkout
+# that has not deployed the addon -- fails the same seven stages the same way:
+# `import rust_orm_shim` finds nothing because no `post_load` registered it,
+# and a script that installs the db shim itself gets psycopg pools because
+# `ACTIVE` follows the mode the addon never applied. Measured 2026-09-18 on a
+# conf whose addons_path did not name this checkout: runtime contracts, replay
+# gate controls, load into odoo, copy encoder, write path, search path and
+# every user all FAIL with nothing wrong in the code. So the battery derives
+# the armed conf it needs from whatever it was given, as the tours stage
+# always has, and says so.
+conf_addons=$(sed -nE 's/^addons_path *= *//p' "$RUSTORM_ODOO_CONF" | tail -1)
+conf_swm=$(sed -nE 's/^server_wide_modules *= *//p' "$RUSTORM_ODOO_CONF" | tail -1)
+armed_db=$(sed -nE 's/^rust_engine_db *= *//p' "$RUSTORM_ODOO_CONF" | tail -1)
+if [ "$armed_db" != "$DB" ] \
+   || ! printf '%s' "$conf_swm" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -qx rust_engine \
+   || ! printf '%s' "$conf_addons" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -qx "$ROOT/addons"; then
+  {
+    grep -vE '^(addons_path|server_wide_modules|rust_engine_db|rust_engine_mode) *=' "$RUSTORM_ODOO_CONF"
+    if printf '%s' "$conf_addons" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -qx "$ROOT/addons"; then
+      printf 'addons_path = %s\n' "$conf_addons"
+    else
+      printf 'addons_path = %s,%s/addons\n' "$conf_addons" "$ROOT"
+    fi
+    swm=$(printf '%s' "${conf_swm:-base,web}" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -vx rust_engine | grep -v '^$' | paste -sd, -)
+    printf 'server_wide_modules = %s,rust_engine\n' "${swm:-base,web}"
+    printf 'rust_engine_db = %s\n' "$DB"
+    printf 'rust_engine_mode = %s\n' "$(sed -nE 's/^rust_engine_mode *= *//p' "$RUSTORM_ODOO_CONF" | tail -1 | grep -x -e on -e shadow || echo shadow)"
+  } > "$OUT/verify.conf"
+  if [ -n "$armed_db" ]; then
     echo "  note: the conf arms rust_engine for '$armed_db'; this run uses a copy armed for '$DB'"
-    export RUSTORM_ODOO_CONF="$OUT/verify.conf"
+  else
+    echo "  note: the conf does not arm rust_engine; this run uses a copy armed for '$DB' (mode shadow)"
   fi
+  export RUSTORM_ODOO_CONF="$OUT/verify.conf"
 fi
 
 # The same conf with the engine taken out, for every stage whose output is the

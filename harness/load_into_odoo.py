@@ -40,6 +40,7 @@ rust_db = engine_py.RustDb(conninfo)
 db_shim.RUST_DB = rust_db
 db_shim.CONNINFO = conninfo
 db_shim.install()
+db_shim.set_active(True)
 
 orm_shim.KERNEL = engine_py.RustKernel.build(
     rust_db, pathlib.Path(EXPORT).read_text(encoding="utf-8")
@@ -250,16 +251,25 @@ with registry.cursor() as cr:
         )
         after = dict(orm_shim.stats())
         recs = e["res.country"].browse([r["id"] for r in rows])
-        warm = (
-            after["kernel"] - before["kernel"] >= 1
-            and all(e.cache.contains(r, e["res.country"]._fields["name"]) for r in recs)
-            and all(
+        warm_parts = {
+            "routed": after["kernel"] - before["kernel"] >= 1,
+            "name cached": all(
+                e.cache.contains(r, e["res.country"]._fields["name"]) for r in recs
+            ),
+            "currency cached": all(
                 e.cache.contains(r, e["res.country"]._fields["currency_id"])
                 for r in recs
+            ),
+            "currency agrees": [r.currency_id.id for r in recs]
+            == [r["currency_id"] and r["currency_id"][0] for r in rows],
+        }
+        warm = all(warm_parts.values())
+        if not warm:
+            print("LOAD cache warm parts: %r" % warm_parts)
+            print(
+                "LOAD cache warm detail: uid=%r rows=%r values=%r su=%r ctx=%r"
+                % (e.uid, rows, [r.currency_id.id for r in recs], e.su, e.context)
             )
-            and [r.currency_id.id for r in recs]
-            == [r["currency_id"] and r["currency_id"][0] for r in rows]
-        )
         print(
             "LOAD cache warm after routed read: %s (routed=%d)"
             % ("ok" if warm else "WRONG", after["kernel"] - before["kernel"])

@@ -45,6 +45,7 @@ rust_db = engine_py.RustDb(conninfo)
 db_shim.RUST_DB = rust_db
 db_shim.CONNINFO = conninfo
 db_shim.install()
+db_shim.set_active(True)
 orm_shim.KERNEL = engine_py.RustKernel.build(
     rust_db, pathlib.Path(EXPORT).read_text(encoding="utf-8")
 )
