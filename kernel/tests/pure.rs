@@ -196,8 +196,6 @@ fn compile(reg: &Registry, dom: serde_json::Value) -> String {
 
 #[test]
 fn nesting_deeper_than_odoo_allows_is_refused_at_parse_time() {
-    // `[op, leaf, <rest>]` with the operator alternating never flattens, so
-    // every level is one more level of structural depth, as Odoo counts it.
     fn alternating(levels: usize) -> serde_json::Value {
         let leaf = json!(["name", "=", "x"]);
         let mut dom = vec![leaf.clone()];
@@ -217,9 +215,6 @@ fn nesting_deeper_than_odoo_allows_is_refused_at_parse_time() {
 
 #[test]
 fn a_flat_run_of_the_same_operator_is_one_level_and_compiles() {
-    // 20,000 leaves under 19,999 `&`: Odoo's DomainNary flattens this to one
-    // AND, and so must the parser, or the tree is 20,000 deep and the
-    // compiler recurses over every level of it.
     let reg = base_registry();
     let mut dom: Vec<serde_json::Value> = vec![json!("&"); 19_999];
     dom.extend((0..20_000).map(|i| json!(["credit_limit", ">", i])));
@@ -247,8 +242,6 @@ fn a_flat_run_of_the_same_operator_is_one_level_and_compiles() {
 
 #[test]
 fn a_run_of_negations_collapses_in_pairs() {
-    // Odoo's `~~x` is `x`. Ten thousand `!` used to build a tree ten thousand
-    // deep that `compile` then recursed over until the stack ran out.
     let reg = base_registry();
     let mut dom: Vec<serde_json::Value> = vec![json!("!"); 10_000];
     dom.push(json!(["name", "=", "x"]));
@@ -1937,7 +1930,6 @@ fn not_negates_the_optimised_leaf_not_the_raw_one() {
     stamp.pg_type = "timestamp".into();
     partner.fields.insert("write_date".into(), stamp);
     let reg = registry(vec![partner]);
-    // `write_date <= False` is FALSE before negation, so its negation is TRUE
     let negated = compile(&reg, serde_json::json!(["!", ["write_date", "<=", false]]));
     let everything = compile(&reg, serde_json::json!([["id", "not in", []]]));
     assert_eq!(negated, everything, "got: {negated}");
@@ -2396,24 +2388,20 @@ fn company_dependent_registry(live_fallback: Option<serde_json::Value>) -> Regis
 
 #[test]
 fn the_company_dependent_guard_follows_the_live_fallback_not_the_export() {
-    // the live ir.default says 'abc': a NULL column IS 'abc', so no guard
     let reg = company_dependent_registry(Some(json!("abc")));
     let sql = count_sql(&reg, json!([["barcode", "=", "abc"]]));
     assert!(!sql.contains("IS NOT NULL"), "{sql}");
     let other = count_sql(&reg, json!([["barcode", "=", "zzz"]]));
     assert!(other.contains("IS NOT NULL"), "{other}");
-    // the like family is evaluated too
     let like = count_sql(&reg, json!([["barcode", "ilike", "B"]]));
     assert!(!like.contains("IS NOT NULL"), "{like}");
     let not_like = count_sql(&reg, json!([["barcode", "not ilike", "B"]]));
     assert!(not_like.contains("IS NOT NULL"), "{not_like}");
-    // an unset comparand matches a falsy fallback: no guard, the NULL rows count
     let reg = company_dependent_registry(Some(json!("")));
     let unset = count_sql(&reg, json!([["barcode", "=", false]]));
     assert!(!unset.contains("IS NOT NULL"), "{unset}");
     let set = count_sql(&reg, json!([["barcode", "!=", false]]));
     assert!(set.contains("IS NOT NULL"), "{set}");
-    // without a live default the export-time value stands
     let reg = company_dependent_registry(None);
     let sql = count_sql(&reg, json!([["barcode", "=", "export-time"]]));
     assert!(!sql.contains("IS NOT NULL"), "{sql}");
@@ -2520,8 +2508,6 @@ fn falsy_registry() -> Registry {
     ])
 }
 
-// Measured against Odoo 19 on a 73-module database; every expectation below
-// is the WHERE clause `Model._search(Domain(...)).select()` actually emits.
 #[test]
 fn an_inequality_against_unset_folds_to_false_without_a_falsy_value() {
     let reg = falsy_registry();
@@ -2544,7 +2530,6 @@ fn an_inequality_against_unset_compares_against_the_falsy_value() {
         "'' > '' is false, so no null branch: {sql}"
     );
 
-    // `>=` admits the falsy value itself, and NULL is stored as that value.
     let sql = compile(&reg, json!([["name", ">=", false]]));
     assert!(sql.contains("\"name\" >= ''"), "got {sql}");
     assert!(sql.contains("IS NULL"), "got {sql}");
@@ -2565,14 +2550,10 @@ fn a_many2one_reference_stores_an_unset_value_as_zero() {
     );
     assert!(sql.contains("IS NULL"), "got {sql}");
 
-    // Odoo emits `res_id NOT IN (0)` and nothing else: SQL's own NULL
-    // semantics already drop the NULL rows, and without the 0 a row holding
-    // it would wrongly count as set.
     let sql = compile(&reg, json!([["res_id", "!=", false]]));
     assert!(sql.contains("NOT IN (0)"), "got {sql}");
     assert!(!sql.contains("NULL"), "got {sql}");
 
-    // The reverse direction: an explicit 0 also matches the NULL rows.
     let sql = compile(&reg, json!([["res_id", "in", [0]]]));
     assert!(sql.contains("IS NULL"), "got {sql}");
 
@@ -2588,12 +2569,9 @@ fn a_many2one_reference_stores_an_unset_value_as_zero() {
 fn id_is_the_one_integer_with_no_falsy_value() {
     let reg = falsy_registry();
 
-    // `fields.Id` declares none, so there is nothing for False to match and
-    // the NOT NULL column cannot be null either.
     let sql = compile(&reg, json!([["id", "=", false]]));
     assert!(sql.contains("FALSE"), "got {sql}");
 
-    // Every other integer keeps the type's 0.
     let sql = compile(&reg, json!([["color", "=", false]]));
     assert!(sql.contains("IN (0)"), "got {sql}");
     assert!(sql.contains("IS NULL"), "got {sql}");
@@ -2620,9 +2598,6 @@ fn a_boolean_field_takes_no_operator_but_membership() {
 
 #[test]
 fn the_exported_falsy_value_overrides_what_the_type_would_say() {
-    // The point of carrying `falsy` on the field rather than deriving it:
-    // when Odoo's field CLASS disagrees with its type, the export wins and a
-    // class this kernel has never heard of is still answered correctly.
     let mut declares_none = field("name", FieldType::Char);
     declares_none.falsy = None;
     let mut declares_one = field("res_id", FieldType::Datetime);
@@ -2635,13 +2610,9 @@ fn the_exported_falsy_value_overrides_what_the_type_would_say() {
         vec![field("id", FieldType::Integer), declares_none, declares_one],
     )]);
 
-    // A char that declares no falsy value folds, where the type rule would
-    // have compared against ''.
     let sql = compile(&reg, json!([["name", ">", false]]));
     assert!(sql.contains("FALSE"), "got {sql}");
 
-    // A datetime that declares one compares against it, where the type rule
-    // would have folded the whole condition to FALSE.
     let sql = compile(&reg, json!([["res_id", ">=", false]]));
     assert!(!sql.contains("FALSE"), "got {sql}");
     assert!(sql.contains("1970-01-01"), "got {sql}");
@@ -2653,9 +2624,6 @@ fn the_exported_falsy_value_overrides_what_the_type_would_say() {
 
 #[test]
 fn the_type_derivation_is_only_a_bootstrap_fallback() {
-    // What a registry built from `ir_model` alone must guess, since the
-    // column type is all it can see. Both exceptions are keyed by name or
-    // by type, and neither is guessable from `integer` alone.
     assert_eq!(
         FieldType::Integer.falsy_json_for_type("color"),
         Some(json!(0))
@@ -2670,15 +2638,6 @@ fn the_type_derivation_is_only_a_bootstrap_fallback() {
     assert_eq!(FieldType::Char.falsy_json_for_type("name"), Some(json!("")));
 }
 
-// The comodel's record rules, and the field that turns them off.
-//
-// Odoo's `_optimize_any_with_rights` rewrites `any` to `any!` when the field
-// declares `bypass_search_access`, and `_search(bypass_access=True)` then
-// skips the comodel's ACL AND its record rules. Measured on a real database:
-// an internal user who CANNOT read a private partner still finds the
-// analytic account that points at it, because `partner_id` bypasses.
-/// `base_registry()` with `res.partner.country_id` carrying a given
-/// `bypass_search_access`, since the flag is what decides the traversal.
 fn registry_with_country_bypass(bypass: Option<bool>) -> Registry {
     let mut country_id = m2o("country_id", "res.country");
     country_id.bypass_search_access = bypass;
@@ -2744,12 +2703,6 @@ fn a_bypassing_field_drops_the_comodels_rules() {
     assert!(!sql.contains("\"code\""), "the rule must be skipped: {sql}");
 }
 
-// `any!` is Odoo's INTERNAL spelling for "skip the comodel's access", and
-// `Domain()` rejects it in an incoming domain. This kernel briefly honoured
-// it as a bypass, which turned a harmless extra spelling into a record-rule
-// bypass a caller could ASK for: routing off gave a ValueError, routing on
-// gave the rows. Refused at the parser now, so no operator string can grant
-// a bypass and only the field's own declaration can.
 #[test]
 fn the_any_bang_operator_is_refused_as_odoo_refuses_it() {
     let reg = registry_with_country_bypass(Some(false));
@@ -2760,7 +2713,6 @@ fn the_any_bang_operator_is_refused_as_odoo_refuses_it() {
         let msg = format!("{err:#}");
         assert!(msg.contains("internal"), "{op}: got {msg}");
     }
-    // the ordinary spelling still compiles, and still applies the rules
     let sql = compile_with(
         &reg,
         &country_rule(),
@@ -2770,11 +2722,6 @@ fn the_any_bang_operator_is_refused_as_odoo_refuses_it() {
     assert!(sql.contains("\"code\""), "got {sql}");
 }
 
-// The same internal spelling on an x2many. Odoo's `_optimize_any_with_rights`
-// and `child_of`/`parent_of` on a many2many emit `any!` into a trusted domain,
-// and `_base.py` skips the comodel's access for it on every relational field;
-// the x2many path used to hand the field's own flag to `comodel_rules` and
-// apply the rules Odoo skips -- fewer rows, or a denial, silently.
 #[test]
 fn any_bang_on_an_x2many_skips_the_comodels_rules_as_it_does_on_a_many2one() {
     let reg = base_registry();
@@ -2812,10 +2759,6 @@ fn any_bang_on_an_x2many_skips_the_comodels_rules_as_it_does_on_a_many2one() {
 }
 #[test]
 fn a_registry_that_cannot_see_the_flag_refuses_rather_than_guessing() {
-    // `ir_model_fields` does not record `bypass_search_access`, so a
-    // bootstrap registry carries None. Applying the rules would answer with
-    // fewer rows than Odoo wherever the field bypasses, and skipping them
-    // would answer with more; neither is safe to guess.
     let reg = registry_with_country_bypass(None);
     let err = compile_with(
         &reg,
@@ -2826,8 +2769,6 @@ fn a_registry_that_cannot_see_the_flag_refuses_rather_than_guessing() {
     let msg = format!("{err:#}");
     assert!(msg.contains("bypasses"), "got {msg}");
 
-    // Only where it would have mattered: a comodel with no rules is the same
-    // answer either way, so the traversal still compiles.
     let sql = compile_with(
         &reg,
         &RuleSet::default(),
@@ -2837,8 +2778,6 @@ fn a_registry_that_cannot_see_the_flag_refuses_rather_than_guessing() {
     assert!(sql.contains("res_country"), "got {sql}");
 }
 
-/// A one2many over `res.country`, inverted by a field whose column may or
-/// may not exist.
 fn registry_with_o2m(inverse_has_column: bool) -> Registry {
     let mut lines = field("line_ids", FieldType::One2many);
     lines.has_column = false;
@@ -2869,13 +2808,6 @@ fn registry_with_o2m(inverse_has_column: bool) -> Registry {
 
 #[test]
 fn a_one2many_whose_inverse_has_no_column_is_refused() {
-    // `store` on the one2many says the INVERSE is a column, and Odoo does not
-    // require that: `account.analytic.account.line_ids` inverts
-    // `account.analytic.line.auto_account_id`, a non-stored many2one with a
-    // `search=` method. Asking the one2many's own flag emitted
-    // `s0_account_analytic_line.auto_account_id` and learned from PostgreSQL
-    // that it does not exist -- one wasted round trip per call, and a
-    // database ERROR in the log for a case the compiler can see.
     let reg = registry_with_o2m(false);
     let err = compile_res(&reg, json!([["line_ids.name", "=", "X"]])).expect_err("must refuse");
     let msg = format!("{err:#}");
@@ -2885,7 +2817,6 @@ fn a_one2many_whose_inverse_has_no_column_is_refused() {
     );
     assert!(msg.contains("partner_id"), "names the inverse: {msg}");
 
-    // The same shape with a real column still compiles.
     let reg = registry_with_o2m(true);
     let sql = compile(&reg, json!([["line_ids.name", "=", "X"]]));
     assert!(sql.contains("res_country"), "got {sql}");
@@ -3144,10 +3075,6 @@ fn trigram_registry() -> Registry {
     reg
 }
 
-// Measured on the fixture with `SET enable_seqscan = off`: WITH this
-// conjunct the plan is a `Bitmap Index Scan on product_template__name_index`;
-// WITHOUT it the plan is a `Seq Scan` even with sequential scans disabled,
-// which is to say the index is unusable rather than merely unattractive.
 #[test]
 fn a_translated_trigram_field_gets_the_indexable_conjunct() {
     let reg = trigram_registry();
@@ -3157,7 +3084,6 @@ fn a_translated_trigram_field_gets_the_indexable_conjunct() {
         "the conjunct must be the index's own expression: {sql}"
     );
     assert!(sql.contains("ILIKE unaccent('%abc%')"), "got {sql}");
-    // and the base condition is still there, so no row can be lost by it
     assert!(sql.contains("->> 'en_US'"), "got {sql}");
 }
 
@@ -3166,15 +3092,10 @@ fn the_conjunct_is_withheld_wherever_odoo_withholds_it() {
     let reg = trigram_registry();
     let has = |dom: serde_json::Value| compile(&reg, dom).contains("jsonb_path_query_array");
 
-    // a run shorter than a trigram cannot constrain the index
     assert!(!has(json!([["name", "like", "ab"]])));
-    // "does not contain" is not implied by the prefilter
     assert!(!has(json!([["name", "not ilike", "abc"]])));
-    // and the positive case does get it, so the assertions above are not
-    // passing for want of any conjunct at all
     assert!(has(json!([["name", "ilike", "abc"]])));
 
-    // no pg_trgm: the index cannot exist, so the conjunct is dead weight
     let mut off = trigram_registry();
     off.has_trigram = false;
     assert!(!compile(&off, json!([["name", "ilike", "abc"]])).contains("jsonb_path_query_array"));
@@ -3182,8 +3103,6 @@ fn the_conjunct_is_withheld_wherever_odoo_withholds_it() {
 
 #[test]
 fn an_untranslated_or_unindexed_field_gets_nothing() {
-    // Odoo gates on BOTH `translate` and `index == "trigram"`; the index is
-    // over the jsonb document, and a plain column has no such document.
     let plain = trigram_registry();
     let name = plain
         .get("res.partner")
@@ -3214,9 +3133,6 @@ fn an_untranslated_or_unindexed_field_gets_nothing() {
 
 #[test]
 fn an_equality_on_a_translated_trigram_field_is_accelerated_too() {
-    // `=` normalises to a single-valued `in`, which Odoo accelerates through
-    // `value_to_translated_trigram_pattern` and compares with LIKE, not
-    // ILIKE -- the equality it accompanies is case-sensitive.
     let reg = trigram_registry();
     let sql = compile(&reg, json!([["name", "=", "abcd"]]));
     assert!(sql.contains("jsonb_path_query_array"), "got {sql}");
@@ -3226,8 +3142,6 @@ fn an_equality_on_a_translated_trigram_field_is_accelerated_too() {
         "an equality is case-sensitive: {sql}"
     );
 
-    // Withheld where Odoo withholds it: a value below a trigram, a falsy
-    // operand, more than one value, and the negative operator.
     for dom in [
         json!([["name", "=", "ab"]]),
         json!([["name", "=", false]]),
@@ -3241,12 +3155,6 @@ fn an_equality_on_a_translated_trigram_field_is_accelerated_too() {
     }
 }
 
-// The reachability walk asks questions the request never asked, and answering
-// them through a form that REFUSES files a refusal per question -- which is
-// what a campaign reads as a capability the kernel lacks. Each question has a
-// non-refusing form, and these pin that the pair agree on every answer: a
-// divergence would either re-fill the census with noise or silently narrow the
-// walk, and the walk deciding fewer comodels means record rules left uncompiled.
 #[test]
 fn the_quiet_registry_lookup_agrees_with_the_demanding_one() {
     let reg = registry(vec![model(
@@ -3278,8 +3186,6 @@ fn the_quiet_path_walk_agrees_with_the_demanding_one() {
         ],
     );
     partner.fields.get_mut("parent_id").unwrap().relation = Some("res.partner".into());
-    // a computed field with no column and no related is the shape the walk
-    // meets on `display_name` and on every python-computed field
     let mut computed = field("is_member", FieldType::Boolean);
     computed.has_column = false;
     computed.stored = false;
@@ -3320,7 +3226,6 @@ fn the_quiet_path_walk_agrees_with_the_demanding_one() {
             assert_eq!(q, d, "they resolved {path:?} differently");
         }
     }
-    // a test where every path resolves, or none does, compares nothing
     assert!(
         resolved >= 3 && refused >= 2,
         "resolved {resolved}, refused {refused}"
@@ -3361,12 +3266,9 @@ fn a_request_naming_no_groupby_is_answered_not_refused() {
         trusted_domain: false,
     };
 
-    // the demanding form refuses a missing groupby because read_group needs
-    // one; the walk is only asking which fields the request mentions
     assert!(req(json!(null)).groupby_names().is_err());
     assert!(req(json!(null)).groupby_names_seen().is_empty());
 
-    // and where the demanding form answers, the two must agree
     for groupby in [
         json!("country_id"),
         json!(["country_id", "state_id"]),
@@ -3381,15 +3283,6 @@ fn a_request_naming_no_groupby_is_answered_not_refused() {
     }
 }
 
-// A company-dependent many2one keeps its id inside a `jsonb` keyed by company.
-// Ordering by one used to join the comodel on the RAW column, which asks
-// PostgreSQL for `jsonb = integer` and kills the statement before it runs:
-//
-//   ERROR: operator does not exist: jsonb = integer
-//
-// Found by the fuzz stage on a 162-module fixture (base+mail has no such field
-// on a model whose comodel is ordered by something other than id), and it hit
-// `search_read` as well as `read_group` -- any order term naming the field.
 #[test]
 fn ordering_by_a_company_dependent_many2one_reads_it_out_of_its_jsonb() {
     let mut currency = model("res.currency", "name", vec![field("name", FieldType::Char)]);
@@ -3414,7 +3307,6 @@ fn ordering_by_a_company_dependent_many2one_reads_it_out_of_its_jsonb() {
     let reg = registry(vec![partner, currency]);
     let sql = order_sql(&reg, "res.partner", "property_purchase_currency_id").unwrap();
 
-    // the join reads the id out of the jsonb, never the column itself
     assert!(
         sql.contains("->"),
         "the join must extract from the jsonb, got: {sql}"
@@ -3424,7 +3316,6 @@ fn ordering_by_a_company_dependent_many2one_reads_it_out_of_its_jsonb() {
         "the raw jsonb column is being compared to an id: {sql}"
     );
 
-    // and a plain many2one still joins on its column, unchanged
     let mut plain = model(
         "res.partner",
         "id",
@@ -3445,15 +3336,6 @@ fn ordering_by_a_company_dependent_many2one_reads_it_out_of_its_jsonb() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The write path's statement composition
-//
-// `harness/write_sql_contract.json` holds the statement text, and TWO tests
-// read it: this one asserts the kernel composes it, and `test_shims.py`
-// asserts the fork's own `PostgresBackend` composes the same thing from a stub
-// model. One literal, derived twice -- so a change to either composer fails
-// against the other rather than against a copy of itself.
-// ---------------------------------------------------------------------------
 
 fn write_registry() -> Registry {
     let contract = contract();
@@ -3466,8 +3348,6 @@ fn write_registry() -> Registry {
             f.pg_type = "jsonb".into();
             f.translated = true;
         }
-        // `whole` is `translate is True`; `term` is a callable such as
-        // `html_translate`, stored in the same column and written differently.
         f.translate_whole = translate == "whole";
         fields.push(f);
     }
@@ -3546,8 +3426,6 @@ fn the_kernel_composes_the_insert_the_forks_backend_composes() {
 
 #[test]
 fn an_insert_naming_a_column_this_registry_lacks_is_refused() {
-    // A column added by an upgrade the kernel was not rebuilt for: refusing
-    // here hands the create to the delegate instead of an error mid-create.
     let reg = write_registry();
     for (column, want) in [
         ("nonesuch", "has no field nonesuch"),
@@ -3568,8 +3446,6 @@ fn an_insert_naming_a_column_this_registry_lacks_is_refused() {
 fn a_whole_value_translated_column_binds_its_value_three_times() {
     let reg = write_registry();
     let m = reg.get("res.partner").unwrap();
-    // The merge expression names the value three times, so the caller binds it
-    // three times; a term-translated one is a plain assignment.
     assert_eq!(
         odoo_kernel::write::value_repeats(m.fields.get("title").unwrap()),
         3
@@ -3588,11 +3464,8 @@ fn a_whole_value_translated_column_binds_its_value_three_times() {
 fn the_columns_whose_statement_would_need_pythons_knowledge_are_refused() {
     let reg = write_registry();
     for (fname, want) in [
-        // the assignment interpolates ir.default's per-company fallbacks
         ("credit_limit", "company-dependent"),
-        // a registry built from ir_model carries no declared cast
         ("legacy", "no declared column cast"),
-        // and a name this registry does not carry at all
         ("nonesuch", "has no field nonesuch"),
     ] {
         let err = odoo_kernel::write::update_rows_sql(
@@ -3610,9 +3483,6 @@ fn the_columns_whose_statement_would_need_pythons_knowledge_are_refused() {
 
 #[test]
 fn a_group_with_one_refused_column_refuses_whole() {
-    // The delegate writes the group; splitting it here would issue two
-    // statements where Python issues one, and the second would not see the
-    // first's row locks in the order Python takes them.
     let reg = write_registry();
     assert!(
         odoo_kernel::write::update_rows_sql(
@@ -3626,9 +3496,6 @@ fn a_group_with_one_refused_column_refuses_whole() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The port's dialect: `$N` into Odoo's `%s`
-// ---------------------------------------------------------------------------
 
 #[test]
 fn placeholders_become_percent_s_in_text_order_one_parameter_each() {
@@ -3642,8 +3509,6 @@ fn placeholders_become_percent_s_in_text_order_one_parameter_each() {
         sql,
         "\"t\".\"a\" = %s AND \"t\".\"b\" = %s AND \"t\".\"c\" = %s"
     );
-    // reordered and repeated: each occurrence binds its own copy, in the order
-    // the text names them, because Odoo's cursor has no numbered parameters
     assert_eq!(params, vec![json!("x"), json!(10), json!("x")]);
 }
 
@@ -3698,9 +3563,6 @@ fn a_placeholder_with_no_value_or_an_open_literal_is_refused() {
 
 #[test]
 fn a_conditional_equality_on_a_dotted_path_is_decided_inside_the_traversal() {
-    // `('country_id.name', '=?', '')` is `country_id any [name =? '']` in Odoo,
-    // which is `country_id any []`: the partner HAS a country. Collapsing the
-    // whole leaf to TRUE first answered every row.
     let reg = base_registry();
     let unset = compile_res(&reg, json!([["country_id.name", "=?", ""]])).unwrap();
     assert_eq!(
@@ -3719,7 +3581,6 @@ fn a_conditional_equality_on_a_dotted_path_is_decided_inside_the_traversal() {
         .unwrap()
     );
 
-    // a plain field keeps the collapse, which is what `=?` is for
     assert_eq!(
         compile_res(&reg, json!([["name", "=?", false]])).unwrap(),
         compile_res(&reg, json!([])).unwrap()
@@ -3728,11 +3589,6 @@ fn a_conditional_equality_on_a_dotted_path_is_decided_inside_the_traversal() {
 
 #[test]
 fn a_dotted_leaf_compiles_as_its_any_form_for_every_operator_that_folds() {
-    // Odoo turns `a.b op v` into `a any [b op v]` before it optimises the
-    // operator. `=?` was the one rewrite the kernel applied to the whole path
-    // first; these are the operators and values whose leaf can fold to a
-    // constant, which is exactly where applying it outside the traversal would
-    // change the answer.
     let reg = base_registry();
     let mut diffs = Vec::new();
     for (op, v) in [

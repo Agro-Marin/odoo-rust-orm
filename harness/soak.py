@@ -117,9 +117,6 @@ class Case:
             got = json.loads(text).get("result")
             ok, _path = eq(self.want_result, got, "$")
             if not ok and self._order_is_not_total():
-                # two rows equal under the requested order come back in
-                # either order, from Python as much as from the kernel: the
-                # baseline pinned one of them; compare as a set instead
                 ok, _path = eq(_canonical(self.want_result), _canonical(got), "$")
             return ok, json.dumps(self.want_result)[:200]
         return status != 200, "an error (%s)" % self.want_status
@@ -165,9 +162,6 @@ def baseline_cases(path, auth, other_uid):
         for c in json.loads(pathlib.Path(corpus_path).read_text(encoding="utf-8"))
     }
     pinned = auth.get("uid") if auth.get("mode") == "pinned" else None
-    # a token server refuses `su` unless it was started with
-    # RUSTORM_SERVE_ALLOW_SU=1, and /health says which; a case the server
-    # would answer 403 by policy is not a comparison
     su_refused = auth.get("mode") == "token" and not auth.get("allow_su", True)
     out, dropped = [], 0
     for exp in data["cases"]:
@@ -293,9 +287,6 @@ def main() -> int:
                 continue
             c.want_text = (status, text)
         elif status == 422:
-            # the designed fail-closed path, the same bucket diff.py keeps
-            # apart from a wrong answer; it must stay a refusal for the whole
-            # soak, so the case is kept with the refusal as its expectation
             refused += 1
             c.want_status, c.want_result = None, None
             c.want_text = (status, text)

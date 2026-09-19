@@ -47,9 +47,6 @@ fi
 if [ "$MODE" = scale ]; then
 
   prev=-1
-  # a module whose install raises (a view that no longer applies, a data
-  # file that fails) is skipped with everything that depends on it, so one
-  # defect does not stop the rest of the tree; the skipped names are printed
   broken=""
   for round in 1 2 3 4 5 6 7 8 9 10; do
     filter=""
@@ -59,9 +56,6 @@ if [ "$MODE" = scale ]; then
     if [ -n "$broken" ]; then
       filter="$filter and name <> all(string_to_array('$broken', ','))"
     fi
-    # a module whose dependency chain reaches a module the tree does not carry
-    # (or an uninstallable one) aborts the whole -i list, so the round skips it
-    # and everything that depends on it
     installable="with recursive bad as (
         select m.name from ir_module_module m
           join ir_module_module_dependency d on d.module_id = m.id

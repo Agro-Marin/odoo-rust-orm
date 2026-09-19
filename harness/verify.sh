@@ -1,31 +1,34 @@
 #!/usr/bin/env bash
-# usage: harness/verify.sh [--db NAME] [--build MODULES] [--quick] [--out DIR]
-#
-# Runs every verification stage this repository claims against one Odoo
-# database and prints one OK / FAIL / SKIP line per stage. Exit 0 only when
-# every stage that RAN passed; SKIP never fakes a pass.
-#
-#   --db NAME        the database (default $RUSTORM_DB, else rustorm_probe);
-#                    the fixture stage COMMITS seed rows, so the name must
-#                    contain rustorm, scratch or probe unless RUSTORM_ALLOW_SEED=1
-#   --build MODULES  create/install the database first (comma-separated modules)
-#   --quick          skip the kernel sweep, fuzz, registry sweep, tours and soak
-#   --out DIR        where logs and artifacts go (default $RUSTORM_VERIFY_OUT or a mktemp dir)
-#
-# environment: RUSTORM_WORKSPACE, RUSTORM_ODOO_ROOT, RUSTORM_ODOO_CONF, RUSTORM_PYTHON,
-#   RUSTORM_DSN / RUSTORM_PGHOST / RUSTORM_PGUSER (also honoured by the psql calls here),
-#   RUSTORM_STAGE_TIMEOUT (seconds per stage, default 1800; expiry is a FAIL),
-#   RUSTORM_REPLAY (capture file), RUSTORM_TOUR_TAGS, RUSTORM_FUZZ_SEEDS,
-#   RUSTORM_SOAK_THREADS / RUSTORM_SOAK_SECONDS / RUSTORM_SOAK_RSS_GROWTH,
-#   RUSTORM_MIN_COMPARED_{SWEEP,CORPUS,FUZZ}, RUSTORM_MAX_REFUSED_{SWEEP,CORPUS,FUZZ},
-#   RUSTORM_OTHER_DB, RUSTORM_ORM_TEST_DB
 
 set -uo pipefail
 
+usage() {
+  cat <<'USAGE'
+usage: harness/verify.sh [--db NAME] [--build MODULES] [--quick] [--out DIR]
+
+Runs every verification stage this repository claims against one Odoo
+database and prints one OK / FAIL / SKIP line per stage. Exit 0 only when
+every stage that RAN passed; SKIP never fakes a pass.
+
+  --db NAME        the database (default $RUSTORM_DB, else rustorm_probe);
+                   the fixture stage COMMITS seed rows, so the name must
+                   contain rustorm, scratch or probe unless RUSTORM_ALLOW_SEED=1
+  --build MODULES  create/install the database first (comma-separated modules)
+  --quick          skip the kernel sweep, fuzz, registry sweep, tours and soak
+  --out DIR        where logs and artifacts go (default $RUSTORM_VERIFY_OUT or a mktemp dir)
+
+environment: RUSTORM_WORKSPACE, RUSTORM_ODOO_ROOT, RUSTORM_ODOO_CONF, RUSTORM_PYTHON,
+  RUSTORM_DSN / RUSTORM_PGHOST / RUSTORM_PGUSER (also honoured by the psql calls here),
+  RUSTORM_STAGE_TIMEOUT (seconds per stage, default 1800; expiry is a FAIL),
+  RUSTORM_REPLAY (capture file), RUSTORM_TOUR_TAGS, RUSTORM_FUZZ_SEEDS,
+  RUSTORM_SOAK_THREADS / RUSTORM_SOAK_SECONDS / RUSTORM_SOAK_RSS_GROWTH,
+  RUSTORM_MIN_COMPARED_{SWEEP,CORPUS,FUZZ}, RUSTORM_MAX_REFUSED_{SWEEP,CORPUS,FUZZ},
+  RUSTORM_OTHER_DB, RUSTORM_ORM_TEST_DB
+USAGE
+}
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE="${RUSTORM_WORKSPACE:-$(cd "$ROOT/.." && pwd)}"
-# the Rust binaries resolve the workspace through the same variable
-# (`config.rs`); unexported, they fell back to the hardcoded home
 export RUSTORM_WORKSPACE="$WORKSPACE"
 DB="${RUSTORM_DB:-rustorm_probe}"
 BUILD=""
@@ -39,7 +42,7 @@ while [ $# -gt 0 ]; do
     --build) BUILD="$2"; shift 2 ;;
     --quick) QUICK=1; shift ;;
     --out)   OUT="$2"; shift 2 ;;
-    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -52,28 +55,6 @@ ODOO="${RUSTORM_ODOO_ROOT:-$WORKSPACE/odoo}"
 PY="${RUSTORM_PYTHON:-$WORKSPACE/p314o19m/bin/python}"
 mkdir -p "$OUT"
 
-# The addon arms for the ONE database `rust_engine_db` names, and a workspace
-# conf that has been armed for a deployment names THAT one -- not the database
-# this battery was pointed at. Every stage needing a routed call then gates on
-# "another database" and reports routed=0: measured on p314o19m.conf armed for
-# `rustorm_5e_scale`, that is `replay gate controls`, `load into odoo` and
-# `copy encoder` failing for a reason that has nothing to do with the code.
-# The tours stage already derived its own conf for exactly this; the rest of
-# the battery gets the same treatment here rather than five stages on.
-# And a conf that was never armed at all -- the workspace conf of a checkout
-# that has not deployed the addon -- fails the same seven stages the same way:
-# `import rust_orm_shim` finds nothing because no `post_load` registered it,
-# and a script that installs the db shim itself gets psycopg pools because
-# `ACTIVE` follows the mode the addon never applied. Measured 2026-09-18 on a
-# conf whose addons_path did not name this checkout: runtime contracts, replay
-# gate controls, load into odoo, copy encoder, write path, search path and
-# every user all FAIL with nothing wrong in the code. So the battery derives
-# the armed conf it needs from whatever it was given, as the tours stage
-# always has, and says so.
-# A database that does not exist fails every stage one at a time, each with
-# the same `InvalidCatalogName` under a different name, and a twenty-line
-# FAIL column is worse than one refusal: it reads as the code. Measured
-# 2026-09-18 after the probe database was dropped between two runs.
 if [ -z "$BUILD" ] && ! psql -U marin -lqt 2>/dev/null | cut -d'|' -f1 | sed 's/ //g' | grep -qx "$DB"; then
   echo "verify: database '$DB' does not exist; pass --build mail,contacts (the corpus," \
        "runtime contracts and tours want mail) or create it through odoo-bin" >&2
@@ -106,15 +87,6 @@ if [ "$armed_db" != "$DB" ] \
   export RUSTORM_ODOO_CONF="$OUT/verify.conf"
 fi
 
-# The same conf with the engine taken out, for every stage whose output is the
-# REFERENCE a comparison is made against: the Python baseline, the psycopg leg
-# of cursor parity, the psycopg half of the copy encoder. The armed conf above
-# arms `rust_engine` for this database in every process that loads it, and
-# until 2026-09-12 those stages loaded it too -- the baseline routed thousands
-# of its calls through the kernel and the "psycopg" cursor leg ran on
-# `FakeConnection`, so kernel sweep, fuzz and cursor parity were reading an
-# engine against itself. A stage that wants the engine installs it explicitly
-# (install_shims / install_backend); a stage that wants Python gets this.
 {
   grep -vE '^(server_wide_modules|rust_engine_[a-z_]+) *=' "$RUSTORM_ODOO_CONF"
   swm=$(sed -nE 's/^server_wide_modules *= *//p' "$RUSTORM_ODOO_CONF" | tail -1)
@@ -123,7 +95,6 @@ fi
 } > "$OUT/python.conf"
 export RUSTORM_PYTHON_CONF="$OUT/python.conf"
 
-# every stage runs under a deadline; rc 124 is what `timeout` returns on expiry
 T=(timeout -k 15 "$STAGE_TIMEOUT")
 timed_out() { [ "$1" = 124 ] || [ "$1" = 137 ]; }
 expired="timed out after ${STAGE_TIMEOUT}s"
@@ -131,15 +102,12 @@ expired="timed out after ${STAGE_TIMEOUT}s"
 declare -a NAMES RESULTS NOTES
 stage() { NAMES+=("$1"); RESULTS+=("$2"); NOTES+=("${3:-}"); printf '  %-22s %s %s\n' "$1" "$2" "${3:-}"; }
 
-# odoo-bin shell reads the script on stdin; runpy gives it a __file__ so the
-# harness scripts can find _env.py beside themselves
 shell_script() {
   local script="$1"; shift
   "${T[@]}" "$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_ODOO_CONF" -d "$DB" --no-http --db_maxconn=8 "$@" \
     <<< "import runpy; runpy.run_path('$script', init_globals={'env': env}, run_name='__main__')"
 }
 
-# the same, on the disarmed conf: for scripts that produce a reference
 python_script() {
   local script="$1"; shift
   "${T[@]}" "$PY" "$ODOO/odoo-bin" shell -c "$RUSTORM_PYTHON_CONF" -d "$DB" --no-http --db_maxconn=8 "$@" \
@@ -218,9 +186,6 @@ else
   stage "shim units" SKIP "no libengine_py.so; cargo build --release"
 fi
 
-# the sweep generator also seeds the fixture every other stage depends on and
-# COMMITS it (more identities and a company, rules, archived corecords): a
-# database that is not named as scratch is refused rather than modified
 case "$DB" in
   *rustorm*|*scratch*|*probe*) ;;
   *) [ "${RUSTORM_ALLOW_SEED:-}" = 1 ] || {
@@ -244,8 +209,6 @@ elif timed_out "$rc"; then stage "fixture + sweep corpus" FAIL "$expired"; SWEEP
 else
   stage "fixture + sweep corpus" FAIL "see $OUT/sweep_gen.log"; SWEEP_CORPUS_OK=0; fi
 
-# the export is taken AFTER seeding: the fixture adds fields (restricted
-# custom fields on res.country) the kernel must know about
 "${T[@]}" "$ROOT/target/release/export_registry" "$OUT/export.json" > "$OUT/export.log" 2>&1; rc=$?
 if [ "$rc" = 0 ]; then
   stage "registry export" OK "$(grep -o 'exported [0-9]* models' "$OUT/export.log" | head -1)"
@@ -253,12 +216,10 @@ elif timed_out "$rc"; then stage "registry export" FAIL "$expired"
 else
   stage "registry export" FAIL "see $OUT/export.log"; fi
 
-
 PYTHONPATH="$PYMOD" RUSTORM_EXPORT="$OUT/export.json" "${T[@]}" "$PY" "$ROOT/harness/replay_contract.py" > "$OUT/replay_contract.log" 2>&1; rc=$?
 if [ "$rc" = 0 ]; then stage "replay gate controls" OK
 elif timed_out "$rc"; then stage "replay gate controls" FAIL "$expired"
 else stage "replay gate controls" FAIL "see $OUT/replay_contract.log"; fi
-
 
 if [ "$QUICK" = 1 ]; then
   stage "kernel sweep" SKIP "--quick"
@@ -269,9 +230,6 @@ elif [ "$SWEEP_CORPUS_OK" = 1 ]; then
   "${T[@]}" "$ROOT/target/release/rustorm" --db "$DB" --export "$OUT/export.json" \
       run-corpus --file "$OUT/sweep_corpus.json" > "$OUT/sweep_actual.json" 2> "$OUT/sweep_run.log" \
     || echo "run-corpus exited $?" >> "$OUT/sweep_run.log"
-  # the caps sit above what each lane declines today (sweep ~15 %, corpus
-  # ~9 % on the reference database): a change that de-routes a family of
-  # models fails the lane instead of shrinking COMPARED in silence
   RUSTORM_DIFF_MAX_REFUSED_SHARE="${RUSTORM_MAX_REFUSED_SWEEP:-0.30}" \
   diff_stage "kernel sweep" "$OUT/sweep_expected.json" "$OUT/sweep_actual.json" \
     "${RUSTORM_MIN_COMPARED_SWEEP:-300}" "$OUT/sweep_diff.json"
@@ -289,8 +247,6 @@ elif timed_out "$rc"; then stage "shadow corpus" FAIL "$expired"
 else
   stage "shadow corpus" FAIL "baseline generation failed; see $OUT/gen.log"; fi
 
-# phase 1 compares one res.partner read against expected.json, so it runs before
-# the fuzz and registry sweeps, whose seeding creates partners that baseline lacks
 RUSTORM_EXPECTED="$OUT/expected.json" "${T[@]}" "$ROOT/target/release/phase1_shell" > "$OUT/phase1.log" 2>&1; rc=$?
 if [ "$rc" = 0 ]; then stage "hybrid (phase 1)" OK
 elif timed_out "$rc"; then stage "hybrid (phase 1)" FAIL "$expired"
@@ -345,8 +301,6 @@ probe() {
     else stage "$name" FAIL "$(grep -a MISMATCH "$OUT/probe_$mode.log" | head -1 | cut -c1-70)"; fi
   elif timed_out "$rc"; then stage "$name" FAIL "$expired"
   else
-    # a probe that did not finish is not a probe that could not run: the
-    # database is the same one every other stage reached
     stage "$name" FAIL "probe_audit exited non-zero; see $OUT/probe_$mode.log"; fi
 }
 probe types "mismatches=0" "cursor type layer"
@@ -359,9 +313,6 @@ if [ -f "$ROOT/target/release/libengine_py.so" ]; then
   if [ "$rc" = 0 ]; then
     stage "load into odoo" OK "$(grep -acE '^LOAD (read|other db|fork exit)' "$OUT/load.log") checks"
   elif [ "$rc" = 3 ]; then
-    # the script could not run and said so: SKIP, as `fork contract` already
-    # is; it used to exit 0 here, and a failed export upstream cascaded into
-    # a green stage that had checked nothing
     stage "load into odoo" SKIP "$(grep -aE '^LOAD SKIP' "$OUT/load.log" | head -1 | cut -c1-70)"
   elif timed_out "$rc"; then stage "load into odoo" FAIL "$expired"
   else
@@ -370,7 +321,6 @@ if [ -f "$ROOT/target/release/libengine_py.so" ]; then
 else
   stage "load into odoo" SKIP "no libengine_py.so; cargo build --release"
 fi
-
 
 TOUR_TAGS="${RUSTORM_TOUR_TAGS:-/mail:TestDiscussChannelExpand,/mail:TestMailActivityChatter,/mail:TestMailComposerUI,/mail:TestMailTemplateUI,/mail:TestUserTours,/web:TestFavorite,/web:TestUserSwitch,/base:TestIrModelFieldsTranslation}"
 if [ "$QUICK" = 1 ]; then
@@ -383,8 +333,6 @@ else
   TOUR_PORT="$(free_port 9401 9449 || echo 9401)"
   {
     grep -vE '^(addons_path|server_wide_modules|http_port|logfile|db_maxconn|rust_engine_[a-z_]+) *=' "$RUSTORM_ODOO_CONF"
-    # a browser tour server does not need Odoo's default 64 connections, and
-    # the cluster is shared with other sessions
     printf 'db_maxconn = %s\n' "${RUSTORM_TOURS_MAXCONN:-16}"
     printf 'addons_path = %s,%s/addons\n' "$(grep -E '^addons_path *=' "$RUSTORM_ODOO_CONF" | sed 's/^addons_path *= *//')" "$ROOT"
     printf 'server_wide_modules = base,web,rust_engine\nrust_engine_db = %s\nrust_engine_mode = shadow\nrust_engine_report_seconds = 15\nrust_engine_capture = %s\nhttp_port = %s\n' "$DB" "$OUT/tours_capture.jsonl" "$TOUR_PORT"
@@ -403,8 +351,6 @@ else
   fi
 fi
 
-# the tours' own traffic is the default capture: replaying it after the run
-# is the second pass over exactly the calls the web client made
 REPLAY_FILE="${RUSTORM_REPLAY:-}"
 if [ -z "$REPLAY_FILE" ] && [ -s "$OUT/tours_capture.jsonl" ]; then REPLAY_FILE="$OUT/tours_capture.jsonl"; fi
 if [ -n "$REPLAY_FILE" ] && [ -f "$ROOT/target/release/libengine_py.so" ]; then
@@ -435,20 +381,11 @@ else
   stage "copy encoder" SKIP "no libengine_py.so; cargo build --release"
 fi
 
-# The write path at the persistence port. Like the copy encoder above it is
-# differential against psycopg rather than against a recorded expectation,
-# because a corrupted write is equally corrupt on both sides of a read
-# comparison -- and it counts the statements the port answered natively, so a
-# run where everything delegated cannot report a clean comparison of two
-# identical Python writes.
 if [ -f "$ROOT/target/release/libengine_py.so" ]; then
   PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/write_path.py" > "$OUT/write.log" 2>&1; rc=$?
   if [ "$rc" = 0 ]; then
     stage "write path (port)" OK "$(grep -a '^WRITE native update_rows' "$OUT/write.log" | head -1 | cut -c1-70)"
   elif [ "$rc" = 3 ]; then
-    # the port was not armed in this process (conf says off, the addon could
-    # not install it, a stale extension): nothing native ran, and a stage
-    # that ran nothing is SKIP -- it used to exit 0 and read as OK
     stage "write path (port)" SKIP "$(grep -a '^WRITE SKIP' "$OUT/write.log" | head -1 | cut -c1-70)"
   elif timed_out "$rc"; then stage "write path (port)" FAIL "$expired"
   else
@@ -458,13 +395,6 @@ else
   stage "write path (port)" SKIP "no libengine_py.so; cargo build --release"
 fi
 
-# The write differential: the same generated creates, writes and unlinks over
-# every model the generator can build, once with the port routing and once
-# without, each read back with raw SQL and paired by creation order. It is the
-# corpus-wide sibling of the write path above: that one drives res.partner
-# through the shapes a unique column forbids, this one asks every stored
-# scalar column of every model whether the port's row is the fork's row. A
-# positive control corrupts the last write of a char column and must be seen.
 if [ -f "$ROOT/target/release/libengine_py.so" ]; then
   RUSTORM_WRITE_DIFF_LEG=armed RUSTORM_WRITE_DIFF_OUT="$OUT/write_diff_armed.json" \
     RUSTORM_WRITE_DIFF_LIMIT="${RUSTORM_WRITE_DIFF_LIMIT:-1000}" \
@@ -487,8 +417,6 @@ if [ -f "$ROOT/target/release/libengine_py.so" ]; then
     else
       stage "write differential" FAIL "$(grep -aE '^ *MISMATCH|^ *NOT NATIVE|^WRITE DIFF' "$OUT/write_diff.log" | tail -1 | cut -c1-90)"
     fi
-    # the positive control: res.partner alone, the fault armed, and the
-    # comparison must report every created row
     RUSTORM_WRITE_DIFF_LEG=armed RUSTORM_WRITE_DIFF_FAULT=1 RUSTORM_WRITE_DIFF_MODELS=res.partner \
       RUSTORM_WRITE_DIFF_OUT="$OUT/write_diff_fault.json" \
       PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/write_diff.py" > "$OUT/write_diff_fault.log" 2>&1; rc=$?
@@ -504,10 +432,6 @@ else
   stage "write differential" SKIP "no libengine_py.so; cargo build --release"
 fi
 
-# The port's search, over the sweep corpus: ids, counts, the query as a
-# sub-select, and whether the native WHERE flushes everything Odoo's does. It
-# arms `search` for its own legs only -- the method stays out of NATIVE until a
-# benchmark says it pays for itself (harness/search_bench.py).
 if [ -f "$ROOT/target/release/libengine_py.so" ] && [ -f "$OUT/sweep_corpus.json" ]; then
   RUSTORM_SWEEP="$OUT/sweep_corpus.json" RUSTORM_SEARCH_FAILURES="$OUT/search_failures.json" \
     PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/search_path.py" > "$OUT/search.log" 2>&1; rc=$?
@@ -523,9 +447,6 @@ else
   stage "search (port)" SKIP "needs libengine_py.so and the sweep corpus"
 fi
 
-# Every routed read method at every user of the database. The corpora above
-# read as a few seeded identities who see their targets; read() and web_read
-# differ exactly where a user does not (harness/every_user.py).
 if [ -f "$PYMOD/engine_py.so" ]; then
   PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/every_user.py" > "$OUT/every_user.log" 2>&1; rc=$?
   if [ "$rc" = 0 ]; then
@@ -549,9 +470,6 @@ else
   else stage "orm test modules" FAIL "$(printf '%s\n' "$out" | grep -aA2 '^ORM TESTS FAILED' | tr '\n' ' ' | cut -c1-110)"; fi
 fi
 
-# The statement the port composes, against the statement the FORK composes,
-# with no database involved: `test_shims.py` and `kernel/tests/pure.rs` each
-# derive the contract file independently, and this is the half that asks Odoo.
 out=$("${T[@]}" "$PY" "$ROOT/harness/write_sql_contract.py" 2>&1); rc=$?
 if [ "$rc" = 0 ]; then
   stage "write sql contract" OK "$(printf '%s' "$out" | grep -E '^CONTRACT' | head -1)"
@@ -560,11 +478,6 @@ else
   stage "write sql contract" FAIL "$(printf '%s' "$out" | grep -E '^CONTRACT' | head -1)"
 fi
 
-# The only stage that compares what the SERVER SENDS rather than what a
-# method returned. It boots two servers, so it is minutes rather than
-# seconds -- but it is the only lane that can see an envelope key, a
-# serialisation choice or a header differ between routed and unrouted, and
-# one of those was live and unseen until 2026-09-08.
 if [ "$QUICK" = 1 ]; then
   stage "byte parity" SKIP "--quick"
 elif [ ! -f "$ROOT/target/release/libengine_py.so" ]; then
@@ -578,15 +491,10 @@ else
   case "$verdict" in
     "PARITY OK") stage "byte parity" OK "$counts" ;;
     PARITY*)     stage "byte parity" FAIL "$verdict" ;;
-    # Missing evidence cannot pass: authentication and timeout failures
-    # may stop the run before it can print a verdict.
     *)           stage "byte parity" FAIL "$(printf '%s\n' "$out" | grep -aE 'FAILED|failed' | tail -1 | cut -c1-70)" ;;
   esac
 fi
 
-# Odoo's own cursor suites on both cursors, ratcheted. Not a difference the
-# other lanes can see: they all run with the db shim installed, so the cursor
-# is the same on both sides of every comparison they make.
 if [ "$QUICK" = 1 ]; then
   stage "cursor parity" SKIP "--quick"
 elif [ ! -f "$ROOT/target/release/libengine_py.so" ]; then
@@ -606,8 +514,6 @@ fi
 if [ "$QUICK" = 1 ]; then
   stage "soak" SKIP "--quick"
 else
-  # Earlier lanes commit fixtures and login logs. Compare against Python on
-  # that final state, not the pre-fuzz baseline used by phase 1.
   RUSTORM_EXPECTED="$OUT/soak_expected.json" python_script "$ROOT/harness/gen_expected.py" > "$OUT/soak_gen.log" 2>&1
   baseline_rc=$?
   "${T[@]}" "$ROOT/target/release/export_registry" "$OUT/soak_export.json" > "$OUT/soak_export.log" 2>&1
@@ -616,13 +522,8 @@ else
     stage "soak baseline" FAIL "could not refresh Python baseline and registry"
   fi
   SOAK_PORT="${RUSTORM_SOAK_PORT:-$(free_port 9450 9499 || echo 9450)}"
-  # the same rule cases.py applies to a corpus uid of "other": the lowest
-  # active user that is neither OdooBot nor the administrator
   OTHER_UID="$(pg -tAc "select min(id) from res_users where active and id not in (1, 2)" 2>/dev/null | tr -d '[:space:]')"
   SOAK_TOKEN="$("$PY" -c 'import secrets; print(secrets.token_hex(16))')"
-  # the soak replays the corpus at EVERY identity, superuser cases included,
-  # against a disposable database on the loopback; a token server refuses
-  # `su` by default, so this one is started with the opt-in, on purpose
   RUSTORM_SERVE_TOKEN="$SOAK_TOKEN" RUSTORM_SERVE_ALLOW_SU=1 \
       "$ROOT/target/release/rustorm" --db "$DB" --export "$OUT/soak_export.json" \
       serve --port "$SOAK_PORT" > "$OUT/soak_serve.log" 2>&1 &
@@ -631,7 +532,7 @@ else
   echo "  (soak server on port $SOAK_PORT)" >&2
   for _ in $(seq 1 30); do
     curl -sf -m 2 "http://127.0.0.1:$SOAK_PORT/health" >/dev/null 2>&1 && { soak_up=1; break; }
-    kill -0 "$soak_pid" 2>/dev/null || break     # it exited; stop waiting for it
+    kill -0 "$soak_pid" 2>/dev/null || break
     sleep 1
   done
   soak_args=(--port "$SOAK_PORT" --threads "${RUSTORM_SOAK_THREADS:-8}" --seconds "${RUSTORM_SOAK_SECONDS:-20}")

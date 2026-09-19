@@ -203,10 +203,6 @@ fn init_logging() {
         .with_writer(std::io::stderr)
         .with_target(true)
         .try_init();
-    // `RUSTORM_LOG=odoo_kernel=debug` turns on every kernel target at once;
-    // one target at a time is `odoo_kernel::scan=debug`. Saying which filter
-    // is live is what stops a session concluding "nothing happened" from a
-    // filter that was never in effect.
     tracing::debug!(
         target: "odoo_kernel::http",
         filter = %effective,

@@ -40,7 +40,6 @@ def default_db():
 
 def _with_dbname(dsn, dbname):
     if "://" in dsn:
-        # the path names the database, as config.rs::with_dbname rewrites it
         scheme, rest = dsn.split("://", 1)
         rest, _, query = rest.partition("?")
         authority = rest.split("/", 1)[0]

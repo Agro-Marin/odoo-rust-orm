@@ -1,5 +1,3 @@
-# a symbol names an identity the sweep seeds, so a case runs on any database;
-# the kernel resolves the same symbols (orm.rs UidSpec)
 SYMBOLIC_LOGINS = {"grouped": "rustorm_sweep_grouped", "debug": "rustorm_sweep_debug"}
 
 

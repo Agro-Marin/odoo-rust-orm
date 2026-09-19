@@ -363,8 +363,6 @@ def run(reg, orm_shim, originals):
 
 fn main() -> Result<()> {
     engine_py::logbridge::install_stderr();
-    // SAFETY: main has spawned no thread yet, so no other thread can be reading
-    // the environment concurrently.
     unsafe {
         std::env::set_var("ODOO_DISABLE_COPY", "1");
 
@@ -389,9 +387,6 @@ fn main() -> Result<()> {
         db_shim.setattr("RUST_DB", &rust_db)?;
         db_shim.setattr("CONNINFO", odoo_kernel::config::dsn())?;
         db_shim.call_method0("install")?;
-        // `install` rebinds the pool factory; the layer itself is off until
-        // switched, and off means psycopg pools under a shim that reports
-        // itself installed -- the routing then raises on every model
         db_shim.call_method1("set_active", (true,))?;
 
         let t = Instant::now();
@@ -488,8 +483,6 @@ fn main() -> Result<()> {
 
     let empty = |v: &serde_json::Value| v.as_array().is_some_and(|a| a.is_empty());
     let clean = empty(&out["corpus"]["mismatch"]) && empty(&out["sweep"]["mismatch"]);
-    // empty mismatch lists are a pass only when something was compared: a
-    // kernel that refuses every model routes 0 shapes and mismatches nothing
     let routed = out["sweep"]["shapes_routed"].as_u64().unwrap_or(0);
     let floor: u64 = std::env::var("RUSTORM_MIN_ROUTED_SHAPES")
         .ok()

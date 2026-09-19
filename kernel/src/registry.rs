@@ -56,15 +56,6 @@ impl FieldType {
         matches!(self, Self::Char | Self::Text | Self::Html)
     }
 
-    /// The `falsy_value` a field of this type USUALLY has.
-    ///
-    /// Odoo declares `falsy_value` on the field CLASS, so this is a
-    /// derivation and not a reading: it is what the `ir_model` bootstrap has
-    /// to fall back on, having no access to the classes. Two classes
-    /// disagree with the type they report -- `id` is a `fields.Id` and not
-    /// an `Integer`, so it has no `0`, and `Many2oneReference` has `0` where
-    /// its relational siblings have none -- and `Field::falsy_json` prefers
-    /// the exported value precisely so a third one does not go unnoticed.
     pub fn falsy_json_for_type(self, name: &str) -> Option<serde_json::Value> {
         use serde_json::json;
         if name == "id" {
@@ -106,18 +97,8 @@ pub struct Field {
 
     pub translated: bool,
 
-    /// `field.translate is True`, which is NOT `translated`: a field
-    /// translated term by term (`Html(translate=html_translate)`) is
-    /// stored in the same jsonb column and read the same way, and the
-    /// WRITE differs -- `_update_assignments` merges the new value into
-    /// the stored languages for one and replaces the whole column for the
-    /// other. Only the live export can tell them apart.
     pub translate_whole: bool,
 
-    /// The cast `_update_assignments` writes after a value, taken from
-    /// the field's own `column_type[1]` rather than derived from
-    /// `information_schema`: the update SQL has to be the SAME cast
-    /// Python emits, not an equivalent one.
     pub column_cast: Option<String>,
 
     pub related: Option<String>,
@@ -141,9 +122,6 @@ pub struct Field {
     pub bypass_search_access: Option<bool>,
 
     pub compute_sudo: bool,
-    /// Reached through `_inherits`: the parent's rules are already ANDed
-    /// onto the child's search, so `_traverse_related_sql` lets it through
-    /// to SQL for any caller, as it does a `compute_sudo` field.
     pub inherited: bool,
     pub required: bool,
     pub group_by_field: Option<String>,
@@ -221,16 +199,6 @@ impl Field {
         Ok(out)
     }
 
-    /// The comodel COLUMN a one2many joins on.
-    ///
-    /// `store` on a one2many says its inverse is a column, and Odoo does not
-    /// require the inverse itself to be stored:
-    /// `account.analytic.account.line_ids` inverts
-    /// `account.analytic.line.auto_account_id`, a non-stored many2one with a
-    /// `search=` method, and no such column exists. Asking the one2many's own
-    /// flag emits SQL PostgreSQL rejects, so the COMODEL's field is what has
-    /// to be asked -- and both the filter path and the read path have to ask,
-    /// which is why this is one function and not two checks.
     pub fn o2m_inverse_column(&self, owner: &str, co: &Model) -> Result<&str> {
         let inverse = self.o2m_inverse()?;
         match co.fields.get(inverse) {
@@ -277,17 +245,12 @@ pub struct Model {
 
     pub read_path_pure: bool,
 
-    // the read-path methods Python overrides; a request needs its own subset
-    // of them pure, so a `read` override leaves search_count on the kernel
     pub impure_read_methods: Vec<String>,
 
     pub search_pure: bool,
 
     pub name_search_fields: Option<Vec<String>>,
 
-    // stored fields whose exact match answers a display_name "in"/"ilike"
-    // search outright when any row matches; the shim resolves that before
-    // the kernel, which refuses an unresolved leaf
     pub display_name_search_exact: Vec<String>,
 
     pub display_name_default: bool,
@@ -302,14 +265,11 @@ pub struct Model {
 
     pub active_name: Option<String>,
 
-    // several columns are an ordered coalesce: the first non-empty renders
     pub display_name_column: Vec<String>,
     pub display_name_guard: Option<String>,
 }
 
 impl Model {
-    // which Python overrides a kernel method runs into: Python's search_read
-    // never calls read(), so a read() override leaves the search path pure
     pub fn overridden_for(&self, method: &str) -> Option<String> {
         const ALL: &[&str] = &[
             "_search",
@@ -466,8 +426,6 @@ pub struct Registry {
 
     pub has_unaccent: bool,
 
-    /// Whether `pg_trgm` is installed, which is what makes the GIN index on
-    /// a translated `index="trigram"` field usable at all.
     pub has_trigram: bool,
 
     pub source: Source,
@@ -658,9 +616,6 @@ impl Registry {
             week_start: Self::load_week_starts(client).await?,
             signals,
         };
-        // The whole of the runtime-mutable state is rebuilt and published as
-        // one Arc; this line is the only place a request can observe security
-        // changing under it, and its duration is on the request that paid it
         tracing::info!(
             target: "odoo_kernel::registry",
             ruled_models = fresh.security.rules.len(),
@@ -689,8 +644,6 @@ impl Registry {
         let mut fresh = (**checked).clone();
         fresh.signals = signals;
         let fresh = std::sync::Arc::new(fresh);
-        // A concurrent security refresh must neither enter this request nor
-        // be overwritten by an unrelated cache watermark.
         let published = std::sync::Arc::ptr_eq(&guard, checked);
         if published {
             *guard = fresh.clone();
@@ -750,21 +703,10 @@ impl Registry {
             .ok_or_else(|| refusal!("unknown or table-less model {model}"))
     }
 
-    /// `get` as a QUESTION rather than a demand.
-    ///
-    /// The reachability walk asks whether a comodel is in the registry and
-    /// carries on when it is not; that is an answer, not a refusal, and
-    /// routing it through `get` files an `odoo_kernel::refusal` per miss.
-    /// Same reason `domain::parse_nested` exists.
     pub fn lookup(&self, model: &str) -> Option<&Model> {
         self.models.get(model)
     }
 
-    /// Every capability flag the routing decision reads, for one model.
-    ///
-    /// A refused request usually names one of these; printing them together
-    /// says which of the model's read paths are pure and which are not,
-    /// without a second round trip to the export.
     pub fn log_model_capabilities(&self, model: &Model) {
         tracing::debug!(
             target: "odoo_kernel::registry",
@@ -984,8 +926,6 @@ impl Registry {
                     pg_type,
                     not_null,
                     translated,
-                    // `ir_model_fields` records neither, so a registry built
-                    // from the bootstrap refuses every write it would decide.
                     translate_whole: false,
                     column_cast: None,
                     related: if store { None } else { related },
@@ -1130,9 +1070,6 @@ impl Registry {
             }
             for hooked in em["hooked_fields"].as_array().into_iter().flatten() {
                 if let Some(fname) = hooked.as_str() {
-                    // a field Python hooks reads through code no column
-                    // expresses; dropping it here is what makes every leaf
-                    // and read that names it refuse rather than answer wrong
                     if fields.remove(fname).is_some() {
                         hooked_total += 1;
                         tracing::trace!(
@@ -1358,9 +1295,6 @@ impl Registry {
             .iter()
             .map(|r| r.get(0))
             .collect();
-        // `unaccent` decides whether an ilike compares accent-folded, and
-        // `pg_trgm` whether the trigram conjunct can use an index at all --
-        // both change the SQL, so both belong on the startup line
         tracing::info!(
             target: "odoo_kernel::registry",
             source = ?source,
@@ -1384,8 +1318,6 @@ impl Registry {
         text_columns: &HashMap<String, std::collections::HashSet<String>>,
     ) {
         if !model.display_name_column.is_empty() {
-            // a delegated column (`name` related to `partner_id.name` under
-            // _inherits) renders through the same join a related read takes
             let delegated = |f: &Field| {
                 let Some((head, tail)) = f.related.as_deref().and_then(|r| r.split_once('.'))
                 else {
@@ -1410,9 +1342,6 @@ impl Registry {
             if renderable {
                 model.display_name_default = true;
             } else {
-                // the declared columns cannot all be read from a column, so
-                // the model falls back to _rec_name -- and a display_name
-                // read on it refuses rather than rendering the wrong thing
                 tracing::debug!(
                     target: "odoo_kernel::registry",
                     model = %model.name,
@@ -1431,9 +1360,6 @@ impl Registry {
         match model.active_name.take() {
             Some(declared) if is_bool_column(&declared) => model.active_name = Some(declared),
             Some(declared) => {
-                // _active_name names something that is not a stored boolean,
-                // so active_test cannot be reproduced from a column and the
-                // whole search path goes back to Python
                 tracing::debug!(
                     target: "odoo_kernel::registry",
                     model = %model.name,
@@ -1565,14 +1491,6 @@ impl Registry {
         {
             rule_groups.entry(row.get(0)).or_default().push(row.get(1));
         }
-        // The fork adds `ir_rule.composition` (grant | restrict); stock Odoo
-        // has no such column and every group rule grants. Asked of the
-        // schema rather than assumed, so one binary serves both -- a stock
-        // database used to fail the whole security load on the missing
-        // column. Asked of THE `ir_rule` the next query will read (`regclass`
-        // resolves it through the search_path) and not of
-        // `information_schema.columns` by name, which answers for any schema
-        // on the server.
         let has_composition = client
             .query_opt(
                 "SELECT 1 FROM pg_attribute

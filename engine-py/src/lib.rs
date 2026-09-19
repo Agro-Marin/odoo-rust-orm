@@ -45,15 +45,8 @@ const SHIM_SOURCES: [(&str, &str); 4] = [
     ("rust_orm_shim", include_str!("../python/rust_orm_shim.py")),
 ];
 
-/// The persistence port is registered on its own, not with the shims.
-/// It replaces no method: it implements `StorageBackend`, which the fork
-/// declares and pins, so a caller can install the port without the method
-/// routing or the routing without the port.
 const BACKEND_SOURCE: (&str, &str) = ("rust_backend", include_str!("../python/rust_backend.py"));
 
-/// Register one embedded module under `name`, or hand back the one already
-/// registered: importing it twice would give the process two copies of the
-/// state these modules hold.
 fn register<'py>(py: Python<'py>, name: &str, src: &str) -> PyResult<Bound<'py, PyModule>> {
     let modules = py.import("sys")?.getattr("modules")?;
     if let Some(existing) = modules
@@ -73,9 +66,6 @@ fn register<'py>(py: Python<'py>, name: &str, src: &str) -> PyResult<Bound<'py, 
     Ok(module)
 }
 
-/// The table of read-path overrides the export and the shim's gate both read
-/// (`purity.py`); registered on its own so the export, which runs without the
-/// shims in the `export_registry` binary, sees the same table the gate does.
 pub fn register_purity(py: Python<'_>) -> PyResult<()> {
     let (name, src) = SHIM_SOURCES[1];
     register(py, name, src).map(|_| ())

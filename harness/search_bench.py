@@ -1,13 +1,3 @@
-"""What the port's `search` costs against the backend it would replace.
-
-Correctness is `search_path.py`'s; this is the other half of the arming
-decision, because a native path that answers exactly and runs slower is not
-one to arm. Every distinct (model, domain, order, limit, identity) the sweep
-corpus holds that Python answers is searched three rounds per leg, and the two
-phases are timed apart: `search()`, which is where the legs differ, and running
-the query, which is the same statement shape on both and should read the same.
-"""
-
 import json
 import os
 import pathlib
@@ -33,10 +23,6 @@ from cases import case_env
 
 CORPUS = os.environ.get("RUSTORM_SWEEP") or os.path.join(harness_dir(), "corpus.json")
 ROUNDS = int(os.environ.get("RUSTORM_SEARCH_BENCH_ROUNDS", "3"))
-# End the transaction every N searches. The port keeps the watermark it
-# checked for the rest of a TRANSACTION, so a run that never ends one measures
-# the steady state only; a web request is a transaction of a handful of
-# searches, and 0 here means one transaction for the whole round.
 TX_EVERY = int(os.environ.get("RUSTORM_SEARCH_BENCH_TX_EVERY", "0"))
 
 port = engine_py.install_backend()
@@ -70,7 +56,6 @@ for case in corpus:
             model._search(args[0], limit=args[2], order=args[1]).get_result_ids()
         picked.append((model, *args))
     except Exception:
-        # a case Python itself refuses has nothing to time
         refused += 1
 
 

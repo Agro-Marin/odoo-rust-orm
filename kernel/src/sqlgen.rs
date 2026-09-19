@@ -39,15 +39,8 @@ pub struct ExprCtx<'a> {
 
     pub active_test: bool,
 
-    // the request's `tz`, already validated by the registry; None reads as UTC
     pub tz: Option<String>,
 
-    /// Every (model, field) whose column the compiled SQL reads. Shared by
-    /// every copy of this context -- rule compiles take an owned copy -- so
-    /// the set a request ends with covers its sub-queries and its rules. The
-    /// persistence port hands it to Odoo as the fragment's `to_flush`: the
-    /// fields to write before the statement runs, exact because they are the
-    /// columns in it.
     pub touched: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<(String, String)>>>,
 
     pub sql_nonce: Option<String>,
@@ -141,9 +134,6 @@ impl<'a> ExprCtx<'a> {
             let ty = pg_cast_type(f.ttype);
 
             let fallback = self.cd_fallback_for(model, f);
-            // a company-dependent column is a jsonb keyed by company; the
-            // fallback is what an unset company key reads as, and getting it
-            // wrong changes rows rather than erroring
             tracing::trace!(
                 target: "odoo_kernel::compile",
                 model = %model.name,
@@ -171,8 +161,6 @@ impl<'a> ExprCtx<'a> {
                 | FieldType::Integer
                 | FieldType::Float
                 | FieldType::Monetary => Expr::cust_with_exprs(format!("($1)::{ty}"), [coalesced]),
-                // Many2one.to_sql: a company-dependent reference to a deleted
-                // record reads NULL, through an existence subselect
                 FieldType::Many2one => {
                     let co = self.registry.get(f.comodel()?)?;
                     Expr::cust_with_exprs(
@@ -192,14 +180,6 @@ impl<'a> ExprCtx<'a> {
         Ok(raw)
     }
 
-    /// Whether a non-stored related field may be read as a correlated
-    /// subquery for THIS caller. `_traverse_related_sql` allows it for
-    /// `env.su`, `compute_sudo` or `inherited`, and for nobody else: the
-    /// subquery carries no ACL and no rules, so anyone else would read the
-    /// comodel unfiltered where Odoo computes the value in Python under their
-    /// own access. (A domain LEAF on such a field is a different path: there
-    /// `related_search` follows `search_related` and applies the comodel's
-    /// rules through `any`, so it needs no guard.)
     pub fn related_allowed(&self, model: &Model, f: &Field) -> Result<()> {
         if self.access.is_none() || f.compute_sudo || f.inherited {
             return Ok(());
@@ -266,20 +246,10 @@ impl<'a> ExprCtx<'a> {
             .map_err(|(site, why)| refusal_at!(site, "{why}"))
     }
 
-    /// `normalize_path` as a QUESTION: a path that does not resolve is an
-    /// answer, not a refusal.
-    ///
-    /// The reachability walk asks which comodels a domain's leaves traverse
-    /// and skips a leaf it cannot resolve -- `display_name` is not a registry
-    /// field, and a non-stored one cannot be traversed. Routing that through
-    /// the demanding form filed a refusal per such leaf, 19% of a census over
-    /// 8,254 sweep cases. Same reason `domain::parse_nested` exists.
     pub fn normalize_path_seen(&self, model: &Model, path: &[String]) -> Option<Vec<String>> {
         self.normalize_path_inner(model, path).ok()
     }
 
-    /// The walk both forms share. It reports why it stopped as a plain
-    /// message so the caller decides whether that is a refusal.
     fn normalize_path_inner(
         &self,
         model: &Model,
@@ -301,8 +271,6 @@ impl<'a> ExprCtx<'a> {
                 concat!(file!(), ":", line!()),
                 format!("unknown or table-less model {model_name}"),
             ))?;
-            // display_name is no registry field: as the last segment it is the
-            // comodel's own display-name search, compiled by the sub-compiler
             if i + 1 == out.len() && out[i] == "display_name" && i > 0 {
                 break;
             }
@@ -400,8 +368,6 @@ impl<'a> ExprCtx<'a> {
     }
 }
 
-// date.fromisoformat wants the padded form; chrono also takes '2026-9-1'
-// and ' 2026-09-10', which Python rejects
 fn strict_date(s: &str) -> Option<NaiveDate> {
     let d = NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
     (d.format("%Y-%m-%d").to_string() == s).then_some(d)
@@ -472,9 +438,6 @@ pub fn id_membership(sql_field: Expr, ids: impl IntoIterator<Item = i32>) -> Exp
 }
 
 fn in_or_any(sql_field: Expr, op: &str, vals: Vec<Value>) -> Expr {
-    // Past IN_TO_ANY_THRESHOLD the membership becomes one array parameter
-    // instead of N placeholders, which is what keeps the statement text -- and
-    // therefore the prepared-statement cache entry -- stable across calls.
     tracing::trace!(
         target: "odoo_kernel::compile",
         %op,
@@ -550,8 +513,6 @@ fn leaf(field: &str, op: &str, value: Json) -> Node {
 }
 
 pub struct Compiler<'a> {
-    // borrowed for the request's own compiler and every subquery; owned only
-    // where the context changes (rules compile as sudo with active_test off)
     pub ctx: std::borrow::Cow<'a, ExprCtx<'a>>,
     pub model: &'a Model,
 
@@ -677,17 +638,9 @@ impl<'a> Compiler<'a> {
     }
 
     fn negate_leaf(&self, leaf: &Leaf) -> Result<Node> {
-        // DomainNot._optimize_step optimises the child BEFORE negating it, so
-        // a leaf that collapses (`write_date <= False` is FALSE) negates to
-        // its collapsed form; negating the raw leaf first would invert the
-        // comparison and collapse that to FALSE as well.
         if let Some(rewritten) = self.optimize_leaf(leaf)? {
             return self.negate(&rewritten);
         }
-        // Odoo optimises a dotted condition into `head any [rest op v]` before
-        // negating it, so `!` on a path becomes `head not any [...]`: a row
-        // whose head is unset (or has no corecord) satisfies the negation.
-        // Flipping the comparison instead keeps `any`, which drops those rows.
         if let Some((head, rest)) = leaf.field.split_once('.') {
             return Ok(Node::Leaf(Leaf {
                 field: head.to_string(),
@@ -756,11 +709,6 @@ impl<'a> Compiler<'a> {
         ]))
     }
 
-    // `Datetime._optimize_datetime_comparand`: a value that is a bare date
-    // names a whole local day, so `>`/`<=` move to the end of that day and a
-    // membership becomes one `>= start AND < end` range per day. The day
-    // boundaries depend on the request's timezone; the kernel computes them
-    // only for UTC and refuses elsewhere rather than comparing at midnight
     fn datetime_day_comparand(&self, fname: &str, op: &str, v: &Json) -> Result<Option<Node>> {
         fn bare_date(v: &Json) -> Option<NaiveDate> {
             strict_date(v.as_str()?)
@@ -840,11 +788,6 @@ impl<'a> Compiler<'a> {
         }))
     }
 
-    // Odoo optimises a domain leaf before compiling it, and the rewrites are
-    // where the semantics live: `=` becomes `in`, a bare date names a whole
-    // local day, a string among a relational membership becomes a display-name
-    // lookup. Every past wrong answer in this kernel was a rewrite that did
-    // not happen or happened differently, so each one announces itself.
     fn optimize_leaf(&self, l: &Leaf) -> Result<Option<Node>> {
         let out = self.optimize_leaf_inner(l)?;
         if let Some(rewritten) = &out {
@@ -880,13 +823,6 @@ impl<'a> Compiler<'a> {
         let v = &l.value;
 
         if op == "=?" {
-            // `DomainCondition._optimize_step` splits a relational dotted path
-            // into `head any [rest op value]` at BASIC, BEFORE any operator
-            // optimisation runs, so `=?` is decided inside the sub-domain.
-            // Collapsing the whole leaf first turned `('currency_id.decimal_
-            // places', '=?', 0)` into TRUE -- every row -- where Odoo reads
-            // "currency_id is set"; the fuzzer's seed 3 found it as 232 rows
-            // against 0.
             let head_relational = matches!(
                 ttype,
                 Some(
@@ -1002,10 +938,6 @@ impl<'a> Compiler<'a> {
                 }
                 _ => {}
             }
-            // _Relational._optimize_condition: a string among the members is a
-            // display_name lookup on the comodel, OR-ed (AND-ed for `not in`)
-            // with the membership of the remaining ids; the sub-domain always
-            // carries the POSITIVE operator, `not any` supplies the negation
             if let (Json::Array(items), true) = (v, matches!(op, "in" | "not in"))
                 && items.iter().any(Json::is_string)
             {
@@ -1263,9 +1195,6 @@ impl<'a> Compiler<'a> {
                     op: "any".into(),
                     value: leaf.value.clone(),
                 });
-                // the comparand is a set of ids read as sudo, so the comodel's
-                // rules are skipped whatever the flag says; passed for the
-                // record, as every other caller passes it
                 self.x2many_subselect(
                     field,
                     Some(&sub),
@@ -1373,16 +1302,11 @@ impl<'a> Compiler<'a> {
         if !field.company_dependent || field.index.as_deref() != Some("btree_not_null") {
             return cond;
         }
-        // `_evaluate_condition_with_fallback` runs the condition on a record
-        // holding the LIVE fallback (ir.default for the company, else the
-        // field's own) and guards with IS NOT NULL only when that is False
         let fallback = self
             .ctx
             .cd_fallback_for(self.model, field)
             .or_else(|| field.falsy_json())
             .unwrap_or(Json::Null);
-        // filtered_domain sees False, None and the field's falsy value as one
-        // unset value: `barcode = False` on a Char fallback of '' is True
         let falsy = field.falsy_json();
         let unset = |v: &Json| is_null_like(v) || falsy.as_ref().is_some_and(|f| json_eq(f, v));
         let matches_fallback = |v: &Json| (unset(v) && unset(&fallback)) || json_eq(v, &fallback);
@@ -1416,9 +1340,6 @@ impl<'a> Compiler<'a> {
             }
             _ => true,
         };
-        // Odoo evaluates the condition against a record holding the live
-        // fallback; when that record would NOT satisfy it, rows with no
-        // company key must be excluded, and the IS NOT NULL guard is how
         tracing::trace!(
             target: "odoo_kernel::compile",
             model = %self.model.name,
@@ -1564,13 +1485,6 @@ impl<'a> Compiler<'a> {
         Ok((rel.to_string(), rel_alias, on))
     }
 
-    /// One many2one hop of a dotted groupby path, as
-    /// `_read_group_groupby_many2one_path` composes it: a LEFT JOIN of the
-    /// comodel's table under the comodel's record rules (an ACL check and
-    /// `_search([])` in Python, so no active filter and no field domain), the
-    /// rows the rules exclude grouping as NULL. Returns the comodel, the alias
-    /// the join binds and the ON condition; the caller chains the next hop
-    /// through `hop_compiler`.
     pub fn many2one_hop_join(&self, field: &Field) -> Result<(&'a Model, String, Condition)> {
         if field.ttype != FieldType::Many2one || !field.has_column {
             refuse!(
@@ -1587,8 +1501,6 @@ impl<'a> Compiler<'a> {
             col(&self.alias, &field.name)
                 .equals((Alias::new(coalias.as_str()), Alias::new("id"))),
         );
-        // `_search([])` on the comodel: its rules apply whatever the field
-        // declares, so the bypass question is answered, not asked
         if let Some(rules) = sub.comodel_rules(co, Some(false))? {
             let cond = sub.compile_rules(rules)?;
             if !cond.is_empty() {
@@ -1753,7 +1665,6 @@ impl<'a> Compiler<'a> {
                 co.display_name_search_exact.join(", ")
             );
         }
-        // an ordering comparison uses the first name field only
         let fnames: &[String] = if matches!(op, "<" | "<=" | ">" | ">=") {
             &fnames[..1]
         } else {
@@ -1765,9 +1676,6 @@ impl<'a> Compiler<'a> {
             (_, true) => Node::And(terms),
             (_, false) => Node::Or(terms),
         };
-        // _search_display_name_match: a relational name field is searched
-        // through its comodel's display_name, on the path, so the negation
-        // stays inside the traversal and an unset head does not match
         let matching = |op: &str, value: &Json| {
             aggregate(
                 fnames
@@ -1796,8 +1704,6 @@ impl<'a> Compiler<'a> {
             if present.len() == values.len() {
                 return Ok(matching(op, value));
             }
-            // _search_display_name_unset: every name field unset; a relational
-            // one is unset when the field is, or its target's display_name is
             let unset_all = Node::And(
                 fnames
                     .iter()
@@ -1933,10 +1839,6 @@ impl<'a> Compiler<'a> {
         match op {
             "any" | "not any" | "any!" | "not any!" => {
                 let sub = crate::domain::parse(value)?;
-                // `any!` skips the comodel's access on EVERY relational field
-                // (`_base.py`: `bypass_access = self.bypass_search_access or
-                // operator in ("any!", "not any!")`); the many2one path
-                // honours it below and this one used to drop the `!`
                 let bypass = if op.ends_with('!') {
                     Some(true)
                 } else {
@@ -2068,8 +1970,6 @@ impl<'a> Compiler<'a> {
             }
             FieldType::Many2many => {
                 let (rel, c1, c2) = field.m2m_columns()?;
-                // the relation table has no fields of its own; what Odoo
-                // flushes for it is the many2many field
                 self.ctx.touch(&self.model.name, &field.name);
                 select
                     .expr(col(rel, c1))
@@ -2121,9 +2021,6 @@ impl<'a> Compiler<'a> {
             }
         }
 
-        // Odoo reads NULL and the field's falsy value as one unset value, so a
-        // membership that contains either widens to `IS NULL` as well; this is
-        // the line that says whether a row with no value answers the leaf
         tracing::trace!(
             target: "odoo_kernel::compile",
             model = %self.model.name,
@@ -2163,11 +2060,6 @@ impl<'a> Compiler<'a> {
                 Expr::cust("TRUE")
             });
         }
-        // NOT a refusal: reaching this means the branches above disagreed with
-        // each other, which is a defect in this function rather than a
-        // capability the kernel lacks. It carries no `odoo_kernel::refusal`
-        // line for that reason, and logs at `error` so it is visible with
-        // `RUSTORM_LOG` unset -- the default filter is `warn`.
         sql.ok_or_else(|| {
             tracing::error!(
                 target: "odoo_kernel::compile",
@@ -2183,26 +2075,12 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    /// Odoo's trigram accelerator: a conjunct on the ONE expression the GIN
-    /// index is declared over, which the base condition already implies.
-    ///
-    /// Without it a `like` over a translated `index="trigram"` field is a
-    /// sequential scan, because the index is on
-    /// `unaccent(jsonb_path_query_array(col, '$.*')::text)` and nothing else
-    /// can use it -- so the kernel was slower than the Python it replaces on
-    /// exactly the path a product autocomplete takes. See `crate::trigram`.
-    ///
-    /// Only the POSITIVE operators, as Odoo does: `not like` gets no
-    /// conjunct, because "does not contain" is not implied by the prefilter.
     fn trigram_indexed(&self, field: &Field) -> bool {
         self.ctx.registry.has_trigram
             && field.translated
             && field.index.as_deref() == Some("trigram")
     }
 
-    /// The conjunct itself, over the RAW jsonb column rather than the
-    /// language extraction the base condition compares: the index is over
-    /// every translation, and only that expression can use it.
     fn trigram_conjunct(&self, field: &Field, pattern: String, insensitive: bool) -> Expr {
         let left = Expr::cust_with_exprs(
             "jsonb_path_query_array($1, '$.*')::text",
@@ -2227,10 +2105,6 @@ impl<'a> Compiler<'a> {
             return None;
         }
         let pattern = crate::trigram::pattern_to_pattern(raw);
-        // Without a conjunct the LIKE is a sequential scan on a large table,
-        // which is the one shape where this kernel was slower than the Python
-        // it replaces; `%` means the pattern has no run long enough to
-        // constrain a trigram index, so no conjunct is implied.
         tracing::debug!(
             target: "odoo_kernel::compile",
             model = %self.model.name,
@@ -2246,9 +2120,6 @@ impl<'a> Compiler<'a> {
         Some(self.trigram_conjunct(field, pattern, op.ends_with("ilike")))
     }
 
-    /// The same accelerator for a single-valued `in` -- which is what an `=`
-    /// on a translated field becomes. Odoo compares it with LIKE rather than
-    /// ILIKE, because the equality it accompanies is case-sensitive too.
     fn trigram_accelerator_for_value(&self, field: &Field, values: &[Json]) -> Option<Expr> {
         if !self.trigram_indexed(field) {
             return None;
@@ -2296,9 +2167,6 @@ impl<'a> Compiler<'a> {
         };
         let insensitive = op.ends_with("ilike");
         let negative = op.starts_with("not ");
-        // unaccent() on both sides is what Odoo emits when the function
-        // exists; without it an ilike compares accented text literally, so
-        // the same domain answers differently on a database that lacks it
         tracing::trace!(
             target: "odoo_kernel::compile",
             model = %self.model.name,
@@ -2342,8 +2210,6 @@ impl<'a> Compiler<'a> {
         value: &Json,
         can_be_null: bool,
     ) -> Result<Expr> {
-        // an unset comparand never reaches here: optimize_leaf rewrote it to
-        // the field's falsy value or to FALSE
         if field.ttype == FieldType::Html {
             refuse!(
                 "{} {op} compares against the sanitized value, which Python computes",
@@ -2420,8 +2286,6 @@ pub fn agg_expr(func: &str, inner: Expr, table: &str) -> Result<Expr> {
         "count_distinct" => Expr::cust_with_exprs("COUNT(DISTINCT $1)", [inner]),
         "bool_and" => Expr::cust_with_exprs("BOOL_AND($1)", [inner]),
         "bool_or" => Expr::cust_with_exprs("BOOL_OR($1)", [inner]),
-        // READ_GROUP_AGGREGATE orders the members by the row id, and the
-        // distinct form sorts the distinct values
         "array_agg" => Expr::cust_with_exprs(
             format!("ARRAY_AGG($1 ORDER BY {}.\"id\")", crate::db::ident(table)),
             [inner],
@@ -2458,9 +2322,6 @@ pub fn granularity_expr(
     tz: Option<&str>,
     week_start: Option<i32>,
 ) -> Result<Expr> {
-    // A datetime groupby buckets in the CONTEXT timezone, not the user's, and
-    // a week bucket starts on the language's first weekday: both move rows
-    // between groups rather than erroring when they are wrong.
     tracing::debug!(
         target: "odoo_kernel::compile",
         granularity = gran,
@@ -2526,13 +2387,6 @@ fn order_expr(ctx: &ExprCtx, model: &Model, f: &Field, alias: &str) -> Result<Ex
 pub struct OrderJoin {
     pub table: String,
     pub alias: String,
-    /// The left side of the join, as an EXPRESSION rather than a column name.
-    ///
-    /// A column name cannot express a company-dependent many2one: the column is
-    /// a `jsonb` keyed by company and the id lives inside it, so joining the
-    /// comodel on the raw column asks PostgreSQL for `jsonb = integer` and the
-    /// statement dies before it runs. `ExprCtx::field_expr` is what every other
-    /// reader of that field already uses.
     pub from: Expr,
 }
 
@@ -2742,9 +2596,6 @@ fn order_terms(
             continue;
         }
         let comodel = ctx.registry.get(field.comodel()?)?;
-        // NOT the raw column: a company-dependent many2one keeps its id inside
-        // a jsonb, and both the ORDER BY term and the join below have to read
-        // it the way the rest of the compiler does
         let fk = order_expr(ctx, model, field, alias)?;
 
         if comodel.order.trim() == "id" {
@@ -2772,12 +2623,7 @@ fn order_terms(
             });
         }
 
-        // __m2o_order_seen is scoped to the recursion path: the same field
-        // reached through two chains sorts once per chain
         seen.push(key);
-        // ordering by a many2one whose comodel is not ordered by id means a
-        // LEFT JOIN per hop, and the comodel's own _order recurses -- this is
-        // where an order clause stops being free
         tracing::debug!(
             target: "odoo_kernel::compile",
             model = %model.name,
@@ -2787,8 +2633,6 @@ fn order_terms(
             depth = joins.len(),
             "ordering through a many2one; joining the comodel"
         );
-        // Postgres truncates identifiers at 63 bytes, where two long chains
-        // would collide; a long alias keeps its field and hashes its parent
         let join_alias = {
             let full = format!("{alias}__{fname}");
             if full.len() <= 56 {

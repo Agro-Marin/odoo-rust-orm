@@ -84,8 +84,6 @@ with registry.cursor() as cr:
             per[key]["missing_model"] += 1
             continue
         uid = call.get("uid") or 2
-        # HttpCase users may have been rolled back after capture. Replaying an
-        # absent identity only compares denials, not the original request.
         cr.execute("SELECT 1 FROM res_users WHERE id = %s", (uid,))
         if not cr.fetchone():
             per[key]["missing_user"] += 1

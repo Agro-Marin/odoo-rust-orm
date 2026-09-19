@@ -23,7 +23,7 @@ from odoo.modules.registry import Registry
 
 if not os.environ.get("PYTHONPATH"):
     print("COPY SKIP: no PYTHONPATH; engine_py must be importable")
-    sys.exit(3)  # skipped, not passed
+    sys.exit(3)
 
 import engine_py
 
@@ -92,8 +92,6 @@ def read_back(tag):
 failures = []
 
 if type(env.cr._cnx).__name__ == "FakeConnection":  # noqa: F821
-    # The reference batch has to be written by psycopg; on a conf that arms
-    # rust_engine it is written by the very encoder this compares it against.
     print("COPY VACUOUS: the psycopg batch would be written through the rust cursor")
     sys.exit(1)
 create_batch("PSYCOPG")

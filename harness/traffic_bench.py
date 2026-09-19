@@ -1,27 +1,3 @@
-"""What routing is worth on recorded traffic, method by method.
-
-Every other speed figure in this repository is either the kernel alone or a
-synthetic corpus. This replays calls Odoo actually served -- the byte-parity
-stage's capture, or any `rust_engine_capture` file -- in one process, twice
-per round: once with the method shim routing and once with it off, verify
-sampling at zero so nothing is answered twice. Rounds interleave, and the best
-of each leg is kept.
-
-It is how a routed path that is correct and SLOWER gets found. On 2026-09-12
-it read routed `web_read_group` at 3.95x Python, every answer exact: the shim
-browsed each many2one group value on its own, so the caller's read of the
-groups' names fetched once per record per field.
-
-It also splits every method's calls by whether the routed leg actually
-reached the kernel, and names the slowest calls that did not. The first
-readings were distorted by exactly that: four `iap.account` calls, whose
-`web_read` override does its own slow work, took 2.06 s of a 2.88 s
-`web_search_read` total, so the method read 0.89x while the calls the kernel
-answered ran at 0.55x.
-
-    RUSTORM_REPLAY=<capture.jsonl> odoo-bin shell ... < traffic_bench.py
-"""
-
 import collections
 import json
 import os

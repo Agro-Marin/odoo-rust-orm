@@ -1,35 +1,4 @@
 #!/usr/bin/env python3
-"""Measure the hybrid the way it is actually served: over HTTP, concurrently.
-
-Every performance number this project has is single-threaded and below the
-web stack. `bench` loops on one connection in pure Rust, which is the right
-shape for comparing per-query cost and the wrong shape for the thing that
-ships -- and the README has said so since 2026-08-28: "a concurrent
-measurement of the hybrid still does not exist, and that is the number M3
-actually rests on". It could not exist, because until `rust_engine` there was
-no way to put the kernel inside a real `odoo-bin` at all.
-
-This drives JSON-RPC against a running prefork server, which means the number
-it produces is diluted by HTTP, session handling, dispatch and JSON on both
-sides. THAT IS THE POINT. A user's read costs all of those whether the rows
-come from Rust or from Python, and a speedup quoted without them is a speedup
-of something nobody runs.
-
-Fairness rules, because the comparison is worth nothing without them:
-
-  * the SAME server binary and config, restarted between modes, so neither
-    side inherits the other's caches;
-  * a warmup phase whose results are discarded, so registry load and the ORM
-    cache fill are not charged to whichever mode ran first;
-  * modes measured in an A/B/A/B order and reported as medians, because a
-    single pass on this box drifts enough to invent a difference;
-  * identical request bodies, verified to return identical answers before
-    anything is timed.
-
-Usage:
-    python3 harness/http_bench.py --port 8073 --db mydb --password pw \\
-        --threads 8 --seconds 20
-"""
 
 import argparse
 import http.cookiejar
@@ -183,13 +152,6 @@ HEAVY_CALLS = [
 ]
 
 
-# A write cycle, one record at a time, the way a form saves: create, write,
-# read back, unlink -- nothing accumulates, and the burn-in's "on" leg
-# exercises the persistence port's create_rows and update_rows under
-# prefork rather than only the routed reads. The answers are not comparable
-# between calls (every create returns a fresh id), so this profile carries
-# no expected list; what guards the port's rows is the write differential,
-# and what this measures is that nothing raises and nothing leaks under load.
 def _write_cycle(state, i):
     step = i % 5
     if step == 0:

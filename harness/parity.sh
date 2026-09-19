@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
-#
-# Byte parity between a routed server and an unrouted one.
-#
-#   harness/parity.sh --db <db> --password <admin pw> [--port N] [--models N]
-#
-# The shadow lane, the replay lane and the kernel sweep all compare a
-# METHOD'S RESULT. None of them can see a difference in what the server
-# SENDS, and on 2026-09-08 a routed `web_search_read` was dropping the
-# response envelope's `version` key while all three reported agreement. This
-# drives the same corpus over real HTTP against both and diffs the bytes.
-#
-# The OFF leg is recorded TWICE. A case whose two baseline passes disagree is
-# nondeterministic -- a LIMIT window over equal sort keys, a timestamp in the
-# payload -- and is reported separately rather than counted as a divergence,
-# because an instrument that cannot tell the two apart is not an instrument.
 
 set -uo pipefail
+
+usage() {
+  cat <<'USAGE'
+
+Byte parity between a routed server and an unrouted one.
+
+  harness/parity.sh --db <db> --password <admin pw> [--port N] [--models N]
+
+The shadow lane, the replay lane and the kernel sweep all compare a
+METHOD'S RESULT. None of them can see a difference in what the server
+SENDS, and on 2026-09-08 a routed `web_search_read` was dropping the
+response envelope's `version` key while all three reported agreement. This
+drives the same corpus over real HTTP against both and diffs the bytes.
+
+The OFF leg is recorded TWICE. A case whose two baseline passes disagree is
+nondeterministic -- a LIMIT window over equal sort keys, a timestamp in the
+payload -- and is reported separately rather than counted as a divergence,
+because an instrument that cannot tell the two apart is not an instrument.
+USAGE
+}
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE="${RUSTORM_WORKSPACE:-$(cd "$ROOT/.." && pwd)}"
@@ -32,7 +37,7 @@ while [ $# -gt 0 ]; do
     --port)     PORT="$2"; shift 2 ;;
     --models)   MODELS="$2"; shift 2 ;;
     --out)      OUT="$2"; shift 2 ;;
-    -h|--help)  sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -50,8 +55,6 @@ src, dst, addons, port = sys.argv[1:5]
 conf = open(src).read()
 conf = re.sub(r"(?m)^addons_path\s*=\s*(.*)$",
               lambda m: "addons_path = %s,%s" % (m.group(1), addons), conf)
-# `workers = 0` on purpose: one process, so a leg's behaviour is one
-# kernel's and not an average over however many workers happened to serve.
 for key, value in (("http_port", port), ("workers", "0"), ("db_maxconn", "8")):
     if re.search(r"(?m)^%s\s*=" % key, conf):
         conf = re.sub(r"(?m)^%s\s*=.*$" % key, "%s = %s" % (key, value), conf)
@@ -89,15 +92,7 @@ boot() {
     echo "rust_engine_db = $DB"
     echo "rust_engine_mode = $mode"
     echo "rust_engine_verify_sample = 0"
-    # The OFF leg is Python answering 1,387 realistic RPC calls, which is
-    # exactly what the replay lane wants and what it has never had. Capturing
-    # it here costs one config line and no extra boot; `verify.sh` picks the
-    # file up if nobody supplied one of their own.
     [ "$mode" = off ] && echo "rust_engine_capture = $OUT/capture.jsonl"
-    # Short, because the ONLY evidence that the `on` leg routed anything is
-    # this report. A parity run whose routed count is zero compared python
-    # with python and its OK means nothing -- the denominator-of-zero trap,
-    # and the guard below is the whole reason the number is asked for.
     echo "rust_engine_report_seconds = 5"
   } > "$OUT/$mode.conf"
   PYTHONPATH="$OUT/pymod" setsid nohup "$PY" "$ODOO/odoo-bin" -c "$OUT/$mode.conf" -d "$DB" \
@@ -120,7 +115,7 @@ grep -a 'routing mode' "$OUT/off.log" | tail -1 | sed 's/^/  /'
 boot on
 record "$OUT/on.json"
 grep -a 'routing mode' "$OUT/on.log" | tail -1 | sed 's/^/  /'
-sleep 7   # let at least one report tick land before the log stops growing
+sleep 7
 ROUTED=$(grep -a 'rust kernel: mode=on' "$OUT/on.log" | tail -1 \
          | sed -n 's/.*[ =]routed=\([0-9][0-9]*\).*/\1/p')
 ROUTED=${ROUTED:-0}
@@ -148,15 +143,11 @@ by_shape = collections.Counter(
 unstable_shape = collections.Counter(
     "%s.%s" % (cases[k]["model"], cases[k]["method"]) for k in unstable)
 
-# How much of the corpus actually exercised a read, so an OK is readable.
-# A case that raises AccessError on both legs agrees about the access
-# decision and nothing else; a corpus of nothing but those would pass this
-# gate while proving no answer was ever compared.
 def _answered(body):
     try:
         payload = json.loads(body)
     except ValueError:
-        return False          # a transport line or a non-JSON error body
+        return False
     return isinstance(payload, dict) and "error" not in payload
 
 answered = sum(1 for k in stable if _answered(a[k]))

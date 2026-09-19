@@ -73,7 +73,6 @@ def referenced_paths(case):
             paths.add(agg.split(":")[0])
     domain_paths(case.get("domain"), "", paths)
     for term in (case.get("order") or "").split(","):
-        # a read_group order may name an aggregate: `amount:sum desc`, `__count`
         head = term.split()[0].split(":")[0] if term.strip() else ""
         if head and head != "__count":
             paths.add(head)
@@ -137,22 +136,6 @@ def inapplicable(env, case) -> str | None:
 
 
 def python_only():
-    """Turn the engine off in this process, and report how to prove it stayed off.
-
-    This file writes what PYTHON answers; every stage that diffs against it
-    reads it as the reference. `verify.sh` arms `rust_engine` for the battery's
-    database, because the stages that must exercise routing need that -- and
-    this generator runs through the same `odoo-bin shell` with the same conf.
-    So until 2026-09-12 the "expected" side routed through whatever `engine_py`
-    the process imported: 3,601 of the kernel sweep's calls in a battery that
-    morning, 666 of a fuzz seed's, and the kernel sweep, fuzz and shadow corpus
-    were comparing a kernel against a kernel for most of what they called
-    compared. It surfaced as a fuzz case whose "Python" answer flipped between
-    batteries, because the kernel it was really reading changed.
-
-    Routing is switched off before the first case, and the caller checks the
-    shim's own counter afterwards: a baseline the kernel touched is not written.
-    """
     try:
         import rust_orm_shim
     except ImportError:

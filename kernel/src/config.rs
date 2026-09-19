@@ -1,9 +1,5 @@
 use std::path::PathBuf;
 
-/// Every setting here has a silent fallback, and a wrong one is not an error:
-/// it connects to the wrong database, reads the wrong conf, or imports another
-/// environment's packages and reports success. `odoo_kernel::config` says which
-/// value was used and whether the environment chose it or the default did.
 fn var(name: &str) -> Option<String> {
     let value = std::env::var(name).ok().filter(|v| !v.is_empty());
     tracing::trace!(
@@ -23,8 +19,6 @@ fn resolved<T: std::fmt::Debug>(setting: &str, value: T, from_env: bool) -> T {
 
 pub fn workspace() -> PathBuf {
     let given = var("RUSTORM_WORKSPACE");
-    // the default is one developer's layout; anywhere else this MUST be set,
-    // and a wrong workspace resolves a conf and a venv that both exist
     resolved(
         "workspace",
         given
@@ -78,8 +72,6 @@ pub fn dsn_for(db_name: Option<&str>) -> String {
             false,
         ),
     };
-    // the dsn carries a password when RUSTORM_DSN does, so only the database
-    // it names is logged -- which is the part that is ever wrong
     tracing::debug!(
         target: "odoo_kernel::config",
         dbname = ?dsn.split_whitespace().find_map(|kv| kv.strip_prefix("dbname=")),
@@ -91,7 +83,6 @@ pub fn dsn_for(db_name: Option<&str>) -> String {
 
 fn with_dbname(dsn: &str, db_name: &str) -> String {
     if let Some((scheme, rest)) = dsn.split_once("://") {
-        // authority[/path][?query]: the path is the database
         let (authority_and_path, query) = match rest.split_once('?') {
             Some((a, q)) => (a, Some(q)),
             None => (rest, None),
@@ -154,9 +145,6 @@ pub fn odoo_conf() -> PathBuf {
     if by_venv.exists() {
         return resolved("odoo_conf", by_venv, false);
     }
-    // the workspace holds one conf per environment, so a single one is
-    // unambiguous and several are not -- falling back to the venv-named path
-    // then produces a file that does not exist rather than the wrong one
     let mut confs: Vec<PathBuf> = std::fs::read_dir(&root)
         .into_iter()
         .flatten()
@@ -202,9 +190,6 @@ pub fn venv_site() -> PathBuf {
     let venv = workspace().join(venv_name());
     let lib = venv.join("lib");
 
-    // the highest python3.x under the venv's lib/, because a venv can carry
-    // more than one and importing the wrong site-packages resolves a DIFFERENT
-    // psycopg than the interpreter that will run the tests
     let mut candidates: Vec<((u32, u32), PathBuf)> = std::fs::read_dir(&lib)
         .into_iter()
         .flatten()

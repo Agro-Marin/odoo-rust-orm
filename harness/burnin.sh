@@ -55,13 +55,6 @@ trap stop EXIT
 leg() {
   local mode="$1" log="$OUT/$1.log"
   stop
-  # `server_wide_modules` is APPENDED to, not replaced. Two reasons, and
-  # each of them broke a run: a second `server_wide_modules =` in the same
-  # section is a hard `malformed configuration file` from configparser, so a
-  # conf that already declares one (this workspace's does) could not boot the
-  # burn-in at all; and overwriting it with a fixed `base,web,rust_engine`
-  # silently drops whatever else the conf loads server-wide -- `rpc` here,
-  # which is the module the JSON-RPC bench calls through.
   local swm
   swm=$(sed -n 's/^server_wide_modules[[:space:]]*=[[:space:]]*//p' "$OUT/burnin.conf" | tail -1)
   swm="${swm:-base,web}"
@@ -78,10 +71,6 @@ leg() {
       > "$log" 2>&1 < /dev/null &
   local master=$!
   for _ in $(seq 1 120); do ss -ltn | grep -q ":$PORT " && break; sleep 1; done
-  # a prefork worker loads the registry on its first request: on a whole-tree
-  # database that is a minute, and a bench started before it answers only
-  # times out. Wait for the login page, which needs the registry, before timing
-  # anything (--ready-seconds caps the wait)
   local waited=0
   until [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/web/login")" = 200 ]; do
     sleep 2; waited=$((waited + 2))
@@ -91,10 +80,6 @@ leg() {
   "$PY" "$ROOT/harness/http_bench.py" --port "$PORT" --db "$DB" --password "$PASSWORD" --profile "$PROFILE" \
       --threads "$THREADS" --seconds 30 --warmup 5 --label "warm-$mode" > /dev/null 2>&1 || true
 
-  # The prefork master's children: the HTTP workers, and a cron worker that
-  # reports nothing and is not counted as reporting. These were read out of
-  # werkzeug's per-request log lines, which the fork no longer writes, and a
-  # burn-in that routed 85,000 calls read as one that routed none.
   local workers_pids
   workers_pids=$(pgrep -P "$master" | paste -sd' ' || true)
   rss() { local t=0 v; for p in $workers_pids; do
@@ -105,9 +90,6 @@ leg() {
   local rss_before conns_before
   rss_before=$(rss); conns_before=$(conns)
   local result bench_rc=0
-  # the bench's own failure used to be `|| true`: a wrong password or a port
-  # collision made every request fail, the workers' periodic lines still
-  # showed the warm-up's routed count, and the leg read as measured
   result=$("$PY" "$ROOT/harness/http_bench.py" --port "$PORT" --db "$DB" --password "$PASSWORD" --profile "$PROFILE" \
       --threads "$THREADS" --seconds "$SECONDS_" --warmup 5 --label "$mode" 2>"$OUT/bench_$mode.err" | tail -1) || bench_rc=$?
   if [ "$bench_rc" != 0 ] || [ -z "$result" ]; then
@@ -140,12 +122,6 @@ leg() {
     echo "  $mode: bench errors by kind:"
     sed -n 's/^  error: //p' "$OUT/bench_$mode.err" | sed 's/^/    /'
   fi
-  # A CLIENT-side answer change is a divergence and must be fatal. The
-  # server-side `diff` counter cannot see one: it compares the METHOD's
-  # result, and a routed `web_search_read` that returns identical records
-  # inside a response envelope missing a key is equal by that comparison and
-  # different to whoever consumes the response. This gate was blind to
-  # exactly that, and the first burn-in that ran found one.
   local changed
   changed=$(sed -n 's/.*"answer_changed": *\([0-9][0-9]*\).*/\1/p' <<<"$result" | head -1)
   changed=${changed:-0}

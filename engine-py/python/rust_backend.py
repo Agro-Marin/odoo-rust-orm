@@ -1,23 +1,3 @@
-"""The Rust engine on Odoo's persistence port.
-
-`odoo/orm/runtime/backend.py` declares `StorageBackend`, the protocol every
-row read and every row write in the ORM goes through, and ships two
-implementors: `PostgresBackend` and `InMemoryBackend`. `RustBackend` is a
-third. It wraps one of the others and answers whatever the kernel can answer
-natively, delegating the rest unchanged.
-
-This is a different seam from `rust_orm_shim`, which replaces methods on
-`BaseModel`. That one routes the calls a client makes -- `search_read`,
-`read`, `_read_group` -- and has to decide in Python whether the kernel
-supports each one. The port is below all of them: every path that touches a
-row arrives here, including the ones no RPC method names, and the protocol is
-pinned by `odoo/orm/tests/test_backend_dispatch_surface.py` rather than
-discovered by reading call sites.
-
-The two coexist. Installing the port changes no answer on its own: an
-unarmed `RustBackend` is its delegate with a counter attached.
-"""
-
 import collections
 import logging
 
@@ -25,15 +5,8 @@ from rust_engine_errors import KernelRefused, KernelRegistryStale
 
 _logger = logging.getLogger("odoo.rust_kernel.backend")
 
-# One line per call the port handed back, with the reason -- which call, not
-# how many, since `STATS` already aggregates. A call answered natively logs
-# nothing: that is the path this is used to widen, and a line per row read is
-# not a diagnostic.
 _port_logger = logging.getLogger("odoo.rust_kernel.port")
 
-#: Every member of `StorageBackend`. The conformance test reads this list out
-#: of the fork's own protocol and fails when the two disagree, so a method
-#: added upstream cannot reach a `RustBackend` that silently lacks it.
 PROTOCOL_FLAGS = (
     "sequences",
     "columns",
@@ -95,8 +68,6 @@ def stats():
     }
     for (method, reason), n in STATS["reasons_by_method"].items():
         out["reasons_by_method"].setdefault(method, {})[reason] = n
-    # The per-shape counters are a breakdown of `update_rows`, not calls of
-    # their own: counting them again would make the share exceed one.
     native = sum(v for k, v in out["native"].items() if "." not in k)
     total = native + sum(out["delegated"].values())
     out["native_share"] = (native / total) if total else 0.0
@@ -109,18 +80,6 @@ def reset_stats() -> None:
 
 
 class RustBackend:
-    """A `StorageBackend` that answers natively where it can.
-
-    The delegate is the backend the transaction would otherwise have used, so
-    a `RustBackend` that implements nothing natively is behaviourally that
-    backend. Native coverage is declared per method by `NATIVE`, which is
-    empty until a method has a differential test behind it: a method absent
-    from that set is delegated without ever being asked.
-    """
-
-    #: Methods this backend may answer without the delegate. Adding a name
-    #: here is the arming step, and it is deliberately separate from writing
-    #: the implementation: an implementation with no verification stays off.
     NATIVE: frozenset = frozenset({"update_rows", "create_rows"})
 
     __slots__ = ("_delegate",)
@@ -150,17 +109,11 @@ class RustBackend:
         return getattr(self._delegate, name)
 
     def _armed(self, method, model) -> bool:
-        """Armed for the method, and admitted by the routing mode and policy."""
         if method not in self.NATIVE:
             _delegated(method, "not armed")
             return False
         registry = getattr(getattr(model, "env", None), "registry", None)
         if registry is not None and not getattr(registry, "ready", True):
-            # a registry being (re)loaded in this process keeps the sequence
-            # the kernel was built from until the load ends; a write composed
-            # from the old export against a column the upgrade just changed
-            # aborts the upgrade, so the delegate writes until the new kernel
-            # is published
             _delegated(method, "the registry is loading")
             return False
         return _routing_allows(model, method)
@@ -278,19 +231,10 @@ class RustBackend:
         return self._delegate.increment_columns_skip_locked(*args, **kwargs)
 
 
-#: Set by the addon to the same callable `rust_orm_shim` uses, so the port
-#: and the method routing share one kernel per worker rather than building two.
 KERNEL_FOR = None
 
 
 def _kernel(env):
-    """The kernel for this environment, or None to delegate.
-
-    The port asks the routing shim rather than holding its own handle: one
-    kernel per worker is what makes the registry watermark, the statement
-    cache generation and the staleness flag mean the same thing on both
-    paths.
-    """
     if KERNEL_FOR is not None:
         return KERNEL_FOR(env)
     try:
@@ -302,23 +246,10 @@ def _kernel(env):
     return rust_orm_shim.KERNEL
 
 
-#: The routing shim, bound on first use: the port asks it on every native call
-#: and an import per call is a dictionary lookup it does not need to repeat.
 _SHIM = None
 
 
 def _routing_allows(model, method) -> bool:
-    """The routing mode and policy govern a native call as they govern a read.
-
-    `off` is off: a caller who turned routing off -- in the conf, or through
-    the kill switch in the middle of a run -- must not find the port still
-    composing UPDATE and INSERT. `shadow` returns Python's answer for a read,
-    and a write has no shadow to compare against, so it is Python's too. The
-    `only`/`except` lists, the breaker and a quarantine narrow the port the
-    way they narrow the shim, through the same `_policy_allows`. Two
-    attribute reads and one function call per native call; the statement
-    it guards is a round trip.
-    """
     global _SHIM
     if _SHIM is None:
         try:
@@ -337,11 +268,6 @@ def _routing_allows(model, method) -> bool:
 
 
 def _uniform_values(rows):
-    """`PostgresBackend._resolve_uniform_update_values`, decided here.
-
-    It compares Python values, so it stays in Python; what the answer selects
-    is which of the two statements the kernel composes.
-    """
     from odoo.orm.runtime.backend import _UNIFORM_UPDATE_TYPES
 
     if len(rows) < 2:
@@ -355,13 +281,6 @@ def _uniform_values(rows):
 
 
 def _update_rows_native(model, fnames, rows) -> bool:
-    """Run the kernel's `UPDATE` for this column-group, or report that it did not.
-
-    Returning False is not an error: every column the kernel refuses -- a
-    company-dependent one, a field it does not carry, a registry that has
-    moved under the process -- is one the delegate writes correctly, and the
-    caller falls through to it.
-    """
     from odoo.orm.primitives import UPDATE_BATCH_SIZE
 
     env = model.env
@@ -373,16 +292,9 @@ def _update_rows_native(model, fnames, rows) -> bool:
         None,
         kernel.registry_sequence,
     ):
-        # The same guard the routed read path applies: an environment whose
-        # Python registry has moved cannot use a kernel built from the old one.
         _delegated("update_rows", "the registry moved under this kernel")
         return False
 
-    # Every statement is composed BEFORE any of them runs. A refusal on the
-    # second batch after the first had already been written would leave the
-    # caller to delegate a group half of which was written here, and the two
-    # statements are only harmlessly idempotent by accident of what they
-    # assign. Composing first makes the refusal atomic.
     values = _uniform_values(rows)
     try:
         statements = []
@@ -392,8 +304,6 @@ def _update_rows_native(model, fnames, rows) -> bool:
             )
             params = []
             for value, repeat in zip(values, repeats, strict=True):
-                # A whole-value translated column names its value three times
-                # in the merge expression, so it is bound three times.
                 params.extend([value] * repeat)
             params.append([row[0] for row in rows])
             statements.append(("update_rows.uniform", sql, params))
@@ -421,21 +331,6 @@ def _update_rows_native(model, fnames, rows) -> bool:
 
 
 def _create_rows_native(model, stored_list, columns, col_fields):
-    """Run the kernel's `INSERT` for these rows, or return None to delegate.
-
-    Only the INSERT strategy. `PostgresBackend.create_rows` sends `COPY_THRESHOLD`
-    rows or more as a binary `COPY` unless the cursor is in a pipeline, and that path
-    is the cursor's: it preallocates the ids, resolves the column type OIDs and
-    streams the rows, all through `RustCopy`, which already encodes the stream
-    in Rust and is verified by `harness/copy_path.py`. The decision is taken
-    with the fork's own constants so the two strategies split exactly where
-    Python splits them.
-
-    The values are converted by the fork's own `_prepare_insert_rows`: a
-    translated or company-dependent column's jsonb is decided by
-    `convert_to_column_insert`, which reads the environment's language and
-    company, and that is Python's to decide.
-    """
     from odoo.libs.sql.builder import SQL
     from odoo.orm.runtime.backend import (
         COPY_DISABLED,
@@ -471,10 +366,6 @@ def _create_rows_native(model, stored_list, columns, col_fields):
         params = []
         for row in rows:
             for value in row:
-                # `SQL` inlines an `SQL` value as code and expands a tuple
-                # into a parenthesised list, so neither is ONE parameter. No
-                # column converter returns either today; one that starts to
-                # would change the statement's shape, which is the delegate's.
                 if isinstance(value, (SQL, tuple)):
                     _delegated(
                         "create_rows",
@@ -516,13 +407,6 @@ class _NoWireForm(Exception):
 
 
 def _domain_json(domain):
-    """The optimized domain as the prefix list the kernel parses, or raise.
-
-    `list(domain)` is Odoo's own serialisation and already thaws a sub-domain
-    into a list. What it cannot express is a value the kernel has no wire form
-    for -- a `Query` from a field's `search=` method, an `SQL` object, a
-    custom SQL node -- and every one of those is a delegation, not a guess.
-    """
     import json
 
     from odoo.orm.domain.ast import DomainCustom
@@ -552,17 +436,6 @@ def _walk(node):
 
 
 def _security_written(env):
-    """Why this transaction's security cannot be trusted to the kernel, or None.
-
-    The kernel compiles record rules, group membership and company access from
-    a snapshot keyed by Odoo's signalling watermark, and the watermark moves on
-    COMMIT. A transaction that wrote an `ir.rule`, a group or a user sees its
-    own change in Python and not in the kernel, so a native WHERE there would
-    apply the rules as they were. The method shim already tracks exactly that
-    per cursor (`DIRTY_CRS`, set by its create/write/unlink wrappers and
-    cleared on commit and rollback); the port reads the same set. Without the
-    shim nothing records the writes, and that is a delegation too.
-    """
     try:
         import rust_orm_shim
     except ImportError:
@@ -578,13 +451,6 @@ def _security_written(env):
 
 
 def _search_native(model, domain, offset, limit, order, check_access):
-    """A `Query` whose WHERE the kernel compiled, or None to delegate.
-
-    Everything after the WHERE is the fork's: `_order_to_sql` on the same
-    query, the limit and the offset, so what differs from
-    `_prepare_postgres_search_query` is exactly the part `domain._to_sql` and
-    the rule domain's `_to_sql` contribute.
-    """
     import json
 
     from odoo.libs.sql.builder import SQL
@@ -592,10 +458,6 @@ def _search_native(model, domain, offset, limit, order, check_access):
 
     env = model.env
     if not check_access and not env.su:
-        # `_search(bypass_access=True)` without superuser: no rules on the
-        # root, and the sub-queries still apply their comodels' rules. The
-        # kernel's two modes are "rules everywhere" and "superuser", and
-        # neither is this.
         _delegated("search", "bypass_access without superuser")
         return None
     why = _security_written(env)
@@ -639,12 +501,6 @@ def _search_native(model, domain, offset, limit, order, check_access):
         import rust_orm_shim
 
         conn = rust_orm_shim._rust_conn(env)
-        # Offline first: with the watermark checked earlier in this
-        # transaction and the identity and rules cached, the compile sends no
-        # statement, so nothing can fail on the server and no savepoint is
-        # needed. Only a compile that has to ask the database runs online, and
-        # that one does need the savepoint -- a database error in it must roll
-        # back to here rather than abort the transaction Python would finish.
         answer = kernel.search_where(conn, request, offline=True)
         if answer is None:
             _count("native", "search.online")
@@ -656,13 +512,6 @@ def _search_native(model, domain, offset, limit, order, check_access):
         return None
 
     payload = json.loads(payload)
-    # Odoo's WHERE carries `to_flush`, the fields the cursor writes before the
-    # statement runs; without them a search after a write in the same
-    # transaction reads the old row. The kernel reports every column its SQL
-    # reads -- the domain's, its sub-queries' `active` and field domains, the
-    # comodels' rules -- which is that set by construction rather than by a
-    # walk that predicts it. A field the Python registry does not know is a
-    # disagreement about the model, and not one to flush around.
     to_flush = []
     for name, fname in payload["touched"]:
         field = env[name]._fields.get(fname) if name in env else None
@@ -697,15 +546,6 @@ def installed():
 
 
 def install(dbname=None):
-    """Put a `RustBackend` in front of every PostgreSQL transaction.
-
-    `Transaction.__init__` is the only place a backend is chosen -- one site,
-    `environment.py:121` being the only caller -- so wrapping it covers every
-    transaction without touching the ORM. A transaction that chose
-    `InMemoryBackend` keeps it: that one is how the ORM runs with no database
-    at all, and wrapping it would put a kernel that needs a connection in
-    front of the case defined by not having one.
-    """
     global _INSTALLED, DBNAME
     if dbname is not None:
         DBNAME = dbname

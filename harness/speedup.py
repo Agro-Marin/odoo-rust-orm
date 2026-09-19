@@ -62,15 +62,7 @@ def main() -> None:
         sys.exit("no cases in common")
     speedups = sorted(((c, py[c] / rs[c]) for c in common), key=lambda x: x[1])
     values = [s for _, s in speedups]
-    # Two different questions. The median of per-case ratios gives every case
-    # one vote whatever it costs, so dozens of sub-millisecond `res.country`
-    # reads outvote one 196 ms scan; the time-weighted ratio is what a
-    # workload shaped like the corpus would see end to end. Neither is "the
-    # speedup".
     weighted = sum(py[c] for c in common) / sum(rs[c] for c in common)
-    # Cases only one side produced never enter the ratio. `bench_python.py`
-    # drops a case that raises without a word, so the intersection silently
-    # shrank the denominator; the count is printed so it cannot.
     py_only, rs_only = len(set(py) - set(rs)), len(set(rs) - set(py))
 
     print(

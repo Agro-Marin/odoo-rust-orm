@@ -1,19 +1,4 @@
 #!/usr/bin/env python3
-"""Compose the port's write statements with the FORK's backend, for the contract.
-
-`write_sql_contract.json` is read by two tests -- `test_shims.py` here and
-`kernel/tests/pure.rs` in the kernel -- so that the statements the kernel
-composes for `update_rows` and `create_rows` and the statements Odoo composes
-are pinned to one literal rather than to copies of each other. This module is
-the half that asks Odoo.
-
-    harness/write_sql_contract.py            print what the fork composes now
-    harness/write_sql_contract.py --update   rewrite the contract file
-
-`--update` is for an INTENDED change to the fork's composition: it makes the
-Python test green again and the Rust one red until the kernel is taught the
-same statement, which is the order the two should move in.
-"""
 
 import argparse
 import json
@@ -33,9 +18,6 @@ def load():
 
 
 class _Cursor:
-    # `create_rows` takes the COPY strategy for ten rows or more unless the
-    # cursor is in a pipeline; the contract is about its INSERT, so it says it
-    # is, and the row count stops deciding which statement is composed.
     in_pipeline = True
 
     def __init__(self):
@@ -54,14 +36,6 @@ class _Env:
 
 
 class _Field:
-    """Only the attributes `_update_assignments` reads.
-
-    A stub rather than a real field because the contract is about the SHAPE of
-    a column -- its declared cast and how it is translated -- and building a
-    real registry for four shapes would tie the contract to whichever database
-    happened to be around.
-    """
-
     is_html = False
 
     def __init__(self, name, cast, translate):
@@ -69,8 +43,6 @@ class _Field:
         self.column_type = (cast.lower(), cast)
         self.is_column = True
         self.company_dependent = False
-        # `translate is True` is the whole-value case the assignment merges;
-        # a callable is the term-translated one it replaces whole.
         self.translate = (
             True
             if translate == "whole"
@@ -129,7 +101,7 @@ def compose_insert(contract, case):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser()
     parser.add_argument(
         "--update", action="store_true", help="rewrite the contract file"
     )

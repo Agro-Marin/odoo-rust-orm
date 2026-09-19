@@ -1,10 +1,3 @@
-//! Stamps the extension with a checksum of the sources it was built from.
-//!
-//! The Python modules are compiled in with `include_str!`, so an extension
-//! built before a change to them imports cleanly and serves the old code.
-//! `rust_engine` recomputes the same checksum over its checkout and refuses to
-//! arm on a mismatch. `ENGINE_INPUTS` and the addon's `SOURCE_INPUTS` must name
-//! the same files.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -76,8 +69,6 @@ fn main() {
         })
         .collect();
     inputs.sort_by(|a, b| a.0.cmp(&b.0));
-    // Per file, not per directory: a directory watch also sees the
-    // `__pycache__` Python writes beside the modules, and rebuilds for it.
     for (_, path) in &inputs {
         println!("cargo:rerun-if-changed={}", path.display());
     }

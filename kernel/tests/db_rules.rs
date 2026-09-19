@@ -1,16 +1,3 @@
-//! The rule loader against a PostgreSQL, with and without the fork's
-//! `ir_rule.composition` column.
-//!
-//! Ignored by default. Run with the database these tests may use:
-//!
-//! ```text
-//! RUSTORM_TEST_DSN='host=/var/run/postgresql user=me dbname=scratch' \
-//!     cargo test -p odoo-kernel --test db_rules -- --ignored
-//! ```
-//!
-//! Each test builds the tables it needs in a schema of its own, on its own
-//! connection, and drops the schema at the end -- so they run in parallel,
-//! leave nothing behind, and never need an Odoo database.
 
 use odoo_kernel::registry::Registry;
 use tokio_postgres::Client;
@@ -40,9 +27,6 @@ async fn drop_schema(client: &Client, schema: &str) {
         .await;
 }
 
-/// The tables `Registry::load_security` reads, at the width it reads them,
-/// with one model, three read rules -- a granting group rule, a group rule
-/// the fork marks `restrict`, and a global one -- and the group they carry.
 async fn mini_security_schema(client: &Client, with_composition: bool) {
     let composition_col = if with_composition {
         ", composition varchar DEFAULT 'grant'"
@@ -85,7 +69,7 @@ fn shape(rules: &[odoo_kernel::registry::Rule]) -> Vec<(Vec<i32>, bool, bool)> {
             (
                 r.groups.clone(),
                 r.restrict,
-                !r.groups.is_empty() && !r.restrict, // what the combiner ORs
+                !r.groups.is_empty() && !r.restrict,
             )
         })
         .collect()
@@ -104,9 +88,9 @@ async fn a_restricting_rule_is_read_from_the_forks_column() {
     assert_eq!(
         shape(rules),
         vec![
-            (vec![7], false, true), // 10: a group rule that grants
-            (vec![7], true, false), // 11: a group rule that restricts
-            (vec![], false, false), // 12: a global rule
+            (vec![7], false, true),
+            (vec![7], true, false),
+            (vec![], false, false),
         ],
         "loaded in id order, classified as the fork classifies them"
     );

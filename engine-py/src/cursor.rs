@@ -157,10 +157,6 @@ fn skip_opaque(bytes: &[u8], i: usize) -> Option<usize> {
     }
 }
 
-/// psycopg's `%s` / `%(name)s` to postgres' `$1`. The statement the server
-/// and the prepared-statement cache both see is the OUTPUT of this, so a
-/// mistranslation is a cache key that never hits and a query that never matches
-/// what the caller wrote.
 fn translate_placeholders(sql: &str) -> (String, Vec<String>) {
     let bytes = sql.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(sql.len() + 8);
@@ -347,8 +343,6 @@ impl<'a> tokio_postgres::types::FromSql<'a> for JsonText {
     }
 }
 
-/// A numeric array element: the native value, or its text parsed as
-/// PostgreSQL would parse the literal psycopg sends.
 macro_rules! conv_parsed {
     ($name:ident, $t:ty) => {
         fn $name(v: &Bound<'_, PyAny>) -> PyResult<$t> {
@@ -427,8 +421,6 @@ fn conv_json(v: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
 
 fn conv_ip(v: &Bound<'_, PyAny>) -> PyResult<std::net::IpAddr> {
     let s: String = v.str()?.extract()?;
-    // A cidr value carries a prefix length; the address is what tokio-postgres
-    // encodes, and Postgres supplies the /32 or /128 back.
     let addr = s.split('/').next().unwrap_or(&s);
     addr.parse::<std::net::IpAddr>().map_err(rerr)
 }
@@ -529,9 +521,6 @@ fn py_to_sql(
         },
         Type::BYTEA => Box::new(v.extract::<Vec<u8>>()?),
         _ if is_vector(ty) => {
-            // Odoo hands an embedding over as the text form or as a list of
-            // numbers; psycopg ships the text and lets the server cast, which
-            // this transport cannot do, so it is parsed and encoded here.
             let floats = if let Ok(text) = v.extract::<String>() {
                 parse_vector_text(&text)
                     .ok_or_else(|| rerr(format!("not a vector literal: {text}")))?
@@ -557,11 +546,6 @@ fn py_to_sql(
                 });
             }
             if let tokio_postgres::types::Kind::Array(elem) = ty.kind() {
-                // a list whose elements are lists is a multi-dimensional array:
-                // psycopg sends `{{226}}` and PostgreSQL's `&&` finds 226 in it,
-                // where a one-dimensional encoder wrote the inner list's repr as
-                // one text element and matched nothing. The analytic filter
-                // binds `[['226']]`, so every analytic report read that way.
                 let nested = v
                     .try_iter()?
                     .filter_map(Result::ok)
@@ -570,10 +554,6 @@ fn py_to_sql(
                     return Ok(Box::new(TextParam(Some(py_seq_to_array_literal(v)?))));
                 }
                 return Ok(match *elem {
-                    // an element may arrive as its text -- `%s::int[]` over a
-                    // list of strings, as the analytic search hook binds ids --
-                    // and psycopg sends text the server casts, so the element
-                    // encoder accepts the text form as the scalar one does
                     Type::INT2 => Box::new(extract_opt_vec(v, conv_i16)?),
                     Type::INT4 => Box::new(extract_opt_vec(v, conv_i32)?),
                     Type::INT8 => Box::new(extract_opt_vec(v, conv_i64)?),
@@ -618,12 +598,6 @@ fn py_to_sql(
                 });
             }
 
-            // Nothing above recognised this pair, so the value is STRINGIFIED
-            // and the server is asked to cast it. That is psycopg's behaviour
-            // for an unregistered adapter and it is usually right -- but it is
-            // also the shape that produced this transport's worst defects,
-            // where a value the converter did not know became a plausible
-            // string instead of an error. Once per (python type, pg type).
             warn_generic_param(v, ty);
             let s: String = v.str()?.extract()?;
             if textual {
@@ -680,8 +654,6 @@ fn parse_tstz(s: &str) -> PyResult<chrono::DateTime<chrono::Utc>> {
         }
     }
     if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        // a bare date for a timestamptz column is read as UTC midnight, which
-        // is a CHOICE: the server would apply its own TimeZone setting
         tracing::debug!(
             target: "odoo_kernel::cursor",
             value = %s, "a bare date bound to a timestamptz; reading it as UTC midnight"
@@ -1009,15 +981,6 @@ fn warn_unknown_type(ty: &Type) {
     }
 }
 
-/// pgvector's binary format: `int16` dimensions, `int16` unused, then that
-/// many big-endian `float4`. The extension is in this workspace's database
-/// template and agromarin's AI modules store embeddings in it, so `vector` is
-/// a first-class column type here even though it is not a catalog one.
-///
-/// psycopg has no loader for it and therefore returns the TEXT form, `[1,2,3]`.
-/// This decodes the binary and renders the same string, so the two cursors
-/// agree; the rust cursor cannot ask for text format, which is the only
-/// reason a conversion is needed at all.
 #[derive(Debug)]
 struct PgVector(Vec<f32>);
 
@@ -1073,26 +1036,14 @@ impl tokio_postgres::types::ToSql for PgVector {
     tokio_postgres::types::to_sql_checked!();
 }
 
-/// `vector` comes from an extension, so its oid is per-database and there is
-/// no `Type` constant to match on; the name is what identifies it.
 fn is_vector(ty: &Type) -> bool {
     ty.name() == "vector"
 }
 
-/// PostGIS geometry and geography. psycopg has no loader for either and so
-/// returns the type's TEXT output, which for these two IS the hex-encoded
-/// WKB -- byte for byte what arrives here in binary. Rendering it as
-/// uppercase hex reproduces psycopg's string exactly.
-///
-/// Only these two. `box2d` and `box3d` print `BOX(...)` rather than hex, and
-/// `box2d` has no binary output function at all, so it cannot be read through
-/// this cursor by any means (see the note in README).
 fn is_postgis_wkb(ty: &Type) -> bool {
     matches!(ty.name(), "geometry" | "geography")
 }
 
-/// psycopg renders it with no spaces, and floats that are whole print without
-/// a decimal point -- `[1,2,3]`, not `[1.0, 2.0, 3.0]`.
 fn vector_to_text(v: &[f32]) -> String {
     let mut out = String::from("[");
     for (i, f) in v.iter().enumerate() {
@@ -1316,13 +1267,7 @@ pub struct RustConn {
     in_tx: AtomicBool,
     aborted: AtomicBool,
     ddl_in_tx: AtomicBool,
-    /// Incremented every time this connection opens a transaction, so a value
-    /// recorded inside one says nothing about the next.
     tx_serial: std::sync::atomic::AtomicU64,
-    /// The signalling snapshot a kernel compile verified in the transaction
-    /// numbered here, for the kernel generation named, so later compiles in
-    /// the same REPEATABLE READ transaction reuse it instead of reading the
-    /// watermark again.
     signals_checked: std::sync::Mutex<Option<(u64, u64, Arc<odoo_kernel::registry::Dynamic>)>>,
     autocommit: AtomicBool,
     pub readonly: AtomicBool,
@@ -1391,13 +1336,10 @@ impl RustConn {
         self.kernel_stmts.clone()
     }
 
-    /// Whether a transaction is open, without opening one.
     pub fn tx_open(&self) -> bool {
         self.in_tx.load(Ordering::SeqCst)
     }
 
-    /// The snapshot checked earlier in the CURRENT transaction for this
-    /// kernel generation, if there was one.
     pub fn checked_signals(&self, generation: u64) -> Option<Arc<odoo_kernel::registry::Dynamic>> {
         if !self.tx_open() {
             return None;
@@ -1448,9 +1390,6 @@ impl RustConn {
         self
     }
 
-    /// The error a statement raises on a connection whose task has ended:
-    /// the server's own FATAL when the task recorded one, so the caller
-    /// sees the SQLSTATE psycopg would have raised, else the socket error.
     fn lost_backend_error(&self, py: Python<'_>, err: PyErr) -> PyErr {
         let msg = err.value(py).to_string();
         if !msg.starts_with("SQLSTATE:|") {
@@ -1527,12 +1466,6 @@ impl RustConn {
         py.detach(|| self.handle.block_on(fut))
     }
 
-    /// A backend that PostgreSQL terminated answers one FATAL (class 57)
-    /// and closes the socket; psycopg marks the connection closed on that
-    /// reply, synchronously, and the pool's permit accounting reads the
-    /// flag right after the raise. tokio-postgres learns of the close on
-    /// its own task a moment later, so the flag is set here, from the
-    /// error, rather than waited for.
     fn note_lost_backend(&self, py: Python<'_>, err: &PyErr) {
         let msg = err.value(py).to_string();
         let fatal = msg.starts_with("SQLSTATE:57P")
@@ -1592,8 +1525,6 @@ impl RustConn {
     pub fn kernel_stmts_at(&self, generation: u64) -> Arc<odoo_kernel::orm::StmtCache> {
         let previous = self.kernel_generation.swap(generation, Ordering::SeqCst);
         if previous != generation {
-            // this connection last served a different kernel, whose plans were
-            // prepared against a registry that no longer describes the columns
             tracing::debug!(
                 target: "odoo_kernel::cursor",
                 previous, generation, dropped = self.kernel_stmts.len(),
@@ -1669,12 +1600,6 @@ fn declared_type(v: &Bound<'_, PyAny>) -> Type {
     }
 }
 
-/// The first keyword of the statement: past leading whitespace, comments and
-/// opening parentheses. `(WITH ... SELECT ...)` is a row-returning statement
-/// PostgreSQL accepts and Odoo composes -- `document.document`'s last-access
-/// compute wraps its CTE in parentheses -- and reading the first
-/// whitespace-separated token took `(WITH` as no keyword at all, so the
-/// statement ran without fetching and answered no rows and no description.
 fn leading_keyword(sql: &str) -> String {
     let bytes = sql.as_bytes();
     let mut i = 0;
@@ -1796,9 +1721,6 @@ impl RustConn {
         }
         self.ensure_tx(py)?;
         let in_tx = self.in_tx.load(Ordering::SeqCst);
-        // Every statement Odoo's Python ORM runs comes through here, so this
-        // is the one place the whole server's SQL is observable at once --
-        // the kernel's own queries go through `odoo_kernel::sql` instead.
         let t0 = std::time::Instant::now();
 
         let unparameterised = match &params {
@@ -1815,8 +1737,6 @@ impl RustConn {
         }
         if unparameterised && has_multiple_statements(query) {
             self.ddl_in_tx.store(in_tx, Ordering::SeqCst);
-            // several statements in one string cannot be prepared; they go
-            // through the simple protocol, where every value is text
             tracing::debug!(
                 target: "odoo_kernel::cursor",
                 sql = %query.chars().take(120).collect::<String>(),
@@ -1871,9 +1791,6 @@ impl RustConn {
                             let mut cache = self.stmt_cache.lock().unwrap();
 
                             if cache.len() >= odoo_kernel::db::MAX_PREPARED {
-                                // no LRU on the cursor cache: it is emptied
-                                // wholesale, so a workload above the cap
-                                // re-prepares everything on every pass
                                 tracing::debug!(
                                     target: "odoo_kernel::cursor",
                                     len = cache.len(),
@@ -1936,14 +1853,6 @@ impl RustConn {
                                 .insert(sql.clone(), s.clone());
                             Some(s)
                         }
-                        // A failed Parse is the statement's own error -- a
-                        // dropped column, a bad identifier -- and inside a
-                        // transaction it has already aborted it. Retrying the
-                        // statement unprepared, as this did, ran a second
-                        // statement on the aborted transaction and answered
-                        // InFailedSqlTransaction where psycopg answers
-                        // UndefinedColumn; analytic's plan-deletion test read
-                        // the wrong exception class for it.
                         Err(e) => return Err(db_err(e)),
                     },
                 };
@@ -1970,9 +1879,6 @@ impl RustConn {
                 }
                 list.append(PyTuple::new(py, cells)?)?;
             }
-            // `decode_ms` is this cursor's own cost: building Python objects
-            // out of the wire rows, which psycopg does in C. A read where it
-            // dominates `query_ms` is a conversion problem, not a SQL one.
             tracing::debug!(
                 target: "odoo_kernel::cursor",
                 rows = rows.len(),
@@ -2034,14 +1940,6 @@ impl RustConn {
         }
     }
 
-    /// libpq's `PQexec` as the fork's lifecycle calls it through
-    /// `conn.pgconn.exec_`: one simple-query round trip, no BEGIN folded in,
-    /// answered as `(ExecStatus, error message)` rather than raised. The
-    /// session reset on every cursor return and the liveness probe on borrow
-    /// both go through it, so it has to run on THIS connection: before it
-    /// existed the shim handed out the shared adapter connection's handle,
-    /// which reset a connection nobody was using and, driven from several
-    /// returning threads at once, corrupted libpq's heap.
     fn exec_simple(&self, py: Python<'_>, sql: &str) -> (i32, String) {
         use tokio_postgres::SimpleQueryMessage as M;
         const EMPTY_QUERY: i32 = 0;
@@ -2063,9 +1961,6 @@ impl RustConn {
                 if !self.in_tx.load(Ordering::SeqCst) {
                     self.clear_statement_flags();
                 }
-                // libpq answers with the LAST statement's status: the
-                // fork's reset string carries a SELECT in the middle and
-                // ends on DISCARD, and expects COMMAND_OK
                 let mut status = COMMAND_OK;
                 let mut pending_rows = false;
                 for m in &messages {
@@ -2512,9 +2407,6 @@ fn py_to_copy_text(v: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
     Ok(Some(v.str()?.to_string_lossy().into_owned()))
 }
 
-/// An array column with its dimensions. `Vec<T>` reads one dimension and
-/// fails on `{{226}}`, which the analytic filter's `[['226']]` round-trips
-/// as; psycopg hands back nested lists, and so does this.
 struct MultiArray<T> {
     dims: Vec<usize>,
     values: Vec<Option<T>>,
@@ -2786,7 +2678,6 @@ impl RustCopy {
             } else if self.row_mode {
                 self.buf.put_slice(COPY_BINARY_TRAILER);
             }
-            // else: raw `write` only, and the caller owns the trailer.
         }
         self.flush(py, true)?;
         let mut sink = self

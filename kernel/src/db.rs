@@ -18,8 +18,6 @@ struct StmtCacheInner {
 }
 
 impl StmtCache {
-    // LRU: a hit moves the statement to the back, so a hot one outlives the
-    // churn of distinct texts that used to evict it first-in first-out
     pub fn get(&self, sql: &str) -> Option<tokio_postgres::Statement> {
         let mut inner = self.inner.lock().unwrap();
         let hit = inner.map.get(sql).cloned();
@@ -106,8 +104,6 @@ pub fn ident(name: &str) -> String {
 pub struct Db<'a> {
     pub client: &'a Client,
     pub stmts: &'a StmtCache,
-    /// Raise `NeedsRoundTrip` instead of sending a statement. See
-    /// `crate::error::NeedsRoundTrip`.
     pub offline: bool,
 }
 
@@ -182,8 +178,6 @@ impl<'a> Db<'a> {
         Ok(rows?)
     }
 
-    /// `query`, sent even in offline mode. Only for the signalling watermark;
-    /// see `Orm::check_signaling`.
     pub async fn query_signals(&self, sql: &str) -> Result<Vec<tokio_postgres::Row>> {
         Db {
             offline: false,

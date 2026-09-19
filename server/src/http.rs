@@ -59,8 +59,6 @@ impl PooledConn {
     }
 
     fn poison(&self) {
-        // a connection whose transaction could not be ended holds a lock and
-        // a stale session state; it is replaced rather than reused
         tracing::warn!(
             target: "odoo_kernel::pool",
             prepared = self.stmts.len(),
@@ -207,10 +205,6 @@ impl Drop for TxGuard<'_> {
 }
 
 enum Auth {
-    /// The caller presented the shared secret and may name a `uid`. Whether
-    /// it may also claim `su` is a separate decision: the secret says the
-    /// caller is trusted to pick an identity, not that every identity it
-    /// picks should skip the ACL and the record rules.
     Token {
         secret: String,
         allow_su: bool,
@@ -230,15 +224,9 @@ impl Auth {
     }
 }
 
-/// What the transport lets the body say about WHO is asking. A pinned server
-/// overrides it; a token server takes the `uid` and refuses `su` unless the
-/// operator opted in, because one shared secret must not be a superuser read
-/// of the whole database by default.
 fn admit(auth: &Auth, req: &mut Request) -> Result<(), (StatusCode, &'static str)> {
     match auth {
         Auth::Pinned { uid } => {
-            // the body's own uid/su are DISCARDED here; a caller that thinks
-            // it asked as somebody else got this identity instead
             tracing::trace!(
                 target: "odoo_kernel::http",
                 pinned = *uid, requested = ?req.uid, requested_su = req.su,
@@ -318,9 +306,6 @@ pub async fn serve(db: &str, port: u16, export: Option<&str>, options: ServeOpti
             Auth::Token { secret, allow_su }
         }
         None => {
-            // uid 2 is the administrator on every Odoo database: an
-            // unauthenticated listener answering as admin reads everything, so
-            // the pinned identity must be chosen, never defaulted
             let uid: i32 = std::env::var("RUSTORM_SERVE_PINNED_UID")
                 .ok()
                 .and_then(|v| v.trim().parse().ok())
@@ -433,8 +418,6 @@ async fn dispatch_once(state: &AppState, req: &Request) -> Result<String> {
         match tokio::time::timeout(state.request_timeout, orm.dispatch_in_transaction(req)).await {
             Ok(out) => out,
             Err(_) => {
-                // the connection is left holding an open transaction, so the
-                // TxGuard poisons it on the way out
                 tracing::warn!(
                     target: "odoo_kernel::http",
                     model = %req.model,
@@ -456,8 +439,6 @@ async fn dispatch_once(state: &AppState, req: &Request) -> Result<String> {
     if let Err(e) = &out
         && odoo_kernel::orm::is_tx_end_failure(e)
     {
-        // the COMMIT or the ROLLBACK itself failed: the transaction state is
-        // unknown, and a second ROLLBACK on it proves nothing
         tracing::warn!(error = %e, "the transaction could not be ended; poisoning");
         conn.poison();
     } else if out.is_err()
@@ -575,8 +556,6 @@ async fn fresh_export(state: &AppState) -> Result<()> {
 }
 
 fn token_matches(given: &str, expected: &str) -> bool {
-    // keyed SipHash lanes from two per-process random keys: fixed-size digests,
-    // compared without any length short-circuit
     let lanes = [RandomState::new(), RandomState::new()];
     let digest = |s: &str| -> [u64; 2] {
         let mut out = [0u64; 2];
@@ -592,8 +571,6 @@ fn token_matches(given: &str, expected: &str) -> bool {
     let b = digest(expected);
     let diff = (a[0] ^ b[0]) | (a[1] ^ b[1]);
     let same_len = (given.len() ^ expected.len()) as u64;
-    // an empty secret admits nobody: `serve` never configures one, and a
-    // compare that said "" matches "" would be the one case worth abusing
     (diff | same_len) == 0 && !expected.is_empty()
 }
 
@@ -703,8 +680,6 @@ fn refuse(e: &anyhow::Error) -> axum::response::Response {
         .into_response()
 }
 
-// callers and the soak harness must tell overload and a timeout from a
-// refusal, a refusal from a denial, and any of those from a kernel defect
 fn status_of(e: &anyhow::Error) -> StatusCode {
     let text = format!("{e:#}");
     if odoo_kernel::orm::is_registry_stale(e)

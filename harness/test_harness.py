@@ -174,8 +174,6 @@ def test_json_output_carries_every_bucket(tmp_path) -> None:
 
 
 def test_a_run_the_kernel_mostly_declined_is_not_a_pass(tmp_path) -> None:
-    # refusals never fail a case, so a kernel that declines nine in ten used
-    # to score zero failures; the share of the run it declined is capped
     exp = tmp_path / "exp.json"
     act = tmp_path / "act.json"
     exp.write_text(
@@ -261,7 +259,6 @@ def test_corpus_stats_counts_the_file() -> None:
     assert sum(s["methods"].values()) == len(cases)
     line = corpus_stats.describe(s)
     assert line.startswith("%d cases across %d models (" % (s["cases"], s["models"]))
-    # the README's descriptive claim is the same sentence, so it cannot drift
     readme = pathlib.Path(HERE).parent.joinpath("README.md").read_text(encoding="utf-8")
     assert (
         "`harness/corpus.json`: %d cases across %d models" % (s["cases"], s["models"])
@@ -300,9 +297,6 @@ def _speedup_run(tmp_path, python_ms, rust_ms):
 
 
 def test_speedup_reports_both_aggregates_and_what_it_dropped(tmp_path) -> None:
-    # three tiny cases at 10x and one big case at 1x: the median says 10x,
-    # the clock says the corpus barely moved -- a reader given only the
-    # median had no way to know
     py = {"c1": 0.10, "c2": 0.10, "c3": 0.10, "c4": 200.0}
     rs = {"c1": 0.01, "c2": 0.01, "c3": 0.01, "c4": 200.0}
     code, lines = _speedup_run(tmp_path, py, rs)
@@ -312,8 +306,6 @@ def test_speedup_reports_both_aggregates_and_what_it_dropped(tmp_path) -> None:
     assert 1.0 <= weighted < 1.01
     assert "dropped before comparing" not in lines
 
-    # a case only python produced, and one only rust produced, are counted
-    # out loud instead of vanishing from the denominator
     code, lines = _speedup_run(tmp_path, {**py, "py_only": 5.0}, {**rs, "rs_only": 5.0})
     assert code == 0
     assert (

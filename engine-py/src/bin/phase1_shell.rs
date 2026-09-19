@@ -44,8 +44,6 @@ def run(reg, shim):
 
 fn main() -> Result<()> {
     engine_py::logbridge::install_stderr();
-    // SAFETY: main has spawned no thread yet, so no other thread can be reading
-    // the environment concurrently.
     unsafe {
         std::env::set_var("ODOO_DISABLE_COPY", "1");
     }
@@ -64,9 +62,6 @@ fn main() -> Result<()> {
         shim.setattr("RUST_DB", rust_db)?;
         shim.setattr("CONNINFO", odoo_kernel::config::dsn())?;
         shim.call_method0("install")?;
-        // `install` rebinds the pool factory; the layer itself is off until
-        // switched, and off means psycopg pools under a shim that reports
-        // itself installed -- the routing then raises on every model
         shim.call_method1("set_active", (true,))?;
         println!("[shim] psycopg pool patched: all connections are rust-backed");
 

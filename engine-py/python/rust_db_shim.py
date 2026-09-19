@@ -8,10 +8,6 @@ from typing import Never
 
 import psycopg
 
-# The pool the rust cursor plugs into, and the decision of whether a given DSN
-# is intercepted at all. A process holding pools for several databases keeps
-# psycopg for the others, and telling the two apart is the first thing to check
-# when a comparison reports the two cursors agreeing perfectly.
 _logger = logging.getLogger("odoo.rust_kernel.pool")
 
 RESET_SESSION_STATE_SQL = (
@@ -35,14 +31,6 @@ CONNINFO = None
 PSYCOPG_CONNINFO = None
 _ADAPT = None
 
-# The kill switch for THIS layer. `install()` rebinds the pool class once
-# and for the life of the process; whether the pool built for the armed
-# database is a rust one or the psycopg one Odoo would have built is decided
-# here, and `set_active` closes the database's pools so the next borrow
-# rebuilds them through the factory. The ORM shim's mode used to be the only
-# switch, and it only governed routing: with it off, every cursor in the
-# process was still a tokio-postgres one, and the driver swap the module
-# promises not to make without being asked was already made.
 ACTIVE = False
 
 
@@ -58,16 +46,6 @@ def _adapt_cnx():
 
 
 class _Diag:
-    """psycopg's `Diagnostic` surface, rebuilt from what rust carried over.
-
-    psycopg builds this from a live PGresult, so it cannot be constructed
-    directly and `Error.diag` is a read-only property -- hence the subclass
-    below. Every field psycopg exposes is present and defaults to None, so a
-    reader asking for one this transport does not carry gets None rather than
-    an AttributeError, which is what psycopg gives for a field the server
-    omitted.
-    """
-
     _FIELDS = (
         "severity",
         "severity_nonlocalized",
@@ -113,18 +91,9 @@ def _error_class_with_diag(cls):
 
 
 def _raise_pg(exc) -> Never:
-    # The rust error becomes the psycopg error's __context__, and its
-    # traceback runs from the shim's execute back through the fork's
-    # Cursor.execute to whoever called it -- so anything holding the raised
-    # error (a captured log record, assertRaises) held every frame on that
-    # path and the cursor in them. A cursor dropped after a lost backend was
-    # then never collected inside the block that watched for its __del__.
-    # psycopg raises from C with no context at all; this is the same shape.
     exc.__traceback__ = None
     msg = str(exc)
     if not msg.startswith("SQLSTATE:"):
-        # no SQLSTATE means the failure was in the transport, not the server;
-        # psycopg would have raised OperationalError for the same thing
         _logger.debug("rust cursor error with no SQLSTATE: %.200s", msg)
         raise psycopg.OperationalError(msg) from None
     body = msg[len("SQLSTATE:") :]
@@ -142,17 +111,6 @@ def _raise_pg(exc) -> Never:
 
 
 def _decode_query(query):
-    # tokio-postgres takes the statement as a `&str`, so bytes that are not
-    # UTF-8 cannot reach the server through this cursor at all. Decoding them
-    # with `.decode()` raised UnicodeDecodeError, which is not a
-    # `psycopg.Error` -- so a caller catching database errors saw nothing and
-    # a caller suppressing UnicodeDecodeError saw success.
-    #
-    # PostgreSQL rejects these bytes itself; measured against 18.x through
-    # psycopg, `SELECT '\xff\xfe'::int` gives CharacterNotInRepertoire,
-    # SQLSTATE 22021, `invalid byte sequence for encoding "UTF8": 0xff`.
-    # Raising that here is the server's own answer, produced one hop early
-    # because the transport cannot carry the question.
     try:
         return query.decode()
     except UnicodeDecodeError as exc:
@@ -185,9 +143,6 @@ class FakeCursor:
         return self
 
     def scroll(self, value, mode="relative"):
-        # psycopg's own semantics (_cursor_base._scroll): relative or
-        # absolute, IndexError outside the result set, and the position is
-        # left untouched when it would leave it.
         rows = self._result.rows if self._result else []
         if mode == "relative":
             newpos = self._pos + value
@@ -272,18 +227,6 @@ class FakeCursor:
 
 
 class _Copy:
-    """psycopg's `Copy` surface over `RustCopy`, translating its errors.
-
-    Rust reports a server error as `RuntimeError("SQLSTATE:23505|...")`, and
-    `FakeCursor.copy` used to hand the raw object straight to the caller. So
-    a constraint violation during a bulk insert arrived as a bare
-    RuntimeError: not catchable as `psycopg.errors.UniqueViolation`, and
-    carrying no `sqlstate` -- which is exactly what
-    `odoo.db.errors.has_reached_server` reads to decide whether a failed
-    statement cost a round trip. A COPY that failed ON THE SERVER was
-    therefore booked as one that never reached it.
-    """
-
     def __init__(self, rust_copy, connection=None):
         self._copy = rust_copy
         self._connection = connection
@@ -329,8 +272,6 @@ class _Prepared:
 
     @property
     def _names(self):
-        # psycopg's `_names` is a MAPPING of cache key -> prepared name, and
-        # callers ask it for a len(); a count cannot answer that.
         return self._rust.prepared_names
 
     def clear(self) -> None:
@@ -377,13 +318,6 @@ class FakeConnection:
 
     @property
     def pgconn(self):
-        # psycopg's adapter machinery (Composable.as_string, the COPY dumper
-        # lookup, DDL client-side formatting) reads the connection encoding
-        # off this handle and casts it to its own PGconn type, so it has to
-        # be a real one. The ONE call the fork makes on it that must reach
-        # this connection -- libpq's simple query, for the session reset on
-        # every return and the liveness probe on borrow -- is routed in
-        # `install()` by rebinding `lifecycle._run_simple_query` instead.
         return _adapt_cnx().pgconn
 
     @property
@@ -429,23 +363,11 @@ class FakeConnection:
         self._rust.close()
 
     def execute(self, query, params=None, *, prepare=None):
-        # `prepare` is part of psycopg's CONNECTION.execute signature, not
-        # just the cursor's, and Odoo uses it on the connection:
-        # `odoo/db/lifecycle.py` resets a returned connection with
-        # `conn.execute("DISCARD ALL", prepare=False)`. Without the keyword
-        # that call is a TypeError, so a shim that only matched the cursor's
-        # signature broke connection reset -- the path that keeps session
-        # state from leaking between pooled borrows.
         cur = self.cursor()
         cur.execute(query, params, prepare=prepare)
         return cur
 
     def pipeline(self):
-        # The rust cursor runs every statement immediately and already holds
-        # its result, so a pipeline block has nothing to sync; what the
-        # fork's cursor needs is an object to hold while the mode is on,
-        # since `in_pipeline` is "the pipeline is not None" and the
-        # savepoint and COPY refusals inside a block read that.
         return _Pipeline()
 
 
@@ -478,10 +400,6 @@ MAX_IDLE = 8
 
 
 def _close_quietly(conn, why) -> None:
-    # A close is best-effort everywhere it appears below: a pool that fails to
-    # return a connection must not fail the caller. But a close that RAISES has
-    # left a backend on the server, and suppressing it without a word is how a
-    # connection leak reaches production looking like nothing at all.
     try:
         conn.close()
     except Exception as exc:
@@ -529,8 +447,6 @@ _KEY_IGNORED = frozenset({"application_name", "options"})
 
 
 def _normalize_key(dsn):
-    # the same shape as odoo.db.dsn._normalize_dsn_key, so a key the pool
-    # hands over compares with one derived here
     import hashlib
 
     if isinstance(dsn, str):
@@ -588,10 +504,6 @@ def _identity(dsn, key=None):
 
 
 def _intercepts(pool, dsn, key=None):
-    # The engine is armed for ONE database and ONE identity. Getting this
-    # wrong in either direction is silent: too narrow and the rust cursor is
-    # never used, too wide and another database's connections are rebuilt on
-    # a connector that was not configured for it.
     if getattr(pool, "readonly", False):
         _logger.debug("not intercepting a readonly pool")
         return False
@@ -656,8 +568,6 @@ def pool_stats():
 
 
 class _ConnInfo:
-    # psycopg exposes these off `conn.info`; Odoo reads `server_version` in the
-    # borrow-time version gate and `backend_pid` under debug logging.
     def __init__(self, conn):
         self._conn = conn
         self._pid = None
@@ -691,15 +601,6 @@ class _ConnInfo:
 
     @property
     def transaction_status(self):
-        # `Cursor._is_connection_clean` reads this and is the only consumer in
-        # the fork; it asks one question, whether the status is IDLE. Without
-        # it that check raised, took its `except: return False` branch, and
-        # every cursor whose rollback hook raised cost a warm pooled
-        # connection -- a hook bug charged twice.
-        #
-        # Cursor.in_failed_transaction reads INERROR to decide whether a
-        # savepoint is rolled back or released; the rust connection marks its
-        # transaction aborted when a statement fails in it, as PostgreSQL does.
         from psycopg.pq import TransactionStatus
 
         if self._conn.closed:
@@ -712,11 +613,6 @@ class _ConnInfo:
         return TransactionStatus.INTRANS
 
 
-# tokio-postgres understands a SUBSET of libpq's keywords, so this is an
-# allowlist and not a denylist: psycopg's own pool passes `keepalives_count`
-# and friends, which libpq accepts and tokio-postgres refuses outright with
-# `unknown option`. A denylist here fails closed on the next keyword psycopg
-# adds, and it fails by refusing every connection.
 _DSN_KEYS = frozenset(
     (
         "host",
@@ -735,24 +631,6 @@ _DSN_KEYS = frozenset(
 
 
 def _dsn_with_kwargs(conninfo, kwargs):
-    # `_get_or_create_pool` assembles the libpq options here -- the pool's
-    # configured `db_session_gucs` among them -- and hands them to the pool
-    # as kwargs. A pool that drops them applies none of the deployment's
-    # session policy and says nothing about it.
-    # CONNINFO first, as the BASE: Odoo's connection_info carries dbname and
-    # user but often no host at all, because libpq falls back to PGHOST and
-    # the default socket directory. tokio-postgres does not -- it refuses with
-    # `both host and hostaddr are missing` -- so the armed dsn supplies the
-    # host and anything later wins, as libpq resolves a repeated keyword.
-    #
-    # The last part is resolved HERE rather than left to the connector,
-    # because tokio-postgres does not resolve it the way libpq does: it
-    # ACCUMULATES `host` and `port` and then requires the two counts to match.
-    # A string naming the host once and the port twice -- which is what
-    # `db_host =` produces, since only the armed dsn then carries a host --
-    # dies with `invalid configuration: invalid number of ports` before it
-    # opens a socket. With `db_host` set both halves carry both keys, the
-    # counts match by accident, and the same string connects.
     resolved = {}
     for text in (CONNINFO if isinstance(CONNINFO, str) else "", conninfo):
         if text:
@@ -768,16 +646,6 @@ def _dsn_with_kwargs(conninfo, kwargs):
 
 
 class _RustPool:
-    """A `psycopg_pool.ConnectionPool` whose connections are rust-backed.
-
-    Rebound over `odoo.db.pool._PsycopgPool`, so `ConnectionPool.borrow`,
-    `give_back`, the connection budget, the checkout tracker, the idle
-    reaper, `close_database` / `drain_database` and the stats are all Odoo's
-    own code running unmodified. The pool is the seam a connection plugs
-    into; replacing `borrow` instead meant reimplementing everything the pool
-    does AROUND a connection, and silently skipping most of it.
-    """
-
     def __init__(
         self,
         conninfo="",
@@ -806,12 +674,6 @@ class _RustPool:
         self._pid = os.getpid()
 
     def _forget_inherited_after_fork(self):
-        # NOTE the caller holds `self._cond`; nothing here may block on it.
-        # Caller holds the lock. A forked child inherits the parent's idle
-        # connections, and two processes writing one socket is a hang, not an
-        # error -- the load probe's child died on its alarm rather than
-        # reporting anything. They are DROPPED, never closed: closing sends a
-        # terminate message down a socket the parent still owns.
         pid = os.getpid()
         if pid != self._pid:
             _logger.debug(
@@ -830,8 +692,6 @@ class _RustPool:
 
     @property
     def _pool(self):
-        # psycopg_pool's idle deque, which the fork's health-check test reads
-        # to probe an idle connection by hand
         return [conn for conn, _gen in self._idle]
 
     @staticmethod
@@ -910,7 +770,6 @@ class _RustPool:
                     self._cond.wait(remaining)
                     continue
                 self._out += 1
-            # The callbacks talk to the server, so they run outside the lock.
             try:
                 if conn is None:
                     conn = self._connect_until(deadline, timeout)
@@ -922,8 +781,6 @@ class _RustPool:
                             self._out -= 1
                             self._cond.notify()
                         continue
-                # psycopg's pool stamps the connection with the pool that
-                # lent it, and Odoo reads it back off `cr._cnx._pool`.
                 conn._pool = self
                 conn._rust_pool_generation = generation
             except BaseException:
@@ -972,11 +829,6 @@ class _RustPool:
             _close_quietly(conn, "pool evicted or closed")
 
     def drain(self):
-        # A committed DDL invalidates every prepared plan a sibling
-        # connection holds, so `Cursor.commit` drains the pool and the
-        # registry drains on reload. Bumping the generation is what makes a
-        # connection that is currently OUT get closed on return instead of
-        # pooled with its stale plans.
         _logger.debug(
             "draining the pool: %d idle, %d out, generation %d -> %d",
             len(self._idle),
@@ -1008,8 +860,6 @@ class _RustPool:
 
 
 def _pool_intercepts(conninfo, kwargs):
-    # Retain libpq identity options even when tokio's connector does not
-    # accept them; only psycopg's Python-level arguments are excluded.
     driver_keys = {
         "autocommit",
         "prepare_threshold",
@@ -1025,11 +875,6 @@ def _pool_intercepts(conninfo, kwargs):
 
 
 def _close_armed_pools():
-    # A pool is built ONCE per dsn and cached, so a change in what the factory
-    # returns only reaches pools created after it. Closing the armed
-    # database's pools is what makes the next borrow go through the factory
-    # again; connections already checked out keep working and are closed on
-    # return instead of pooled.
     dbname = _dbname(CONNINFO)
     _logger.info(
         "rust connection layer switched for %s; pools built before this point are being closed",
@@ -1041,9 +886,6 @@ def _close_armed_pools():
         try:
             db_registry.close_db(dbname)
         except Exception as exc:
-            # the rebind only reaches pools built AFTER it, so a failure here
-            # leaves every existing borrow on psycopg while the shim reports
-            # itself installed -- the exact shape of a vacuous comparison
             _logger.warning(
                 "could not close the existing pools for %s (%s); borrows made "
                 "through them stay on psycopg",
@@ -1053,13 +895,6 @@ def _close_armed_pools():
 
 
 def set_active(flag):
-    """Turn the rust connection layer on or off for the armed database.
-
-    Off means the factory builds psycopg pools, so from the next borrow on
-    the process runs on the driver it would have had without this module;
-    on means rust pools. Either way the existing pools are closed so the
-    change takes effect now rather than on the next process.
-    """
     global ACTIVE
     flag = bool(flag)
     if flag == ACTIVE:
@@ -1076,9 +911,6 @@ def install():
     psycopg_pool_class = pool_module._PsycopgPool
 
     def pool_factory(conninfo="", **kwargs):
-        # The engine is armed for ONE database. A process holding pools for
-        # several -- the database manager, a cron sweeping the cluster --
-        # keeps psycopg for the others.
         if not ACTIVE:
             INSTALLED["inactive"] += 1
             return psycopg_pool_class(conninfo, **kwargs)
@@ -1091,28 +923,13 @@ def install():
         _logger.debug("building a rust-backed pool for the armed database")
         return _RustPool(conninfo, **kwargs)
 
-    # `odoo.db.pool._PsycopgPool` and `odoo.db.lifecycle._PsycopgPool` are two
-    # names for ONE class object, and `_check_connection` reads the second
-    # while `test_db_cursor` patches the first -- the health-probe tests are
-    # only meaningful because patching either reaches the other. Rebinding one
-    # name silently cuts that link, so both are rebound to one object, and it
-    # carries psycopg's own `check_connection` for the patch to replace.
     pool_factory.check_connection = psycopg_pool_class.check_connection
     pool_module._PsycopgPool = pool_factory
     lifecycle_module._PsycopgPool = pool_factory
 
-    # `_reset_connection` and `_probe_liveness` drive libpq's simple query
-    # through `conn.pgconn.exec_`, and `pgconn` above is the shared adapter
-    # connection's handle: through it every cursor return reset a connection
-    # nobody was using, and six returning threads drove one PGconn at once --
-    # `tcache_thread_shutdown(): unaligned tcache chunk detected` under the
-    # fork's race test, two runs in three. A rust-backed connection answers
-    # the call itself; anything else keeps the fork's own.
     original_simple_query = getattr(lifecycle_module, "_run_simple_query", None)
 
     def run_simple_query(conn, sql, expected):
-        # by type, not by attribute: the fork's own tests hand this a Mock,
-        # which answers every attribute
         if not isinstance(conn, FakeConnection):
             return original_simple_query(conn, sql, expected)
         rust = conn._rust
@@ -1129,11 +946,4 @@ def install():
         run_simple_query._rust_shim = True
         lifecycle_module._run_simple_query = run_simple_query
 
-    # A pool is built ONCE per dsn and cached, so rebinding the class alone
-    # only reaches pools created after this point -- and by the time the
-    # engine arms, the process has already built one. Every later borrow then
-    # draws a psycopg connection through a psycopg pool while the shim reports
-    # itself installed. Closing the armed database's existing pools is what
-    # makes the rebind take effect, and without it a gate comparing the two
-    # cursors compares psycopg with psycopg and reports perfect agreement.
     _close_armed_pools()

@@ -25,7 +25,7 @@ from odoo.modules.registry import Registry
 EXPORT = os.environ.get("RUSTORM_EXPORT")
 if not EXPORT or not pathlib.Path(EXPORT).exists():
     print("LOAD SKIP: set RUSTORM_EXPORT to a registry export")
-    sys.exit(3)  # skipped, not passed
+    sys.exit(3)
 
 import pathlib
 
@@ -192,9 +192,6 @@ with registry.cursor() as cr:
                 "mail_template_ids"
             ]
             after = dict(orm_shim.stats())
-            # the model itself may be gated on this database for a reason that
-            # has nothing to do with the write (a Python display name, a
-            # tainted cursor): then the second read cannot be expected to route
             own_gate = [
                 (m, meth, why)
                 for (m, meth, why) in orm_shim.GATE_REASONS
@@ -206,9 +203,6 @@ with registry.cursor() as cr:
                 "kernel_refused", 0
             )
             unexpected = lambda st: st["fallback_error"] - st.get("kernel_refused", 0)  # noqa: E731
-            # after the invalidation the read must REACH the kernel: an answer,
-            # or a refusal on the model's own grounds (a comodel with a Python
-            # _search here), both prove the write taint no longer holds it back
             read_ok = (
                 sorted(seen) == sorted((keep + gone).ids)
                 and mid_["kernel"] == before["kernel"]

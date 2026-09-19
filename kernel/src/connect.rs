@@ -57,9 +57,6 @@ impl Dsn {
                     };
                 }
                 "sslrootcert" => root_cert = Some(value.to_string()),
-                // every other keyword is passed through to the connector, which
-                // is where an unknown one is rejected -- this is the seam where
-                // a dsn stops being ours and becomes tokio-postgres'
                 _ => kept.push(part.to_string()),
             }
         }
@@ -91,9 +88,6 @@ impl Dsn {
     }
 
     pub fn tls(&self) -> Result<Option<tokio_postgres_rustls::MakeRustlsConnect>> {
-        // `require` encrypts without checking who answered; only verify-full
-        // authenticates the server. Which one a connection got is not
-        // recoverable afterwards, so it is logged where it is decided.
         tracing::debug!(
             target: "odoo_kernel::connect",
             mode = ?self.mode,
@@ -183,14 +177,6 @@ impl rustls::client::danger::ServerCertVerifier for EncryptOnly {
     }
 }
 
-/// What ended the connection task, as `SQLSTATE:<code>|<message>`, once
-/// it has ended. A backend PostgreSQL terminates answers one FATAL (class
-/// 57) and closes the socket; the driver task receives that reply and
-/// stops, so the next statement fails with a bare "connection closed"
-/// that carries no SQLSTATE. psycopg raises the FATAL itself, and the
-/// fork classifies a loss with a SQLSTATE differently from one without
-/// (logged plain against logged with a traceback), so the reply is kept
-/// here for the cursor to raise in the socket error's place.
 pub type FaultSlot = Arc<std::sync::Mutex<Option<String>>>;
 
 fn describe_fault(e: &tokio_postgres::Error) -> String {
@@ -253,8 +239,6 @@ pub async fn connect_with_fault(dsn: &str) -> Result<(Client, FaultSlot)> {
 }
 
 pub async fn cancel(token: CancelToken, dsn: &str) {
-    // a cancel opens a SECOND connection to ask the server to stop the first;
-    // it is best-effort and its failure is invisible without this line
     tracing::debug!(
         target: "odoo_kernel::connect",
         "cancelling the query on a poisoned connection"

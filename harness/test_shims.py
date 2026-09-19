@@ -13,7 +13,7 @@ sys.path.insert(0, str(HERE))
 
 try:
     import engine_py
-except ImportError as exc:  # pragma: no cover - depends on the build
+except ImportError as exc:
     engine_py = None
     IMPORT_ERROR = exc
 else:
@@ -126,13 +126,6 @@ def test_dbname_uri_specs() -> None:
 
 
 def test_the_composed_dsn_names_every_keyword_once() -> None:
-    # tokio-postgres ACCUMULATES `host` and `port` where libpq lets the last
-    # occurrence win, and then requires the two counts to match. Odoo's own
-    # connection_info carries a port and, with `db_host =` unset, no host at
-    # all -- so concatenating it onto the armed dsn gave one host and two
-    # ports and every borrow died with `invalid number of ports` before it
-    # opened a socket. Measured on this workspace's p314o19m.conf: the engine
-    # could not arm at all.
     db_shim = _shims()[0]
     saved = db_shim.CONNINFO
     try:
@@ -151,7 +144,6 @@ def test_the_composed_dsn_names_every_keyword_once() -> None:
         check("the host survives", "host='/var/run/postgresql'" in dsn, True)
         check("the later value wins", "dbname='mydb'" in dsn, True)
 
-        # a quoted value carrying spaces is one keyword, not several
         db_shim.CONNINFO = "host='/tmp' options='-c jit=off -c work_mem=16MB'"
         dsn = db_shim._dsn_with_kwargs("", {"dbname": "mydb"})
         check(
@@ -785,10 +777,6 @@ def test_config_scopes_routing_and_arms_the_breaker() -> None:
 
 
 def test_web_many2ones_resolve_through_web_read() -> None:
-    # web_read keeps an unreadable many2one target as its id, where read()
-    # redacts it to False. A visible target's kernel label is also web_read's
-    # answer; a hidden one, and a comodel whose name Python computes, go to
-    # web's own resolver, and only those rows do.
     orm_shim = _shims()[1]
     calls = []
 
@@ -1172,7 +1160,6 @@ def test_web_spec_plan() -> None:
         (["name", "partner_id", "user_id", "tag_ids"], ["partner_id", "user_id"], {}),
     )
     check("unknown field refuses", plan(M(), {"nope": {}}), None)
-    # a refused plan says why, or the gate log reads it as "call shape"
     check("...and records why", orm_shim._GATE_TL.reason, "unknown field nope")
     orm_shim._GATE_TL.reason = None
     for label, spec in (
@@ -1355,9 +1342,6 @@ def test_taints_clear_on_commit_and_rollback() -> None:
     orm_shim._untaint(cr)
     check("untaint is idempotent", cr in orm_shim.DIRTY_CRS, False)
 
-    # a commit puts the rows in the database, but the kernel's caches are
-    # keyed on signals the fork emits at the end of the scope: the security
-    # taint moves to "committed, not signalled" and the gate keeps refusing
     cr.dbname = "probe"
     orm_shim.DIRTY_CRS.add(cr)
     orm_shim.WRITTEN_X2MANY[cr] = {("res.partner", "child_ids")}
@@ -1380,11 +1364,6 @@ def test_taints_clear_on_commit_and_rollback() -> None:
 
 
 def test_the_order_snapshot_is_the_exports_not_the_class_attribute() -> None:
-    # res.partner's `_order` is a property ranking by a context search mode:
-    # read off the class it is the descriptor, and a snapshot holding one
-    # refuses the model on every call as drifted. The snapshot is what the
-    # kernel was built from -- the export's order -- so a plain call agrees
-    # and only a call whose context changes the order is refused.
     _db_shim, orm_shim = _shims()
     saved = dict(orm_shim.ORDERS)
     try:
@@ -1409,13 +1388,6 @@ def test_the_order_snapshot_is_the_exports_not_the_class_attribute() -> None:
 
 
 def test_the_read_gates_see_fetch_and_read_group_overrides() -> None:
-    # A row a routed read returns is one Python would have produced through
-    # `_fetch_query`, and a grouped cell through the `_read_group_*` hooks.
-    # `calendar.event._fetch_query` masks a private event's title as "Busy",
-    # `mail.message.fetch` decides a portal user's access before reading as
-    # sudo, `stock.quant._read_group_select` answers NULL for an aggregate
-    # under a context key: a gate that compares `read` and `_check_access`
-    # alone lets the kernel serve the column instead.
     orm_shim = _shims()[1]
     base_mod, _ = _odoo()
     orm_shim.install()
@@ -1431,7 +1403,6 @@ def test_the_read_gates_see_fetch_and_read_group_overrides() -> None:
             name.replace(".", "_"),
             (base_mod.BaseModel,),
             {
-                # what MetaModel needs to accept a class it will not register
                 "__module__": "odoo.addons.probe.models",
                 "_register": False,
                 "_name": name,
@@ -1484,9 +1455,6 @@ def test_the_read_gates_see_fetch_and_read_group_overrides() -> None:
         orm_shim._clean_model(grouped, "search_read"),
         True,
     )
-    # an override the export lists as transparent -- analytic's distribution
-    # groupby, scoped to analytic_distribution -- does not gate the model: the
-    # kernel refuses that field by itself, and every other groupby routes
     import purity
 
     key = (
@@ -1546,9 +1514,6 @@ def test_the_read_gates_see_fetch_and_read_group_overrides() -> None:
 
 
 def test_a_constraint_raised_by_the_pre_route_flush_reaches_the_caller() -> None:
-    # Python's `_search` flushes the same fields and lets a database error
-    # propagate; a swallowed one leaves an aborted transaction for the
-    # fallback and a generic message for the user.
     import psycopg
 
     orm_shim = _shims()[1]
@@ -1582,8 +1547,6 @@ def test_a_constraint_raised_by_the_pre_route_flush_reaches_the_caller() -> None
 
     def run(exc):
         try:
-            # `_read_dependencies` cannot resolve the fake model, so the flush
-            # is the wide `flush_all`, which is what raises here
             return orm_shim._flush_if_needed(
                 env_raising(exc), _Model(), domain=object()
             )
@@ -1808,8 +1771,6 @@ def test_install_is_idempotent_and_keeps_stamps() -> None:
 
     class _Env:
         uid, su, context = 2, False, {}
-        # what `Environment._lang` reads: the context language, or en_US, with
-        # the `_` prefix under edit_translations / check_translations
         _lang = "en_US"
 
         class registry:
@@ -2174,15 +2135,6 @@ def test_a_refused_connection_waits_like_psycopg_pool_then_times_out() -> None:
 
 
 def test_every_kernel_failure_path_reports_somewhere() -> None:
-    # The completeness half of a census, which a null control does NOT imply:
-    # a corpus reading zero refusals says nothing about a site that refuses and
-    # never reports. `refuse!` / `refusal!` / `deny_access!` cover every site
-    # that uses them by construction, so what this looks for is the failure
-    # paths that BYPASS them -- a bare `bail!` or `anyhow!` on the read path is
-    # invisible to `odoo_kernel::refusal` and to every other target.
-    #
-    # Each one listed here is either logged at its site or answered at a
-    # boundary that logs; a NEW one is neither until somebody decides which.
     import pathlib
     import re
 
@@ -2196,9 +2148,6 @@ def test_every_kernel_failure_path_reports_somewhere() -> None:
             for n, line in enumerate(path.read_text().splitlines(), 1):
                 if pattern.search(line) and not line.lstrip().startswith("//"):
                     found.append("%s:%d" % (path.relative_to(root), n))
-    # kernel: two internal invariants, both logged at `error` on their own
-    # subsystem target; connect: dsn rejections, logged by the parser.
-    # server: every one is answered by handle_call, which logs status and kind.
     known = 14
     check(
         "failure paths bypassing the refusal macros (%s)" % ", ".join(found),
@@ -2231,12 +2180,6 @@ def _protocol_members():
 
 
 def test_the_port_covers_the_forks_protocol_and_nothing_else() -> None:
-    # The point of implementing StorageBackend rather than patching methods on
-    # BaseModel is that the fork DECLARES this surface and pins it
-    # (odoo/orm/tests/test_backend_dispatch_surface.py). A method added to the
-    # protocol upstream has to reach RustBackend, and the failure mode if it
-    # does not is that the attribute lookup falls through to nothing -- so
-    # read the protocol here rather than restating it.
     backend = _backend()
     methods, flags = _protocol_members()
     check("protocol methods", sorted(backend.PROTOCOL_METHODS), methods)
@@ -2248,10 +2191,6 @@ def test_the_port_covers_the_forks_protocol_and_nothing_else() -> None:
 
 
 def _shape(fn):
-    # Parameter name, kind and default -- the part a CALLER can observe. The
-    # annotations are not compared: the fork annotates its ORM and this
-    # repository does not, this not being one of the fork's core packages, so
-    # comparing them would fail on a difference no call can see.
     import inspect
 
     return [
@@ -2260,9 +2199,6 @@ def _shape(fn):
 
 
 def test_the_ports_signatures_match_the_delegates() -> None:
-    # A delegating wrapper whose signature has drifted does not fail at import:
-    # it fails at the one call site that passes the argument it dropped, which
-    # on this port is a write.
     from odoo.orm.runtime.backend import PostgresBackend
 
     backend = _backend()
@@ -2288,9 +2224,6 @@ class _RecordingDelegate:
 
 
 def test_the_port_follows_the_routing_mode_and_policy() -> None:
-    # `off` is off and `shadow` is Python's answer -- for a write as for a
-    # read. The port used to compose UPDATE/INSERT in both, and the DB kill
-    # switch could not stop it.
     backend = _backend()
     orm_shim = _shims()[1]
 
@@ -2340,9 +2273,6 @@ def test_the_port_follows_the_routing_mode_and_policy() -> None:
 
 
 def test_a_loading_registry_is_served_from_python_on_both_paths() -> None:
-    # Under `Registry.new(update_module=True)` in the same worker the new
-    # registry carries the kernel's sequence until the load ends; neither
-    # the routed reads nor the port may use the old kernel meanwhile.
     orm_shim = _shims()[1]
     backend = _backend()
 
@@ -2367,7 +2297,7 @@ def test_a_loading_registry_is_served_from_python_on_both_paths() -> None:
             orm_shim._gate(_Model(), ["id"], method="search_read"),
             False,
         )
-        orm_shim._gated(_Model(), "search_read")  # what the routed method records
+        orm_shim._gated(_Model(), "search_read")
         check(
             "and says why",
             orm_shim.GATE_REASONS[
@@ -2394,15 +2324,9 @@ def test_a_loading_registry_is_served_from_python_on_both_paths() -> None:
 
 
 def test_an_unarmed_port_is_its_delegate() -> None:
-    # The port is installed before any method is native, so "installed"
-    # must mean "no answer changed". Every protocol method is called here,
-    # including the ones with keyword-only arguments, because a wrapper that
-    # drops `check_access` would route a search AROUND the record rules.
     backend = _backend()
 
     class _Unarmed(backend.RustBackend):
-        # What the port is on a worker where nothing has been armed yet, which
-        # is the state every new native method starts in.
         NATIVE = frozenset()
 
     delegate = _RecordingDelegate()
@@ -2476,8 +2400,6 @@ def test_an_unarmed_port_is_its_delegate() -> None:
     check("every call reached the delegate", sorted(seen), sorted(calls))
     for name, (args, kwargs) in calls.items():
         recorded = next(c for c in delegate.calls if c[0] == name)
-        # positional-vs-keyword is not preserved by the port and does not need
-        # to be; what must survive is the VALUES, keyword-only ones included.
         passed = dict(zip(("a", "b", "c", "d", "e"), recorded[1], strict=False))
         passed.update(recorded[2])
         wanted = dict(zip(("a", "b", "c", "d", "e"), args, strict=False))
@@ -2535,9 +2457,6 @@ def test_a_protocol_member_the_port_does_not_know_is_delegated() -> None:
 
 
 def test_installing_the_port_leaves_the_in_memory_backend_alone() -> None:
-    # InMemoryBackend is how the ORM runs with no database. Wrapping it would
-    # put a kernel that needs a connection in front of the case defined by not
-    # having one.
     backend = _backend()
     from odoo.orm.runtime.backend import POSTGRES_BACKEND
 
@@ -2584,9 +2503,6 @@ def test_installing_the_port_leaves_the_in_memory_backend_alone() -> None:
 
 
 def test_the_port_only_arms_for_the_database_it_was_built_for() -> None:
-    # The same process can hold transactions for more than one database (the
-    # database manager does), and a kernel built from one database's registry
-    # must not answer for another.
     backend = _backend()
     try:
         backend.install(dbname="the_one")
@@ -2617,11 +2533,6 @@ def test_the_port_only_arms_for_the_database_it_was_built_for() -> None:
 
 
 def test_the_fork_still_composes_the_writes_the_contract_pins() -> None:
-    # The other half of `kernel/tests/pure.rs::the_kernel_composes_the_update_
-    # the_forks_backend_composes`. That one asks the kernel; this one asks the
-    # FORK, so the statement is derived twice and neither derivation is
-    # checked against a copy of itself. A fork that starts composing something
-    # else fails HERE, and stays failing in Rust until the kernel is taught it.
     _odoo()
     import write_sql_contract
 
@@ -2643,10 +2554,6 @@ def test_the_fork_still_composes_the_writes_the_contract_pins() -> None:
 
 
 def test_the_port_arms_only_what_the_contract_covers() -> None:
-    # `NATIVE` is the arming switch, and the reason it is separate from the
-    # implementation is that an implementation with no verification behind it
-    # must stay off. Every armed method needs a line here saying what verifies
-    # it; a method armed without one fails this.
     backend = _backend()
     verified_by = {
         "update_rows": "harness/write_sql_contract.json, both derivations",
@@ -2664,26 +2571,20 @@ def test_the_port_arms_only_what_the_contract_covers() -> None:
 
 
 def test_a_column_group_the_kernel_refuses_falls_through_to_the_delegate() -> None:
-    # The native path reports whether it ran, and the port delegates when it
-    # did not. With no kernel in the process -- which is every worker that
-    # could not arm -- that is the whole behaviour, and it has to be the
-    # delegate's answer rather than a skipped write.
     backend = _backend()
     delegate = _RecordingDelegate()
     port = backend.RustBackend(delegate)
     backend.reset_stats()
 
     class _Model:
-        _name = "probe.model"  # the routing policy is asked by name first
+        _name = "probe.model"
         env = object()
 
     model = _Model()
     backend.KERNEL_FOR = lambda _env: None
     orm_shim = _shims()[1]
     saved_mode = orm_shim.MODE
-    orm_shim.set_mode(
-        "on"
-    )  # the mode gates the port first; the kernel is what this test asks about
+    orm_shim.set_mode("on")
     try:
         got = port.update_rows(model, ("name",), [(1, "a")])
     finally:
@@ -2751,10 +2652,6 @@ class _InsertKernel:
 
 
 def test_create_rows_splits_its_strategies_where_the_fork_does() -> None:
-    # Ten rows or more outside a pipeline are COPY, which the cursor owns and
-    # the port delegates; the same ten inside a pipeline are INSERT, which the
-    # kernel composes. The split reads the fork's own constants, so a change to
-    # COPY_THRESHOLD moves both sides together -- this pins that it does.
     backend = _backend()
     _odoo()
     from odoo.orm.runtime.backend import COPY_DISABLED, COPY_THRESHOLD
@@ -2801,9 +2698,6 @@ def test_create_rows_splits_its_strategies_where_the_fork_does() -> None:
 
 
 def test_create_rows_delegates_a_value_that_is_not_one_parameter() -> None:
-    # `SQL` inlines an SQL value as code and expands a tuple into a list, so
-    # neither is a single `%s`. The kernel's statement assumes one per value,
-    # and a converter returning either would change the statement's shape.
     backend = _backend()
     _odoo()
     from odoo.libs.sql.builder import SQL
@@ -2833,11 +2727,6 @@ def test_create_rows_delegates_a_value_that_is_not_one_parameter() -> None:
 
 
 def test_an_extension_older_than_the_port_does_not_stop_the_engine_arming() -> None:
-    # The addon and the engine_py extension are versioned apart, and the venv
-    # carries a build that predates the port. Arming used to call
-    # install_backend() unguarded between installing the shims and arming the
-    # registry hook, so that extension left a server half armed. Every case
-    # below must return normally and leave the port uninstalled.
     addon = _addon()
 
     class _Config(dict):
@@ -2864,9 +2753,6 @@ def test_an_extension_older_than_the_port_does_not_stop_the_engine_arming() -> N
 
 
 def test_the_extension_under_test_was_built_from_this_checkout() -> None:
-    # The shims are compiled into engine_py, so every other test here checks
-    # whatever sources the loaded build embedded. build.rs and the addon
-    # checksum the same files two ways; this is where they must agree.
     if engine_py is None:
         raise unittest.SkipTest("engine_py is not importable (%s)" % IMPORT_ERROR)
     addon = _addon()
@@ -2942,11 +2828,6 @@ def test_a_stale_extension_is_refused() -> None:
 
 
 def test_search_is_implemented_and_not_armed() -> None:
-    # Native search answers the sweep corpus exactly (harness/search_path.py)
-    # and runs slower than the Python it would replace
-    # (harness/search_bench.py), so it is deliberately left out of NATIVE. This
-    # pins that decision, so arming it is a change someone makes on purpose
-    # with a benchmark in hand, and not a side effect.
     backend = _backend()
     check("search is not armed", "search" in backend.RustBackend.NATIVE, False)
     check(
@@ -2957,9 +2838,6 @@ def test_search_is_implemented_and_not_armed() -> None:
 
 
 def test_a_domain_without_a_wire_form_is_delegated() -> None:
-    # `Domain.custom(to_sql=...)` and a `Query` value are what optimize_full
-    # leaves for a field's search= method; neither has a JSON form, and
-    # compiling around them would answer a different question.
     backend = _backend()
     _odoo()
     from odoo.fields import Domain
@@ -2999,9 +2877,6 @@ def test_a_domain_without_a_wire_form_is_delegated() -> None:
 
 
 def test_bypass_access_without_superuser_is_delegated() -> None:
-    # `_search(bypass_access=True)` drops the root's rules and keeps every
-    # sub-query's; the kernel's modes are "rules everywhere" and "superuser",
-    # so neither answers it, and the port must not pick one.
     backend = _backend()
 
     class _Env:
@@ -3021,10 +2896,6 @@ def test_bypass_access_without_superuser_is_delegated() -> None:
 
 
 def test_search_delegates_once_the_transaction_wrote_security() -> None:
-    # The kernel's rules come from a snapshot that moves on commit; a rule
-    # written in this transaction is visible to Python and not to it. The
-    # shim's DIRTY_CRS is the record of that write, and the port must read it
-    # before it compiles anything -- and delegate when no shim keeps it.
     backend = _backend()
     orm_shim = _shims()[1]
 
@@ -3083,13 +2954,6 @@ def test_search_delegates_once_the_transaction_wrote_security() -> None:
 
 
 def test_db_shim_kill_switch_follows_active() -> None:
-    # The connection layer's own kill switch. `install()` rebinds the pool
-    # class once; whether the factory builds a rust pool or the psycopg one
-    # Odoo would have built is `ACTIVE`, and every switch closes the armed
-    # database's pools so the next borrow goes through the factory again.
-    # `odoo.db.*` is three fake modules here: a pool class that records
-    # nothing, and a `close_db` that records calls -- so the test says what
-    # the switch does, not what Odoo does with the result.
     import types
 
     db_shim, _ = _shims()

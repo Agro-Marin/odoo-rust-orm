@@ -1,5 +1,3 @@
-//! Errors cross the Python and HTTP boundaries without guessing from prose.
-//! Only explicit capability/input refusals may bypass the routing breaker.
 
 #[derive(Debug)]
 pub struct Refusal(pub String);
@@ -33,12 +31,6 @@ impl std::fmt::Display for RegistryStale {
 }
 impl std::error::Error for RegistryStale {}
 
-/// A compile that would have had to ask the database, raised by a `Db` in
-/// offline mode before any statement is sent. It is not a refusal of the
-/// question: the caller asks again with the database available, which on the
-/// persistence port means inside a savepoint -- and in the common case, where
-/// the watermark, the identity and the rules are already known, it is never
-/// raised and no savepoint is paid for.
 #[derive(Debug, Clone, Copy)]
 pub struct NeedsRoundTrip;
 
@@ -82,12 +74,6 @@ impl ErrorKind {
     }
 }
 
-// Every refusal and denial announces itself with the source location that
-// decided it, so a routing miss is attributable to one site without a
-// bisect. `odoo_kernel::refusal` and `odoo_kernel::access` are the two
-// targets that report which capability the kernel is missing, aggregated
-// over a corpus, and the fields are the input a future session needs to
-// decide whether the site is worth implementing.
 macro_rules! refusal {
     ($($arg:tt)*) => {{
         let reason = format!($($arg)*);
@@ -100,13 +86,6 @@ macro_rules! refusal {
         anyhow::Error::new($crate::error::Refusal(reason))
     }};
 }
-/// A refusal whose SITE is supplied by the caller.
-///
-/// A helper that reports why it stopped to a caller that decides whether that
-/// is a refusal cannot use `refusal!`: the site would be the line that wrapped
-/// the message, so every cause the helper has collapses onto one row of the
-/// census. The helper passes `concat!(file!(), ":", line!())` from where it
-/// actually gave up.
 macro_rules! refusal_at {
     ($site:expr, $($arg:tt)*) => {{
         let reason = format!($($arg)*);

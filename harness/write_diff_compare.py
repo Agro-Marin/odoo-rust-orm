@@ -1,13 +1,3 @@
-"""Compare two write_diff.py dumps: the armed leg against the psycopg control.
-
-Rows pair by creation order, never by id. Excluded columns are the ones the
-leg itself excludes. A float compares with isclose, a Decimal as text.
-Exit 0 with a summary line when every compared cell agrees and every model
-compared saw native port writes; 1 otherwise. `--expect-fault COLUMN_TYPE`
-inverts the verdict for the positive control: it must find that column type
-differing on every created row.
-"""
-
 import json
 import math
 import pathlib
@@ -65,8 +55,6 @@ for name, m in sorted(armed["models"].items()):
         rows_n += 1
         for col, t, a, b in zip(m["columns"], m["types"], ra, rc, strict=True):
             if col == "parent_path":
-                # spelled from the row's own id, which the two legs' sequences
-                # never share; the ids themselves are paired by position above
                 continue
             compared += 1
             if not same(t, a, b):
@@ -94,8 +82,6 @@ for n, k, msg in mismatches[:20]:
     print("  MISMATCH %s[%s] %s" % (n, k, msg))
 if not_native:
     print("  NOT NATIVE (the port delegated every create): %s" % ", ".join(not_native))
-# a comparison of nothing is not a pass: a lane whose generator skipped every
-# model would otherwise read OK
 verdict = "OK" if compared and not mismatches and not not_native else "FAILED"
 if not compared:
     print("  NOTHING COMPARED: every model was skipped or absent")

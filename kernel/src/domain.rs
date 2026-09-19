@@ -19,15 +19,8 @@ pub struct Leaf {
     pub value: Json,
 }
 
-/// The structural depth a domain may reach, counted the way Odoo counts it
-/// (`odoo/orm/domain/ast.py::MAX_DOMAIN_NESTING`): a run of the same n-ary
-/// operator is ONE level, and a double negation is none. Anything deeper is
-/// refused at parse time, before any recursive walk of the tree exists --
-/// `compile`, `negate` and `fold_constants` all recurse over it.
 pub const MAX_DOMAIN_NESTING: usize = 100;
 
-/// A parsed node with the structural depth it reached, so the cap is checked
-/// as the tree is built and never by walking it afterwards.
 struct Item {
     node: Node,
     depth: usize,
@@ -43,10 +36,6 @@ fn checked(depth: usize) -> Result<usize> {
     Ok(depth)
 }
 
-/// Combine `operands` under `op`, folding an operand that is already the same
-/// n-ary node into its parent. Odoo's `DomainNary` flattens the same way, so a
-/// prefix chain of ten thousand `&` is one AND of ten thousand leaves, not a
-/// ten-thousand-deep tree.
 fn nary(op: &str, operands: Vec<Item>) -> Result<Item> {
     let mut children = Vec::new();
     let mut depth = 1;
@@ -101,9 +90,6 @@ pub fn parse(domain: &Json) -> Result<Node> {
                 let Some(a) = stack.pop() else {
                     refuse!("operator ! missing operand");
                 };
-                // `~~x` is `x`: Odoo's `DomainNot` collapses the pair, and
-                // keeping it would let a flat run of `!` build a tree as deep
-                // as the request body allows.
                 stack.push(match a.node {
                     Node::Not(inner) => Item {
                         node: *inner,
@@ -129,9 +115,6 @@ pub fn parse(domain: &Json) -> Result<Node> {
     let node = match stack.len() {
         0 => Node::True,
         1 => stack.pop().unwrap().node,
-        // an implicit conjunction: Odoo ANDs the terms a prefix domain left
-        // on the stack, and a domain that relies on it reads differently
-        // from one that spells `&` out
         n => {
             tracing::trace!(
                 target: "odoo_kernel::domain",
@@ -197,8 +180,6 @@ fn parse_leaf(leaf: &[Json]) -> Result<Node> {
             (true, "=") | (false, "!=") => Node::True,
             _ => Node::False,
         };
-        // `[0, '=', 1]` and its siblings are Odoo's spelling of a constant;
-        // they carry no field and collapse before any column is consulted
         tracing::trace!(
             target: "odoo_kernel::domain",
             left = n, right = v, %op, folded = ?constant,
@@ -217,17 +198,6 @@ fn parse_leaf(leaf: &[Json]) -> Result<Node> {
     }))
 }
 
-/// A value that MAY be a nested domain, as `Option` rather than `Result`.
-///
-/// Three callers ask "is this leaf value itself a domain?" and walk into it
-/// when it is: the reachability seeds, the comodel walk, and the internal
-/// operator check. A `no` from them is an answer, not a refusal -- and routing
-/// it through `parse` files one `odoo_kernel::refusal` line per scalar leaf in
-/// every domain the kernel sees, which buries the refusals that are real.
-///
-/// The filter is exactly `parse`'s own item-level grammar, so anything it
-/// accepts `parse` accepts: this decides nothing `parse` would decide
-/// differently.
 pub fn parse_nested(value: &Json) -> Option<Node> {
     let items = value.as_array()?;
     let looks_like_a_domain = items.iter().all(|item| match item {
@@ -277,10 +247,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // Every shape a leaf value can take, against both readers. `parse_nested`
-    // exists only to keep a "no" out of the refusal log, so it must answer
-    // exactly what `parse` answers -- a divergence here would silently change
-    // which comodels the reachability walk reaches.
     #[test]
     fn the_quiet_reader_accepts_exactly_what_parse_accepts() {
         let values = [
@@ -308,8 +274,6 @@ mod tests {
 
     #[test]
     fn a_quiet_no_is_not_an_empty_domain() {
-        // `parse` reads an absent domain as TRUE; `parse_nested` must not,
-        // or a scalar leaf value would look like "match everything"
         assert!(matches!(parse(&json!([])).unwrap(), Node::True));
         assert!(parse_nested(&json!("private")).is_none());
     }

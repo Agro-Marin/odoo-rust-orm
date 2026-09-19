@@ -89,8 +89,6 @@ fn parse_atom(c: &[char], p: &mut usize) -> Result<PyExpr> {
             while let Some(&x) = c.get(*p) {
                 *p += 1;
                 if x == '\\' {
-                    // the escapes safe_eval's literal parser gives; anything
-                    // else is refused rather than read as the bare character
                     let Some(&y) = c.get(*p) else {
                         refuse!("unterminated escape in string");
                     };
@@ -158,9 +156,6 @@ fn parse_atom(c: &[char], p: &mut usize) -> Result<PyExpr> {
                     }
                     *p += 1;
                     match inner {
-                        // a `*` marks the segments mapped() produced: their
-                        // values are collected over every record, where a bare
-                        // attribute on several records is a singleton error
                         PyExpr::Str(field) => {
                             names.extend(field.split('.').map(|f| format!("*{f}")))
                         }
@@ -332,9 +327,6 @@ async fn resolve_name(
     db: &Db<'_>,
     user: &UserCtx,
 ) -> Result<Json> {
-    // Every hop here is one query, run while a request waits: a rule domain
-    // reading `user.partner_id.country_id.code` costs three. They are cached
-    // per identity afterwards, so this line fires on a cold cache only.
     tracing::trace!(
         target: "odoo_kernel::rules",
         uid = user.uid, name = ?chain,
@@ -398,7 +390,6 @@ async fn resolve_name(
             if !matches!(tail, [] | [_] if tail.first().is_none_or(|t| t == "ids")) {
                 refuse!("unsupported attribute path after {model_name}.{attr}: {tail:?}");
             }
-            // a recordset attribute over several users is their union
             let dynamic = registry.dynamic();
             let mut groups: Vec<i32> = if attr == "all_group_ids" {
                 let mut all: std::collections::HashSet<i32> = std::collections::HashSet::new();
@@ -610,7 +601,6 @@ fn scalar_json(field: &crate::registry::Field, s: &str) -> Result<Json> {
     })
 }
 
-// `Domain.OR` over single leaves: `['|'] * (n-1) + leaves`, FALSE for none
 pub fn or_leaves(leaves: Vec<Json>) -> Vec<Json> {
     if leaves.is_empty() {
         return vec![json!([0, "=", 1])];
@@ -733,8 +723,6 @@ async fn rules_domain_inner(
         }
     }
     if !any_applied {
-        // every rule on the model is a group rule this identity is outside
-        // of, so the model reads unrestricted -- which is Odoo's own answer
         tracing::trace!(
             target: "odoo_kernel::rules",
             %model, uid = user.uid, rules = rules.len(),
@@ -746,8 +734,6 @@ async fn rules_domain_inner(
             Some(Json::Array(inherited))
         });
     }
-    // global rules AND together and group rules OR: the composition is what
-    // decides whether a second group widens the answer or narrows it
     tracing::debug!(
         target: "odoo_kernel::rules",
         %model,

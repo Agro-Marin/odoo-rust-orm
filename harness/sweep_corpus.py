@@ -131,8 +131,6 @@ def seed(env):
                 "UPDATE %s SET create_date = %%s WHERE id = %%s" % Tag._table,
                 (stamp, tag.id),
             )
-    # a two-level hierarchy on a model whose display name is its name column,
-    # for child_of / parent_of seeded by a NAME (corpus h0* cases)
     Cat = su["ir.module.category"]
     root = Cat.search([("name", "=", "Rustorm Root Cat")]) or Cat.create(
         {"name": "Rustorm Root Cat"}
@@ -154,10 +152,6 @@ def seed(env):
 
 
 def seed_lang_and_fields(su) -> None:
-    # en_US stays active beside whatever --load-language installed: the web
-    # tours and TestIrModelFieldsTranslation expect English labels, and a
-    # kernel that must accept an inactive en_US is exercised by lang cases
-    # naming a language the database lacks
     en = (
         su["res.lang"]
         .with_context(active_test=False)
@@ -165,10 +159,6 @@ def seed_lang_and_fields(su) -> None:
     )
     if en and not en.active:
         en.active = True
-    # French is installed for the translated-column cases, but the database's
-    # default language stays en_US, so a fixture built plain (no
-    # --load-language) still compares French terms and the web tours read
-    # English labels
     fr = (
         su["res.lang"]
         .with_context(active_test=False)
@@ -251,9 +241,6 @@ def seed_grouped_user(su, IM, Rule):
         if not group:
             group = Group.create({"name": name})
         groups.append(group)
-    # several top-level terms per rule (an implicit AND, and an explicit OR
-    # of three), a grant rule and a restrict rule on the same model, so a
-    # compiled rule set has more than one leaf per group to get wrong
     rules = (
         (
             TAG + " partners alpha grant",
@@ -319,7 +306,6 @@ def seed_grouped_user(su, IM, Rule):
         )
     if not user.active:
         user.active = True
-    # a zone for the day-boundary cases: env.tz falls back to the user's
     if user.partner_id.tz != "America/Mexico_City":
         user.partner_id.tz = "America/Mexico_City"
     return user.id
@@ -400,8 +386,6 @@ def probes(model, uid):
         add(method="search_read", fields=read, domain=[], limit=5)
     for name in m2o:
         add(method="read_group", groupby=[name], aggregates=["__count"], domain=[])
-        # a dotted spec: the comodel's first stored scalars and many2ones, each
-        # a left join of the comodel under its rules
         cofields = model.env[fields[name].comodel_name]._fields
         for sub in sorted(
             f.name
@@ -557,14 +541,6 @@ def probes(model, uid):
             domain=[],
         )
 
-    # Comparing against an unset value is decided by the field's
-    # `falsy_value`, which Odoo declares on the field CLASS and not on its
-    # field type: `id` is a `fields.Id` and has none where every other integer has
-    # 0, and `many2one_reference` has 0 where its relational siblings have
-    # none. Nothing else in this corpus compares against False with an
-    # ordering operator, so the whole family went unmeasured -- and a
-    # divergence in it returns wrong rows rather than refusing. Admin only,
-    # and one field per branch, because this doubles otherwise.
     if uid is None:
         with_falsy = sorted(
             f.name
@@ -587,11 +563,6 @@ def probes(model, uid):
                     add_extra(method="search_count", domain=[[f.name, op, False]])
         add_extra(method="search_count", domain=[["id", ">", False]])
 
-    # A traversal THROUGH a field that declares `bypass_search_access`, which
-    # Odoo evaluates with the comodel's ACL and record rules turned off. The
-    # kernel applied them anyway until 2026-09-08 and answered with fewer
-    # rows; nothing in this corpus traversed such a field, so nothing saw it.
-    # Both identities, because the difference only exists for a non-superuser.
     bypassing = sorted(
         f.name
         for f in fields.values()
@@ -602,12 +573,6 @@ def probes(model, uid):
     for name in bypassing:
         add_extra(method="search_count", domain=[["%s.id" % name, ">", 0]])
 
-    # `binary` was the one field type in the registry that NO lane touched --
-    # 127 fields, exercised by nothing. Auditing it found no defect (a filter
-    # agrees with Python, and READING one is refused so the shim falls back),
-    # which is the outcome to hope for and not the reason to have looked.
-    # Only the filter is probed: the read refuses by design and would add a
-    # classified non-comparison rather than coverage.
     binary = sorted(
         f.name
         for f in fields.values()

@@ -1,27 +1,3 @@
-"""Routed reads at every user of the database, against Python.
-
-The corpora the other stages compare read as a handful of identities the
-fixture seeds, and they read targets those identities can see. The first thing
-this stage caught was the difference between `read()` and `web_read` on a
-many2one whose target the user cannot read: `read()` redacts it to False,
-`web_read` keeps its id, and `{"id": id}` when a name was asked for. The
-routed `web_search_read` used the kernel's label, which is `read()`'s answer,
-and 124 of 1,018 routed calls across the database's users disagreed.
-
-Every user of the database, archived ones and other companies' included, reads
-every table-backed model through each routed method: many2ones and x2manys
-through `web_search_read`, `search_read` and `read(load=None)`, then
-`search_count`, `display_name`, `name_search`, `_read_group` and
-`web_read_group` on a many2one. Each call runs routing on and then off, in a
-transaction rolled back after each leg, and counts only when the routed leg
-reached the kernel. A stage that compared too little fails.
-
-Each user reads in its default context, with `active_test=False`, and in every
-other installed language; a user of several companies also reads with each
-company allowed alone and with all of them in both orders, since the first is
-`env.company`.
-"""
-
 import collections
 import sys
 
@@ -144,8 +120,6 @@ try:
             *({"lang": lang} for lang in langs if lang != "en_US"),
         )
     ]
-    # a user of several companies, with each one allowed and in both orders:
-    # the first allowed company is env.company, which rules read
     for user in env["res.users"].browse(users):  # noqa: F821
         mine = [c for c in companies if c in user.company_ids.ids]
         if len(mine) > 1:

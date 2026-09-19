@@ -16,15 +16,10 @@ use crate::sqlgen::{Compiler, ExprCtx, col};
 
 pub use crate::error::RegistryStale;
 
-/// What `Orm::compile_where` hands back.
 pub struct CompiledWhere {
     pub fragment: String,
     pub params: Vec<Json>,
-    /// (model, field) for every column the fragment reads: the fields a caller
-    /// must flush before running it.
     pub touched: Vec<(String, String)>,
-    /// The signalling snapshot the compile ran against, for reuse later in the
-    /// same transaction.
     pub snapshot: Arc<crate::registry::Dynamic>,
 }
 
@@ -46,8 +41,6 @@ pub use crate::db::StmtCache;
 
 type EnvKey = (i32, crate::registry::Signals);
 
-// default company, active companies, groups, and the user's tz — everything
-// res.users._get_fields_invalidation clears the registry cache for
 type EnvValue = (
     i32,
     Vec<i32>,
@@ -55,7 +48,6 @@ type EnvValue = (
     Option<String>,
 );
 
-// the terms a hierarchy leaf resolves to, per (model, link, direction, seeds)
 type HierMemo = HashMap<(String, String, bool, Vec<i32>), Vec<Json>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -183,18 +175,9 @@ pub struct Request {
     #[serde(default)]
     pub groupby_hidden_labels_empty: bool,
 
-    /// Many2one fields `search_read` returns as the bare foreign key, with no
-    /// label query. `web_search_read` resolves a many2one with rules of its
-    /// own -- an unreadable target is still its id, not `False` -- and the
-    /// shim hands the raw ids to web's resolver instead of a label that
-    /// already redacted them.
     #[serde(default)]
     pub raw_many2one: Vec<String>,
 
-    /// Many2one fields whose label `search_read` still renders, but whose
-    /// target the label query hid comes back as the bare id instead of
-    /// `False`. A visible target's label is web_read's answer too; only a
-    /// hidden one needs web's resolver, and this is how the shim finds it.
     #[serde(default)]
     pub unredacted_many2one: Vec<String>,
 
@@ -207,20 +190,9 @@ pub struct Request {
     #[serde(default)]
     pub tz: Option<String>,
 
-    /// Whether the ROOT model gets the implicit active filter, apart from
-    /// `active_test`, which still governs every sub-query. The persistence
-    /// port sends `false`: the domain it compiles has already been through
-    /// `_search`, which decided the root filter -- including the
-    /// `_search(active_test=False)` keyword the port never sees -- and wrote
-    /// it into the domain when it applies.
     #[serde(default)]
     pub root_active_test: Option<bool>,
 
-    /// The domain was composed by the ORM (`optimize_full` output handed to
-    /// `StorageBackend.search`) rather than received from a caller, so an
-    /// `any!` in it is a field's own bypass declaration and not a request for
-    /// one. The port sets it, and so does the method shim for a domain it
-    /// resolved through `optimize_full`.
     #[serde(default)]
     pub trusted_domain: bool,
 
@@ -234,17 +206,10 @@ pub struct Request {
     pub order_fragments: Vec<serde_json::Value>,
 }
 
-/// `COMMIT` or `ROLLBACK` itself failed after a dispatch, so the connection it
-/// ran on is in an unknown transaction state. Typed, because the holder of
-/// the connection has to recognise it and discard the connection rather than
-/// pool it: a request that merely errored leaves the connection clean, this
-/// one does not.
 #[derive(Debug)]
 pub struct TxEndFailed {
     pub end: &'static str,
     pub error: String,
-    /// What the dispatch itself said, when the failed statement was the
-    /// ROLLBACK after an error rather than the COMMIT after a success.
     pub original: Option<String>,
 }
 
@@ -269,13 +234,6 @@ pub fn is_tx_end_failure(e: &anyhow::Error) -> bool {
 }
 
 impl Request {
-    /// The groupby names the request carries, as a QUESTION: none is an answer.
-    ///
-    /// `groupby_names` refuses a missing groupby because `read_group` needs
-    /// one. The reachability walk is asking which fields the request mentions,
-    /// and a `search_read` mentioning none is not a refusal -- routing it
-    /// through the demanding form filed one refusal per non-grouped request,
-    /// 62% of a census over 8,254 sweep cases.
     pub fn groupby_names_seen(&self) -> Vec<String> {
         match &self.groupby {
             Json::String(s) => vec![s.clone()],
@@ -326,7 +284,6 @@ pub struct Env {
 
     pub tz: Option<String>,
 
-    // the zone a bare date in a domain names a day in: context tz, else user tz
     pub comparand_tz: Option<String>,
 
     pub week_start: Option<i32>,
@@ -338,8 +295,6 @@ pub struct Env {
 
     pub order_fragments: Arc<Vec<Json>>,
 
-    /// The columns every compile under this environment read; see
-    /// `ExprCtx::touched`.
     pub touched: Arc<std::sync::Mutex<BTreeSet<(String, String)>>>,
 }
 
@@ -370,39 +325,17 @@ impl<'a> Orm<'a> {
         }
     }
 
-    /// The same kernel on the same connection, but raising `NeedsRoundTrip`
-    /// where it would send a statement.
     pub fn offline(mut self) -> Self {
         self.db.offline = true;
         self
     }
 
-    /// The signalling snapshot a request runs against: the one `checked`
-    /// earlier in the same transaction, else the watermark read now.
-    ///
-    /// There was a third source, and it was unsound: the caller's Python
-    /// registry sequences, trusted when they matched the kernel's snapshot. The
-    /// registry object is shared by every thread of the process and advances
-    /// while a transaction is open, so an OLD transaction's registry can read
-    /// the NEW sequences -- match the kernel's refreshed snapshot -- and the
-    /// kernel would apply rules its database snapshot cannot see yet. The
-    /// runtime contract "security refresh cannot make old transactions use
-    /// future rule metadata" failed on it. Only the watermark this
-    /// transaction can SEE says which snapshot it may use.
     async fn snapshot(
         &self,
         _req: &Request,
         checked: Option<Arc<crate::registry::Dynamic>>,
     ) -> Result<Arc<crate::registry::Dynamic>> {
         if let Some(dynamic) = checked {
-            // Reuse skips READING the watermark, not COMPARING it: once another
-            // connection has refreshed the kernel's registry or security
-            // metadata past what this transaction checked, the transaction is
-            // refused as `check_signaling` would refuse it. The kernel holds
-            // one current security state, and some compile paths read it from
-            // the registry rather than from the snapshot passed in. The
-            // contract "security refresh cannot make old transactions use
-            // future rule metadata" failed until this comparison was here.
             if self
                 .registry
                 .snapshot_precedes(&dynamic.signals, &self.registry.dynamic().signals)
@@ -424,12 +357,6 @@ impl<'a> Orm<'a> {
             );
             return Ok(self.registry.dynamic());
         };
-        // Sent even offline: a read of the signalling tables' maximum ids
-        // takes no lock and fails only when the connection has, which Python's
-        // own statement would meet the same way -- a savepoint could not roll
-        // it back. It is the one kernel statement the first compile of a
-        // transaction cannot avoid, and it must not cost that compile a
-        // savepoint.
         let rows = self.db.query_signals(sql).await?;
         let signals = Registry::signals_of(&rows[0]);
         let current = self.registry.dynamic();
@@ -441,8 +368,6 @@ impl<'a> Orm<'a> {
         if self.registry.snapshot_precedes(&signals, &current.signals) {
             refuse!("the request snapshot predates this kernel's registry or security metadata");
         }
-        // check_signaling: `if db > local`; a connection whose snapshot is
-        // behind another's must not swing the watermark back and forth
         let advanced = signals
             .iter()
             .zip(current.signals.iter())
@@ -503,7 +428,6 @@ impl<'a> Orm<'a> {
                     refusal!("no alternate identity on this database (uid \"other\")")
                 })?,
             Some(UidSpec::Symbol(sym)) if matches!(sym.as_str(), "grouped" | "debug") => {
-                // identities the sweep seeds under fixed logins (harness/cases.py)
                 let login = format!("rustorm_sweep_{sym}");
                 self.db
                     .query_opt(
@@ -516,7 +440,6 @@ impl<'a> Orm<'a> {
             }
             Some(UidSpec::Symbol(other)) => refuse!("unknown uid symbol {other:?}"),
         };
-        // `Environment.lang` accepts en_US whether or not its row is active
         let lang = match &req.lang {
             Some(l) if l != "en_US" => {
                 if !dynamic.langs.iter().any(|x| x == l) {
@@ -587,18 +510,10 @@ impl<'a> Orm<'a> {
             .lang
             .as_ref()
             .and_then(|l| dynamic.week_start.get(l).copied());
-        // `Environment.tz` is the context's tz or the user's; a bare date in a
-        // domain names a day in THAT zone, while a read_group granularity
-        // reads the context's tz only (format.py)
         let request_tz = req.tz.as_deref().filter(|t| !t.is_empty());
-        // Environment.tz falls back to UTC on a name get_timezone rejects
         let comparand_tz = request_tz
             .or(user_tz.as_deref())
             .and_then(|t| self.registry.resolve_timezone(t));
-        // A bare date in a domain names a day in `comparand_tz` and a
-        // read_group granularity reads the context tz only: the two zones
-        // differ on purpose, and a wrong answer here moves rows between
-        // days rather than erroring, so both are on the line
         tracing::debug!(
             target: "odoo_kernel::env",
             uid,
@@ -760,9 +675,6 @@ impl<'a> Orm<'a> {
                 };
             match built {
                 Ok(Some(node)) => {
-                    // a rule domain can name a comodel the request never
-                    // mentioned; that comodel's own rules have to be
-                    // compiled too, which is what widens the walk
                     let reached = self.comodels_of_with(&ctx, model, &node);
                     tracing::trace!(
                         target: "odoo_kernel::rules",
@@ -784,12 +696,6 @@ impl<'a> Orm<'a> {
                     );
                     rules.mark_unrestricted(model_name)
                 }
-                // Neither of these says anything about the rule, and the set
-                // built here is CACHED for the identity: marking the model
-                // unevaluated would refuse it for every later request too.
-                // An offline compile that needs the database is exactly that
-                // -- the first sweep with offline compiles cached 786 refusals
-                // of res.users this way.
                 Err(e)
                     if e.downcast_ref::<tokio_postgres::Error>().is_some()
                         || crate::error::needs_round_trip(&e) =>
@@ -959,8 +865,6 @@ impl<'a> Orm<'a> {
             sea_query::PostgresQueryBuilder,
         );
         let rows = self.db.query(&sql, &values.as_params()).await?;
-        // a hierarchy seeded by NAME resolves to ids first; how many it found
-        // decides the size of the membership the caller then compiles
         tracing::debug!(
             target: "odoo_kernel::hierarchy",
             target = %target.name,
@@ -1112,8 +1016,6 @@ impl<'a> Orm<'a> {
                         None => {
                             let terms =
                                 if down && self.can_use_parent_path(target_model, &parent_link) {
-                                    // _operator_child_of_domain keeps the prefix match in
-                                    // the query rather than materialising every descendant
                                     let prefixes =
                                         self.parent_path_prefixes(target_model, &seeds).await?;
                                     tracing::debug!(
@@ -1139,9 +1041,6 @@ impl<'a> Orm<'a> {
                                     } else {
                                         self.ancestors(target_model, &parent_link, &seeds).await?
                                     };
-                                    // no parent_path to prefix-match, so the
-                                    // whole closure is materialised as an id
-                                    // list -- the row count here is the cost
                                     tracing::debug!(
                                         target: "odoo_kernel::hierarchy",
                                         target = %target_model.name,
@@ -1247,8 +1146,6 @@ impl<'a> Orm<'a> {
                 .filter(|id| all.insert(*id))
                 .collect();
         }
-        // one query per level of the tree: a deep hierarchy is round trips,
-        // which is the argument for parent_store on the model
         tracing::debug!(
             target: "odoo_kernel::hierarchy",
             model = %model.name, link = %parent_link,
@@ -1317,9 +1214,6 @@ impl<'a> Orm<'a> {
         self.dispatch_with(req, None).await.map(|(raw, _)| raw)
     }
 
-    /// `dispatch`, reusing a snapshot `checked` earlier in the caller's
-    /// transaction and returning the one it ran against, so the caller can
-    /// keep it for the rest of that transaction. See `snapshot`.
     pub async fn dispatch_with(
         &self,
         req: &Request,
@@ -1369,10 +1263,6 @@ impl<'a> Orm<'a> {
                 )
             }
 
-            // The reason a routed call fell back to Python. Aggregated over a
-            // corpus this is the backlog: each distinct reason is one
-            // capability the kernel does not have, and `odoo_kernel::refusal`
-            // carries the source line that produced it.
             Err(e) => tracing::info!(
                 target: "odoo_kernel::dispatch",
                 ms,
@@ -1398,10 +1288,6 @@ impl<'a> Orm<'a> {
         let end = if out.is_ok() { "COMMIT" } else { "ROLLBACK" };
         if let Err(e) = self.db.client.batch_execute(end).await {
             tracing::warn!(target: "odoo_kernel::sql", error = %e, "could not {end} the read transaction");
-            // A connection whose transaction could not be ended is in a state
-            // nobody can name: the next request on it could run inside this
-            // snapshot, or inside an aborted transaction. The holder must
-            // discard it, and it can only do that if the error says so.
             return Err(TxEndFailed {
                 end,
                 error: e.to_string(),
@@ -1424,9 +1310,6 @@ impl<'a> Orm<'a> {
         let signal_ms = t_signal.elapsed().as_secs_f64() * 1000.0;
         let t_env = std::time::Instant::now();
         let env = self.build_env(req, dynamic).await?;
-        // one line per dispatch, so `debug` like the phases in the reader it
-        // precedes -- at `trace` a debug-level run saw the scan phases and not
-        // these, and the two do not add up to the total without them
         tracing::debug!(
             target: "odoo_kernel::dispatch",
             signal_ms,
@@ -1434,16 +1317,11 @@ impl<'a> Orm<'a> {
             "preamble: checked the signalling watermark and resolved the identity"
         );
 
-        // `_search` checks the ACL before anything else, so a denial on a model
-        // the kernel cannot serve is still reported as the denial Python gives
         if !env.su {
             security::check_read_access(&env.dynamic, &req.model, env.uid, &env.groups)?;
         }
         let model = self.registry.get(&req.model)?;
         if let Some(over) = model.overridden_for(&req.method) {
-            // the one refusal worth the model's whole capability line: which
-            // of its read paths are pure decides what a future session has to
-            // reimplement to route it
             self.registry.log_model_capabilities(model);
             refuse!(
                 "{} overrides the read path in Python ({over}); the kernel cannot \
@@ -1460,25 +1338,6 @@ impl<'a> Orm<'a> {
         Ok((raw, snapshot))
     }
 
-    /// The WHERE clause `StorageBackend.search` would add for this domain and
-    /// the caller's record rules, as Odoo's own SQL dialect: `%s` for every
-    /// parameter, a literal `%` doubled, and the root table named by its table
-    /// name, which is the alias Odoo's `Query` gives it.
-    ///
-    /// It is a fragment and not a statement on purpose. The caller attaches it
-    /// to a lazy `Query` that the ORM goes on composing -- ordering, limits, a
-    /// `search_count` around it, a sub-select inside another domain -- so what
-    /// the kernel owns is exactly what `domain._to_sql` and the rule domain's
-    /// `_to_sql` would have contributed, and nothing the query does after.
-    ///
-    /// `checked` is the snapshot a previous compile on this TRANSACTION already
-    /// verified against the signalling watermark. The caller's transaction is
-    /// REPEATABLE READ, so the watermark it can see does not move inside it, and
-    /// checking again reads the same row; passing the snapshot back is what
-    /// removes that round trip from every search after the first. It must be
-    /// the snapshot that check produced and not `registry.dynamic()`, which
-    /// another connection may have refreshed from a commit this transaction
-    /// cannot see. The snapshot used is returned so the caller can keep it.
     pub async fn compile_where(
         &self,
         req: &Request,
@@ -1666,8 +1525,6 @@ impl<'a> Orm<'a> {
         {
             let mut referenced = Vec::new();
             domain::referenced_fields(&node, &mut referenced);
-            // Odoo adds the active clause only when the domain does not name
-            // the field itself; a domain that does opts out of active_test
             if !referenced.iter().any(|f| f == active_name) {
                 implicit_active = true;
                 ctx.touch(&model.name, active_name);

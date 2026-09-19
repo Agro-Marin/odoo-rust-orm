@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
-# usage: harness/gate.sh [--keep] [--quick]
-#
-# The whole gate, unattended: build and test the crates, deploy the extension
-# into the venv, create the two scratch databases the battery needs, run
-# verify.sh with the ORM lane, drop the databases, and leave one summary with
-# the four repositories' tips beside it. Exit 0 only when every stage passed.
-#
-# There is no CI here: a gate runs when a person runs it, and the fork's
-# cursor contract moved for four days in September 2026 before anyone did.
-# This is the one command to run after a sync, or from a timer.
-#
-#   --keep    keep the scratch databases (for a re-run or a look)
-#   --quick   pass --quick to verify.sh (skips sweep, fuzz, tours, soak)
-#
-# environment: RUSTORM_GATE_OUT (summary dir, default ~/.cache/rustorm-gate),
-#   RUSTORM_GATE_DB_PREFIX (default rustorm_gate), plus everything verify.sh reads.
 set -uo pipefail
+
+usage() {
+  cat <<'USAGE'
+usage: harness/gate.sh [--keep] [--quick]
+
+The whole gate, unattended: build and test the crates, deploy the extension
+into the venv, create the two scratch databases the battery needs, run
+verify.sh with the ORM lane, drop the databases, and leave one summary with
+the four repositories' tips beside it. Exit 0 only when every stage passed.
+
+There is no CI here: a gate runs when a person runs it, and the fork's
+cursor contract moved for four days in September 2026 before anyone did.
+This is the one command to run after a sync, or from a timer.
+
+  --keep    keep the scratch databases (for a re-run or a look)
+  --quick   pass --quick to verify.sh (skips sweep, fuzz, tours, soak)
+
+environment: RUSTORM_GATE_OUT (summary dir, default ~/.cache/rustorm-gate),
+  RUSTORM_GATE_DB_PREFIX (default rustorm_gate), plus everything verify.sh reads.
+USAGE
+}
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE="${RUSTORM_WORKSPACE:-$(cd "$ROOT/.." && pwd)}"
 ODOO="${RUSTORM_ODOO_ROOT:-$WORKSPACE/odoo}"
@@ -29,7 +35,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --keep)  KEEP=1; shift ;;
     --quick) QUICK="--quick"; shift ;;
-    -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -38,7 +44,7 @@ PROBE="${PREFIX}_probe"; ORMT="${PREFIX}_ormt"
 SUMMARY="$OUT/summary.txt"
 FAILED=0
 say() { echo "$*" | tee -a "$SUMMARY"; }
-step() {  # step NAME rc
+step() {
   if [ "$2" = 0 ]; then say "  $1: OK"; else say "  $1: FAIL (rc=$2, see $OUT)"; FAILED=1; fi
 }
 

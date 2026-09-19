@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""What `corpus.json` contains, counted from the file.
-
-The README quoted the corpus's size from memory -- 263, 267 and 275 cases in
-three places, over 16 models -- while the file held 425 over 29. A figure
-that describes the file should come from the file.
-"""
 
 import collections
 import json

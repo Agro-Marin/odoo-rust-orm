@@ -1,5 +1,3 @@
-"""Fault controls for replay verdicts, using the configured scratch database."""
-
 import json
 import os
 import pathlib

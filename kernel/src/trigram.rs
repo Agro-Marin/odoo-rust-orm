@@ -1,35 +1,9 @@
-//! Odoo's translated-trigram accelerator, ported from `odoo/libs/sql/trigram.py`.
-//!
-//! A translated field declared `index="trigram"` carries a GIN index on
-//! **one specific expression**:
-//!
-//! ```sql
-//! gin (unaccent(jsonb_path_query_array(name, '$.*')::text) gin_trgm_ops)
-//! ```
-//!
-//! Nothing but that expression can use it, and Odoo's `_String.condition_to_sql`
-//! ANDs exactly it onto every `like` / `ilike` / single-valued `in`. The
-//! conjunct is implied by the condition it accompanies -- the array of every
-//! translation contains the one the base condition tests -- so it changes no
-//! row and buys the index. A kernel that omits it answers the same rows by
-//! sequential scan, which on a large `product.template` is slower than the
-//! Python it replaced.
-//!
-//! The two functions are ports rather than reimplementations, and the tests
-//! below are Odoo's own output on the same inputs: 40,040 strings over an
-//! alphabet of wildcards, backslashes, quotes, tabs, newlines and non-ASCII
-//! agreed exactly, which is what licenses the hand-written scanner in place of
-//! `_TRIGRAM_PATTERN_RE` (whose lookbehind Rust's `regex` cannot express).
 
-/// `json.dumps(s, ensure_ascii=False)[1:-1]` -- RFC 8259 string escaping with
-/// the surrounding quotes removed, which leaves non-ASCII alone.
 fn json_escape(s: &str) -> String {
     let quoted = serde_json::Value::String(s.to_string()).to_string();
     quoted[1..quoted.len() - 1].to_string()
 }
 
-/// Escape what PostgreSQL's LIKE treats as special, so the pattern matches the
-/// characters literally.
 fn escape_wildcards(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     for c in s.chars() {
@@ -41,7 +15,6 @@ fn escape_wildcards(s: &str) -> String {
     out
 }
 
-/// The accelerator pattern for an `in` against a single value.
 pub fn value_to_pattern(value: &str) -> String {
     if value.chars().count() < 3 {
         return "%".into();
@@ -49,12 +22,6 @@ pub fn value_to_pattern(value: &str) -> String {
     format!("%{}%", escape_wildcards(&json_escape(value)))
 }
 
-/// The accelerator pattern for a `like` / `ilike` pattern.
-///
-/// Splits on the wildcards the caller did NOT escape, unescaping as it goes,
-/// and keeps the runs of three characters or more -- a shorter run cannot
-/// constrain a trigram index, so it is dropped rather than narrowing the
-/// conjunct below what the base condition guarantees.
 pub fn pattern_to_pattern(pattern: &str) -> String {
     let chars: Vec<char> = pattern.chars().collect();
     let n = chars.len();
@@ -68,9 +35,6 @@ pub fn pattern_to_pattern(pattern: &str) -> String {
                 cur.push(chars[i + 1]);
                 i += 2;
             }
-            // A backslash with nothing to escape is a pattern Python's regex
-            // declines to match at all, which drops the segment it ends --
-            // and only that one; the segments before it still count.
             '\\' => {
                 dangling = true;
                 i += 1;
@@ -79,11 +43,6 @@ pub fn pattern_to_pattern(pattern: &str) -> String {
                 segments.push(std::mem::take(&mut cur));
                 i += 1;
             }
-            // Python's `$` matches before a single trailing newline, so a
-            // segment ends there -- but only when the scan REACHES it
-            // unescaped. `\<newline>` consumes it as a literal and the match
-            // ends at the true end instead, which is why this is a scanner
-            // state and not a `strip_suffix`.
             '\n' if i == n - 1 => {
                 segments.push(std::mem::take(&mut cur));
                 i += 1;
@@ -113,8 +72,6 @@ pub fn pattern_to_pattern(pattern: &str) -> String {
 mod tests {
     use super::*;
 
-    // (input, value_to_pattern, pattern_to_pattern), taken from Odoo 19's own
-    // `odoo.libs.sql.trigram` rather than derived from the code above.
     const PAIRS: &[(&str, &str, &str)] = &[
         ("", "%", "%"),
         ("a", "%", "%"),
@@ -174,16 +131,12 @@ mod tests {
 
     #[test]
     fn a_short_run_cannot_constrain_the_index_and_is_dropped() {
-        // Two characters is below a trigram, so the conjunct must widen to
-        // `%` rather than demand a substring the base condition does not.
         assert_eq!(pattern_to_pattern("ab"), "%");
         assert_eq!(value_to_pattern("ab"), "%");
     }
 
     #[test]
     fn the_conjunct_never_narrows_past_the_literal_runs() {
-        // Every kept run appears in the pattern surrounded by `%`, so the
-        // conjunct is implied by the LIKE it accompanies.
         assert_eq!(pattern_to_pattern("%abcd%efgh%"), "%abcd%efgh%");
         assert_eq!(pattern_to_pattern("abcd_efgh"), "%abcd%efgh%");
     }

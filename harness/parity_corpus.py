@@ -1,17 +1,3 @@
-"""Generate RPC-shaped calls for `harness/parity.sh`, one set per model.
-
-The shadow lane, the replay lane and the sweep all compare the METHOD's
-RESULT. None of them can see a difference in what the SERVER SENDS -- a
-response envelope key, a serialisation choice, a header -- and on 2026-09-08
-a routed `web_search_read` was dropping the envelope's `version` key while
-every one of those lanes reported agreement. These cases exist to be driven
-over real HTTP against a routed server and an unrouted one and diffed as
-BYTES, which is the only comparison that can see it.
-
-Shapes are RPC-native (`call_kw` args/kwargs), not the corpus dialect the
-kernel's own runner speaks, because the point is to go through the web stack.
-"""
-
 import json
 import os
 import pathlib
@@ -60,10 +46,6 @@ def cases_for(model):
         and f.comodel_name in model.env.registry
     )[:1]
 
-    # Every ordering ends in `id`. Without a unique tiebreak a LIMIT window
-    # over equal sort keys is nondeterministic, and this harness would spend
-    # its time reporting that rather than reporting divergences. The two
-    # baseline passes catch whatever is left.
     order = "id asc"
     read_fields = scalars + m2o
     if read_fields:
@@ -91,8 +73,6 @@ def cases_for(model):
                 "count_limit": 10001,
             },
         )
-        # The offset/no-count_limit shape: this is the one whose envelope
-        # divergence went unseen, and it is not the same code path as above.
         add(
             "web_search_read",
             [],
@@ -113,8 +93,6 @@ def cases_for(model):
     if model._rec_name:
         add("name_search", [], {"name": "a", "limit": 8})
 
-    # `web_read` needs ids, so they are resolved now and frozen into the
-    # case; the fixture does not move between the legs.
     if spec:
         try:
             ids = model.search([], order="id", limit=3).ids

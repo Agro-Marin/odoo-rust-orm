@@ -1,23 +1,28 @@
 #!/usr/bin/env bash
-#
-# Odoo's own cursor suites, run against the RUST cursor and against psycopg,
-# diffed test by test.
-#
-#   harness/cursor_parity.sh --db <db>
-#
-# `phase2_tests` cannot do this. It differences a baseline leg against a
-# routed leg and what it toggles is ORM ROUTING -- the db shim is installed in
-# both, so the cursor is rust-backed on both sides and a cursor regression
-# lands in the "pre-existing in both modes" bucket the gate ignores. Measured:
-# adding `test_db_cursor` there gives `baseline 44/379 -> routed 44/379`,
-# which reads as clean.
-#
-# So the axis here is the CURSOR, not the routing, and the comparison is by
-# test NAME rather than by count -- a count reads "one fixed, one new" as no
-# change. Failures that are artifacts of driving Odoo's suites with a bare
-# `unittest` runner appear on both sides and cancel.
 
 set -uo pipefail
+
+usage() {
+  cat <<'USAGE'
+
+Odoo's own cursor suites, run against the RUST cursor and against psycopg,
+diffed test by test.
+
+  harness/cursor_parity.sh --db <db>
+
+`phase2_tests` cannot do this. It differences a baseline leg against a
+routed leg and what it toggles is ORM ROUTING -- the db shim is installed in
+both, so the cursor is rust-backed on both sides and a cursor regression
+lands in the "pre-existing in both modes" bucket the gate ignores. Measured:
+adding `test_db_cursor` there gives `baseline 44/379 -> routed 44/379`,
+which reads as clean.
+
+So the axis here is the CURSOR, not the routing, and the comparison is by
+test NAME rather than by count -- a count reads "one fixed, one new" as no
+change. Failures that are artifacts of driving Odoo's suites with a bare
+`unittest` runner appear on both sides and cancel.
+USAGE
+}
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE="${RUSTORM_WORKSPACE:-$(cd "$ROOT/.." && pwd)}"
@@ -31,7 +36,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --db)  DB="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
-    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -69,9 +74,6 @@ names = {
     k for k in set(psy) | set(rust)
     if not k.startswith("__")
 }
-# Second half of the vacuity guard: the suite refuses to write a leg that ran
-# on psycopg, and this refuses to SCORE one whose marker is missing -- an old
-# artifact, or a leg that never reached the check.
 if psy.get("__cursor__") in (None, "FakeConnection"):
     print(
         "  VACUOUS: the psycopg leg reports cursor=%r; it did not run on psycopg "
@@ -110,14 +112,6 @@ print()
 if ran_r == 0 or ran_p == 0:
     print("CURSOR PARITY VACUOUS  a leg ran no tests; it compared nothing")
     sys.exit(1)
-# The baseline file owns the remaining differences, BY NAME. A count cannot
-# tell "fixed" from "not exercised": on a fixture that does not reach these
-# paths all three fail under psycopg too, leave only_rust for the `both`
-# bucket, and a count-only gate reads ONLY-RUST=0 -- the shape of an
-# improvement, with nothing improved. Lowering the floor on that banks a
-# number measured on a fixture that never asked the question. Names let the
-# gate say which of the three MOVED and which were actually FIXED, and only
-# the second kind asks for the floor to come down.
 import os
 base_path = os.environ.get("RUSTORM_CURSOR_BASELINE", sys.argv[3])
 try:
@@ -128,15 +122,12 @@ except Exception as exc:
     print("CURSOR PARITY FAILED  no baseline at %s (%s)" % (base_path, exc))
     sys.exit(1)
 
-# the count is documentation now that the names decide; a file whose two halves
-# disagree is a file that lies to whoever reads only one of them
 if expected and len(expected) != baseline:
     print("CURSOR PARITY FAILED  the baseline names %d test(s) but its count says %d"
           % (len(expected), baseline))
     sys.exit(1)
 
 if not expected:
-    # a baseline that names nothing can only be compared as a count
     if len(only_rust) != baseline:
         print("CURSOR PARITY FAILED  %d fail only under the rust cursor, baseline %d "
               "(the baseline names no tests, so this gate cannot say which)"

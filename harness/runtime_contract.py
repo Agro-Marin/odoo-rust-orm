@@ -101,10 +101,6 @@ rebuild()
 
 
 def _release_fixture() -> None:
-    # Committed policy rows outlive a failed contract, and the rule hides a
-    # currency from every later stage on the database: the load stage read
-    # `currency_id: False` for the admin on 2026-09-18 because of one such
-    # leftover. Idempotent, so the orderly release at the end may run first.
     with reg.cursor() as cr:
         env_ = odoo.api.Environment(cr, 1, {})
         env_["ir.rule"].browse(rule_id).exists().unlink()
@@ -116,8 +112,6 @@ def _release_fixture() -> None:
 
 atexit.register(_release_fixture)
 
-# Maintenance queries must not pin an old snapshot, and an ORM dispatch
-# must never perform its multi-query read without transaction isolation.
 with env_for() as e:
     e.cr.rollback()
     conn = e.cr._cnx
@@ -141,7 +135,6 @@ print(
     flush=True,
 )
 
-# A redacted wire relation must not overwrite its real foreign key in cache.
 answers = []
 for mode, preloaded in (("off", False), ("on", False), ("on", True), ("shadow", False)):
     shim.MODE = mode
@@ -159,7 +152,6 @@ for mode, preloaded in (("off", False), ("on", False), ("on", True), ("shadow", 
 assert all(rows == answers[0] for rows in answers)
 print("CONTRACT cache preserves redacted relation (cold/preloaded/shadow)", flush=True)
 
-# A PostgreSQL failure rolls back the dispatch savepoint and arms the breaker.
 shim.MODE = "on"
 shim.reset_breaker()
 with psycopg.connect(**conninfo) as blocker:
@@ -180,10 +172,6 @@ assert not shim._policy_allows("res.country")
 shim.reset_breaker()
 print("CONTRACT SQL failures typed, transaction usable, breaker trips", flush=True)
 
-# The dispatch savepoint is released without waiting on it. Whatever the call
-# ended in -- rows, a refusal before any statement, a refusal after one -- the
-# next statement must run, and must find no kernel savepoint left open: a
-# leaked one per routed call would pile subtransactions onto a long request.
 shim.MODE = "on"
 with env_for(uid) as e:
     conn = e.cr._cnx._rust
@@ -207,9 +195,6 @@ with env_for(uid) as e:
             outcomes.append(type(exc).__name__)
         e.cr.execute("SELECT 42")
         assert e.cr.fetchone()[0] == 42, "the statement after a dispatch misread"
-        # A leaked kernel savepoint lies below this one, so releasing it
-        # succeeds and takes this one with it; only an error naming the
-        # kernel's savepoint says there was none.
         try:
             with e.cr.savepoint(flush=False):
                 e.cr.execute("RELEASE SAVEPOINT rust_kernel_dispatch")
@@ -228,7 +213,6 @@ print(
 )
 
 
-# Exercise quarantine through the real wrapper, not just its counter helper.
 class WrongCount:
     def __init__(self, target):
         self.target, self.calls = target, 0
@@ -336,8 +320,6 @@ print(
 )
 
 
-# A new global kernel must not serve a request retaining the older Python
-# registry, even if that request starts a new SQL snapshot after publication.
 def change_in_other_process(code):
     result = subprocess.run(
         [
@@ -390,13 +372,10 @@ with old_reg.cursor() as old_cr:
                 (mode, "old Python registry used newer field permissions")
             )
         assert shim.STATS["kernel"] == before
-    # Without a Python registry stamp the native snapshot check still refuses.
     with unittest.TestCase().assertRaisesRegex(
         engine.KernelRefused, "snapshot predates"
     ):
         shim.KERNEL.dispatch(old_cr._cnx._rust, request)
-    # Committing retains this environment's Python registry but starts a fresh
-    # SQL snapshot on its next query.
     old_cr.commit()
     assert old_env.registry is old_reg
     shim.MODE = "on"
@@ -414,7 +393,6 @@ print(
     flush=True,
 )
 
-# A cache-only signal can refresh security without replacing the model map.
 shim.MODE = "off"
 with env_for() as e:
     r = e["ir.rule"].create(
@@ -444,9 +422,6 @@ where_request = json.dumps(
 with env_for(uid) as old:
     initial = json.loads(shim.KERNEL.dispatch(old.cr._cnx._rust, count_request))
     assert initial > 1
-    # the port's WHERE compile keeps the snapshot it checked for the rest of
-    # the transaction too; it has to be refused just the same once security
-    # moves past it
     assert shim.KERNEL.search_where(old.cr._cnx._rust, where_request, offline=False)
     change_in_other_process(
         f"env['ir.rule'].browse({snapshot_rule_id}).write({{'domain_force': {repr([('id', '=', cid)])!r}}})"
@@ -471,7 +446,6 @@ print(
     flush=True,
 )
 
-# Native success versus a Python exception is a mismatch, not a retry signal.
 previous_only = shim.ONLY
 shim.ONLY = {"res.country"}
 shim.MODE, shim.SAMPLE = "on", 1
@@ -513,20 +487,11 @@ print(
     flush=True,
 )
 
-# A routed _read_group hands back many2one group values that PREFETCH TOGETHER,
-# as _read_group_postprocess_groupby builds them. Browsed one by one, reading a
-# field of the groups fetched once per record per field: routed web_read_group
-# ran 3.95x slower than Python on captured traffic, every answer correct. The
-# check is on the query count, because nothing about the rows would show it.
 shim.reset_breaker()
 previous_mode, previous_sample = shim.MODE, shim.SAMPLE
 shim.MODE, shim.SAMPLE = "on", 0.0
 try:
     with env_for() as e:
-        # res.country: a many2one of its own and no read-path override, where
-        # res.partner carries mail's activity groupby hook on any database
-        # with mail and is refused as a whole; the transaction rolls back with
-        # the context manager
         countries = e["res.country"]
         seeded = countries.create(
             [
@@ -565,8 +530,6 @@ try:
             "reading the name of %d routed groups took %d queries"
             % (len(groups), queries)
         )
-        # env_for's cursor commits on a clean exit; the seeded countries are
-        # this check's alone
         e.cr.rollback()
 finally:
     shim.MODE, shim.SAMPLE = previous_mode, previous_sample
@@ -619,7 +582,6 @@ try:
             "the selection array_agg did not route"
         )
 
-        # an empty selection aggregates as None, which orders against nothing
         def bag(rows):
             return [sorted(row[1], key=lambda v: (v is None, v or "")) for row in rows]
 
@@ -636,8 +598,6 @@ shim.reset_breaker()
 previous_mode, previous_sample = shim.MODE, shim.SAMPLE
 try:
     with env_for(2) as e:
-        # existing users, because creating one is a security write that
-        # taints the cursor for routing; public_user is archived in base
         admin = e.ref("base.user_admin")
         archived = e.ref("base.public_user")
         assert not archived.active, "the contract needs an archived comodel record"
@@ -680,7 +640,6 @@ try:
             rows(got),
             rows(expected),
         )
-        # every role is in exactly one group, the archived-only one included
         grouped = sorted(id_ for _g, _n, ids in expected for id_ in ids)
         assert grouped == sorted(roles.ids), (grouped, roles.ids, expected)
         e.cr.rollback()
@@ -691,9 +650,6 @@ print(
     flush=True,
 )
 
-# A write to res.users taints the cursor only through the fields Odoo itself
-# invalidates its user caches for. A preference or an avatar leaves the cursor
-# routable and the answer Python's; a group change still gates it.
 shim.reset_breaker()
 previous_mode, previous_sample = shim.MODE, shim.SAMPLE
 shim.MODE, shim.SAMPLE = "on", 0.0
@@ -725,12 +681,6 @@ print(
     flush=True,
 )
 
-# web_search_read resolves a many2one with rules of its own. read() redacts a
-# target the user cannot read to False; web_read keeps its id, and {"id": id}
-# when a name was asked for. The routed call used the kernel's label, which is
-# read()'s answer: 124 of 1,018 routed web_search_read calls across the sweep
-# users disagreed with Python. The committed rule above hides Belgium's
-# currency from every user.
 shim.reset_breaker()
 previous_mode, previous_sample = shim.MODE, shim.SAMPLE
 shim.MODE, shim.SAMPLE = "on", 0.0
@@ -754,7 +704,6 @@ try:
                 answer["records"],
                 python["records"],
             )
-        # web_read's own call, which a web_search_read the gate refuses makes
         routed = shim.STATS["kernel"]
         answer = countries.browse(cid).read(["currency_id"], load=None)
         assert shim.STATS["kernel"] > routed, "read(load=None) did not route"
@@ -776,8 +725,6 @@ if "mail.mail" in reg:
     shim.MODE, shim.SAMPLE = "on", 0.0
     try:
         with env_for(2) as e:
-            # the refusal is decided per row to label, so a database with no
-            # mail yet must be given one; the transaction rolls back
             e["mail.mail"].sudo().create(
                 {"subject": "label contract", "body_html": "<p/>"}
             )
@@ -921,7 +868,6 @@ print(
     flush=True,
 )
 
-# Release committed rule/field policy changes before the rest of the corpus.
 with env_for() as e:
     e["ir.rule"].browse(rule_id).unlink()
     e["ir.model.fields"].browse(fid).write({"groups": [(5, 0, 0)]})

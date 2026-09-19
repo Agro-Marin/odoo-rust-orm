@@ -91,8 +91,6 @@ SEAMS = [
     ),
     ("odoo.orm.fields", "Many2one", ["bypass_search_access"]),
     ("odoo.db", None, ["get_connection_info_for_database"]),
-    # `rust_db_shim._close_armed_pools` reaches it as an attribute of the
-    # package, not a submodule; the kill switch is inert if it goes away.
     ("odoo.db", "registry", ["close_db"]),
 ]
 

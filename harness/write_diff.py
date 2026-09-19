@@ -1,23 +1,3 @@
-"""One leg of the write differential: create, write, unlink, read back raw.
-
-Run under `odoo-bin shell` with `env` injected (see verify.sh's shell_script
-and python_script), once with the engine armed and once without. Each leg
-writes the same generated rows to the same models in one transaction, reads
-every stored scalar column of the rows it created back with raw SQL -- the
-cache cannot mask what the row holds -- dumps them as JSON and rolls back.
-`write_diff_compare.py` pairs the two dumps by creation order.
-
-    RUSTORM_WRITE_DIFF_OUT     where the JSON goes (required)
-    RUSTORM_WRITE_DIFF_LEG     "armed": install the port and route in this
-                               process (exit 3 when it cannot); anything
-                               else is the control, which arms nothing
-    RUSTORM_WRITE_DIFF_MODELS  comma-separated model names; default: every
-                               concrete model the generator can create
-    RUSTORM_WRITE_DIFF_LIMIT   at most this many models (default 40)
-    RUSTORM_WRITE_DIFF_FAULT   "1": the positive control -- the armed leg's
-                               port writes the first char column's repr
-"""
-
 import base64
 import datetime
 import decimal
@@ -48,10 +28,6 @@ SCALAR = (
 
 
 def case(field, i):
-    """The i-th value for a field: plain, empty, NULL, unicode with control
-    characters, an extreme, a float that does not round-trip through text.
-    Strings carry the field's name and the row, so a unique column gets a
-    distinct value per row and two char columns never collide."""
     t = field.type
     if t in ("char", "text", "html"):
         shapes = [
@@ -114,9 +90,6 @@ def writable(model):
         if f.type not in SCALAR:
             continue
         if getattr(f, "company_dependent", False) or getattr(f, "translate", False):
-            # stored as jsonb keyed by company or language: another comparison,
-            # and a unique rule over one key (res.partner.barcode) collides on
-            # the empty string the scalar cases carry
             continue
         if f.type == "selection" and (callable(f.selection) or not f.selection):
             continue
@@ -145,8 +118,6 @@ _CONSTRAINED = _constrained()
 
 
 def write_or_drop(env, recs, vals, dropped):
-    """The batch write, or -- when a constraint refuses it -- each field on
-    its own, so the refused ones join `dropped` and the rest are written."""
     if not vals:
         return
     try:
@@ -167,10 +138,6 @@ def write_or_drop(env, recs, vals, dropped):
 
 
 def create_rows(model, fields, vals_list):
-    """The six creates, with two retries for what the first attempt cannot
-    know: a unique rule over a defaulted char the comparison excludes (the
-    six rows share the default), answered by a distinct value per row; and
-    a create override written for one record, answered one row at a time."""
     env = model.env
     try:
         with env.cr.savepoint():
@@ -204,11 +171,6 @@ def create_rows(model, fields, vals_list):
 
 
 def required_fill(model, fields, i):
-    """Row i's values for the required fields the comparison does not cover:
-    an existing row for a many2one, a first choice for a selection, a per-row
-    string for a scalar `writable` excluded (computed, readonly, translated,
-    company-dependent). None when a required field has no fillable value,
-    which skips the model."""
     covered = {f.name for f in fields}
     vals = {}
     for f in model._fields.values():
@@ -234,9 +196,6 @@ def required_fill(model, fields, i):
                 else case(f, 0)
             )
         elif f.type == "many2one":
-            # a different target per row where the comodel has enough rows:
-            # a unique rule over a pair of many2ones (user and partner, mentor
-            # and mentee) collides when every row names the same first record
             targets = (
                 model.env[f.comodel_name]
                 .sudo()
@@ -273,10 +232,6 @@ def readback(env, model, ids, fields):
 
 
 def scenario_balanced_entry(env):
-    """A journal entry that balances, so the amount columns of account.move.line
-    -- debit, credit, balance, amount_currency -- are in the comparison; the
-    generic generator cannot write them one at a time without tripping the
-    balance constraint, and drops them."""
     Move = env["account.move"].sudo()
     journal = env["account.journal"].sudo().search([("type", "=", "general")], limit=1)
     accounts = env["account.account"].sudo().search([], limit=2)
@@ -289,7 +244,6 @@ def scenario_balanced_entry(env):
     move = Move.create({"journal_id": journal.id, "line_ids": lines})
     env.flush_all()
     debit, credit = move.line_ids.sorted("id")
-    # both sides in one write: the entry must balance at every flush
     move.write(
         {
             "line_ids": [
@@ -317,10 +271,6 @@ def scenario_balanced_entry(env):
 
 
 def scenario_bulk_copy(env, model_name):
-    """COPY_THRESHOLD + 2 rows in one create: above the threshold the fork
-    writes through COPY, which the port declines, so the armed leg's rows
-    come through the rust cursor's COPY encoder and the control's through
-    psycopg's -- the two encoders, cell for cell."""
     from odoo.orm.runtime.backend import COPY_THRESHOLD
 
     if model_name not in env.registry:
@@ -343,8 +293,6 @@ def scenario_bulk_copy(env, model_name):
                 and v[f.name] in (False, None, "")
                 and (f.required or f.name == "name")
             ):
-                # `name` on every row: a check constraint wants one on a
-                # company partner, and the shapes carry an empty one
                 v[f.name] = (
                     "%s req %d" % (f.name, i)
                     if f.type in ("char", "text", "html")
@@ -426,9 +374,6 @@ def arm_fault():
     rust_backend.RustBackend.create_rows = faulted
     original_update = rust_backend.RustBackend.update_rows
 
-    # The per-row string writes are the LAST write of every char column, so
-    # a fault on the create alone is overwritten before the dump reads it and
-    # the control passes on nothing. The fault has to ride the final write.
     def faulted_update(self, model, fnames, rows):
         fnames = list(fnames)
         char_cols = [
@@ -449,8 +394,6 @@ def arm_fault():
 
 
 def arm_port():
-    """The armed leg: the port on the class and routing on for this process,
-    as write_path.py does -- the addon arms routing, not the port, in a shell."""
     try:
         import engine_py
     except ImportError:
@@ -469,7 +412,7 @@ def main(env):
     port = arm_port() if ARMED else None
     if ARMED and (port is None or port.installed() is None):
         print("WRITE DIFF SKIP: the port could not be installed in this process")
-        sys.exit(3)  # skipped, not passed
+        sys.exit(3)
     if FAULT:
         arm_fault()
     stats = port.STATS if port is not None else None
@@ -499,7 +442,6 @@ def main(env):
                 for i, v in enumerate(vals_list):
                     for f in fields:
                         if f.required and v.get(f.name) in (False, None, ""):
-                            # per row: a required char is often the unique one
                             v[f.name] = (
                                 True
                                 if f.type == "boolean"
@@ -510,10 +452,6 @@ def main(env):
                 try:
                     recs = create_rows(model, fields, vals_list)
                 except _CONSTRAINED as first:
-                    # a model whose constraints refuse the generated shapes
-                    # is still worth its plain columns: create the required
-                    # ones only, and let the field-by-field writes below
-                    # find out which fields the constraints admit
                     minimal = [
                         dict(
                             bases[i],
@@ -530,9 +468,6 @@ def main(env):
                     except Exception:
                         raise first from None
                 env.flush_all()
-                # second values: one field at a time on the first record, each
-                # in its own savepoint -- a field a constraint refuses is
-                # dropped from the comparison rather than the whole model
                 dropped = []
                 for f in fields:
                     try:
@@ -544,9 +479,6 @@ def main(env):
                 if dropped:
                     fields = [f for f in fields if f.name not in dropped]
                 if len(recs) > 1:
-                    # one value onto many rows (`update_rows.uniform`) for the
-                    # types a unique constraint cannot catch; strings get a
-                    # value per row, since a shared one collides on a unique column
                     uniform = [
                         f for f in fields if f.type not in ("char", "text", "html")
                     ]

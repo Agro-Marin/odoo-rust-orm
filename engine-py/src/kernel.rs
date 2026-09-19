@@ -12,9 +12,6 @@ use crate::errors::{KernelRefused, KernelRegistryStale, from_kernel};
 
 static REGISTRY_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-/// The savepoint every dispatch reads inside. One name serves every dispatch
-/// on a connection: they do not nest, and each releases or rolls back its own
-/// before returning.
 const SAVEPOINT_OPEN: &str = "SAVEPOINT rust_kernel_dispatch";
 const SAVEPOINT_RELEASE: &str = "RELEASE SAVEPOINT rust_kernel_dispatch";
 const SAVEPOINT_UNDO: &str =
@@ -55,8 +52,6 @@ impl RustKernel {
         let conn = db.connect(py, None)?;
         let handle = conn.handle().clone();
         let client = conn.client()?;
-        // Read the model map and security/default watermark from one snapshot.
-        // This private transaction never changes the caller's transaction.
         conn.ensure_tx(py)?;
         let registry = py
             .detach(|| handle.block_on(Registry::from_export(&client, &export)))
@@ -64,9 +59,6 @@ impl RustKernel {
         conn.rollback(py)?;
         let registry = registry?;
         let generation = REGISTRY_GENERATION.fetch_add(1, Ordering::SeqCst);
-        // The generation is what invalidates a connection's kernel statement
-        // cache: plans prepared against the previous registry are dropped on
-        // the next dispatch that names a newer one.
         tracing::info!(
             target: "odoo_kernel::bridge",
             models = registry.models.len(),
@@ -89,18 +81,6 @@ impl RustKernel {
         self.registry.models.len()
     }
 
-    /// The `UPDATE` `PostgresBackend.update_rows` would compose, composed
-    /// from this kernel's registry instead.
-    ///
-    /// It is returned rather than executed: the caller binds the same
-    /// parameters and runs it on its own cursor, so the statement reaches
-    /// PostgreSQL through the same logging, metrics and savepoints as every
-    /// other write. What moves here is the composition, which is the part
-    /// decided by field metadata.
-    ///
-    /// `value_repeats` says how many parameters each column's value
-    /// contributes, because a whole-value translated column binds its value
-    /// three times -- the merge expression names it three times.
     #[pyo3(signature = (model, fnames, uniform, row_count))]
     fn update_rows_sql(
         &self,
@@ -134,9 +114,6 @@ impl RustKernel {
         Ok((sql, repeats))
     }
 
-    /// The `INSERT` `PostgresBackend.create_rows` would run on its INSERT
-    /// strategy, composed from this kernel's registry. Returned, not executed,
-    /// for the same reason as `update_rows_sql`.
     #[pyo3(signature = (model, columns, row_count))]
     fn insert_rows_sql(
         &self,
@@ -153,20 +130,6 @@ impl RustKernel {
             .map_err(from_kernel)
     }
 
-    /// The WHERE fragment `StorageBackend.search` would add, compiled on the
-    /// caller's connection as `(sql, payload_json)` in Odoo's `%s` dialect,
-    /// the payload carrying `params` and `touched` -- the (model, field) pairs
-    /// the fragment reads, which the caller flushes. See `Orm::compile_where`.
-    ///
-    /// `offline` asks for an answer that sends no statement, and returns None
-    /// when one is needed -- a watermark not yet checked in this transaction,
-    /// an identity or rule set not yet cached, a hierarchy lookup. The caller
-    /// asks again online inside a savepoint. The watermark a compile verifies
-    /// is kept on the connection for the rest of its transaction, so after the
-    /// first search of a transaction the offline answer is the usual one.
-    ///
-    /// The same guards as `dispatch`: a stale kernel, another Python registry
-    /// and an autocommit cursor all refuse.
     #[pyo3(signature = (conn, request_json, offline))]
     fn search_where(
         &self,
@@ -195,12 +158,6 @@ impl RustKernel {
                 "kernel reads require a repeatable-read transaction",
             ));
         }
-        // Opening the transaction is a statement, and it is sent offline too:
-        // the query this fragment ends up in would send the same BEGIN, so it
-        // costs nothing Python's own path does not, and a BEGIN that fails has
-        // broken the connection for Python as well -- there is nothing a
-        // savepoint could roll back to. What offline withholds is every
-        // statement that is the KERNEL's.
         conn.ensure_tx(py)?;
         let checked = conn.checked_signals(self.generation);
         let client = conn.client()?;
@@ -281,27 +238,14 @@ impl RustKernel {
         let client = conn.client()?;
         let handle = conn.handle().clone();
         let stmts = conn.kernel_stmts_at(self.generation);
-        // The GIL is released for the whole dispatch: `detached_ms` minus the
-        // kernel's own dispatch time is what another Python thread got back.
         let t0 = std::time::Instant::now();
         let out = py.detach(|| {
-            // A failed statement must not abort the caller's transaction, or
-            // Python could not answer the call the kernel gave up on, so the
-            // dispatch runs inside a savepoint. SAVEPOINT and, on success,
-            // RELEASE are only enqueued: tokio-postgres writes requests in the
-            // order they are queued and pages past the replies of a dropped
-            // future, so the kernel's first query goes out without waiting on
-            // SAVEPOINT and Python's next statement queues behind RELEASE.
-            // Python's own `cr.savepoint()` waited on both, two round trips of
-            // a routed call whose query is one.
             let _ = client.batch_execute(SAVEPOINT_OPEN).now_or_never();
             let orm = Orm::new(&self.registry, &client, self.caches.clone(), &stmts);
             let result = handle.block_on(orm.dispatch_with(&req, checked.clone()));
             if result.is_ok() {
                 let _ = client.batch_execute(SAVEPOINT_RELEASE).now_or_never();
             } else {
-                // waited on: the caller's next statement needs the
-                // transaction usable again
                 let undone = handle.block_on(client.batch_execute(SAVEPOINT_UNDO));
                 conn.clear_prepared_after_rollback();
                 if let Err(e) = undone {
@@ -318,8 +262,6 @@ impl RustKernel {
                 .err()
                 .is_some_and(odoo_kernel::orm::is_registry_stale)
             {
-                // The holder of a fresh live Python registry publishes the
-                // replacement. Our old export cannot supply new groups/hooks.
                 tracing::warn!(
                     target: "odoo_kernel::bridge",
                     generation = self.generation,
@@ -330,9 +272,6 @@ impl RustKernel {
                 stmts.clear();
             }
             let (raw, snapshot) = result.map_err(from_kernel)?;
-            // The signalling watermark cannot move inside the caller's
-            // REPEATABLE READ transaction; the next dispatch in it reuses the
-            // snapshot this one checked instead of reading the row again.
             if checked.is_none() {
                 conn.remember_signals(self.generation, snapshot);
             }

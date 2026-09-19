@@ -1,33 +1,3 @@
-"""The port's `search`, differentially against the backend it replaces.
-
-`search` does not return rows. It returns a lazy `Query` the ORM goes on
-composing, so a native one is right only if every use of it is: its ids, its
-count, and its place as a sub-select inside another domain. Each is compared
-here against the same `Query` built with the port disarmed, case by case, over
-the sweep corpus -- the corpus every other lane is measured on, at every
-identity it seeds.
-
-`_search` is called directly. `search_read` and `search_count` are routed by
-`rust_orm_shim` before they reach `_search` at all, so going through them would
-measure the method shim and credit it to the port.
-
-Two things a row comparison cannot see are checked too:
-
-- **the flush.** Odoo's WHERE carries `to_flush`, the fields the cursor flushes
-  before the statement runs. A native fragment missing one reads a stale row
-  after a write in the same transaction, and no read-only comparison notices.
-  So the native fragment's set must COVER Python's.
-- **that the path ran.** A case the port delegated compares Python with Python.
-  Native and delegated cases are counted apart, and the delegations carry
-  their reasons.
-
-Rows tied under the requested order are not a disagreement: two plans may
-return them in either order, and under a limit either subset. A differing
-result is re-run on both legs with `id` appended to the order, and counted as
-a tie only when that settles it -- a WHERE that differs still differs once the
-order is total.
-"""
-
 import collections
 import json
 import os
@@ -51,7 +21,7 @@ from _env import base_env, harness_dir
 
 if not os.environ.get("PYTHONPATH"):
     print("SEARCH SKIP: no PYTHONPATH; engine_py must be importable")
-    sys.exit(3)  # skipped, not passed
+    sys.exit(3)
 
 import engine_py
 from cases import case_env
@@ -60,16 +30,13 @@ CORPUS = os.environ.get("RUSTORM_SWEEP") or os.path.join(harness_dir(), "corpus.
 MIN_NATIVE = int(os.environ.get("RUSTORM_MIN_NATIVE_SEARCH", "1000"))
 
 port = engine_py.install_backend()
-# The port obeys the routing mode; this script arms methods on the class on
-# purpose, so it turns routing on for its own process rather than inherit a
-# conf that may say `shadow` -- the process ends with the script.
 import rust_orm_shim
 
 rust_orm_shim.set_mode("on")
 backend_name = type(env.cr.transaction.backend).__name__  # noqa: F821
 if port.installed() is None or backend_name != "RustBackend":
     print("SEARCH SKIP: the port is not installed for this database")
-    sys.exit(3)  # skipped, not passed
+    sys.exit(3)
 
 ORIGINAL = port.RustBackend.NATIVE
 ARMED = ORIGINAL | {"search"}
@@ -211,16 +178,11 @@ for case in corpus:
         )
         continue
 
-    # the native query as a sub-select inside a domain the Python backend
-    # compiles, which is how a field's search= method or an `in` hands it on
     try:
         with cenv.cr.savepoint():
             port.RustBackend.NATIVE = ARMED
             inner = model._search(domain)
             port.RustBackend.NATIVE = DISARMED
-            # the outer search must not add its own active filter: it would
-            # drop the archived rows a domain naming `active` rightly kept, and
-            # report the difference as the native query's
             outer = model.with_context(active_test=False)
             composed = sorted(outer._search([("id", "in", inner)]).get_result_ids())
             port.RustBackend.NATIVE = DISARMED
@@ -239,11 +201,6 @@ for case in corpus:
         continue
     tally["matched"] += 1
 
-# A record rule written in THIS transaction. The kernel's rules move with the
-# signalling watermark, which moves on commit, so it cannot see this one and
-# Python can: the only right native answer is a delegation. Last, because the
-# write taints the cursor for the rest of the transaction, and the rollback
-# after it is what clears that.
 Users = env["res.users"].sudo()  # noqa: F821
 user = Users.search(
     [("share", "=", False), ("id", "not in", [1, 2]), ("active", "=", True)],

@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""Drive a corpus of `call_kw` over JSON-RPC and record the RESPONSE BYTES.
-
-Not the parsed result -- the bytes. Everything else in this repo compares
-what a method returned, which cannot see a difference in what the server
-sent around it. `harness/parity.sh` runs this against an unrouted server and
-a routed one and diffs the two recordings.
-
-An error response is recorded like any other: two servers that raise the same
-error identically are in parity, and one that raises where the other answers
-is exactly what this is looking for.
-"""
 
 import argparse
 import http.cookiejar
@@ -64,19 +53,12 @@ def call(opener, port, case, timeout):
         with opener.open(req, timeout=timeout) as r:
             return r.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
-        # An HTTP error body is a recording like any other; a status that
-        # changes between the legs is a divergence worth seeing.
         return "HTTP %d %s" % (exc.code, exc.read().decode("utf-8", "replace"))
     except Exception as exc:
         return "TRANSPORT %s: %s" % (type(exc).__name__, exc)
 
 
 def _scrub(body):
-    """Drop the JSON-RPC `id`, which the client chooses and the server echoes.
-
-    It is not part of the answer, and leaving it in would make every case
-    differ for a reason that has nothing to do with routing.
-    """
     try:
         payload = json.loads(body)
     except ValueError:

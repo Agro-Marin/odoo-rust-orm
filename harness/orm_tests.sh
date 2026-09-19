@@ -61,8 +61,6 @@ if [ -z "$off_line" ] || [ -z "$on_line" ]; then
   echo "ORM TESTS FAILED: a leg reported no result"; exit 1
 fi
 if grep -aq "matched no test" "$OUT/off.log"; then
-  # a database without the test modules: read as "did not route" before,
-  # which sends the reader to the extension when the database is the answer
   echo "ORM TESTS FAILED: the tags matched no test on $DB; install the test modules there"; exit 1
 fi
 if [ "$refusing" != 0 ] || [ "${routed:-0}" = 0 ]; then
@@ -73,9 +71,6 @@ if [ "$unavailable" != 0 ]; then
   echo "ORM TESTS FAILED: $unavailable test class(es) could not run in the routing leg"; exit 1
 fi
 if [ -n "$only_off" ]; then
-  # a test red without the engine and green with it is not a routing
-  # regression; it is a flake or a Python-side red the differential is not
-  # for, and it is named so the reader can decide which
   echo "ORM TESTS note: failing only WITHOUT routing (not a routing regression):"
   printf '%s\n' "$only_off" | sed 's/^/  /'
 fi

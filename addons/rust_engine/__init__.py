@@ -64,7 +64,7 @@ def _default_socket_dir():
 
 
 class _CannotArm(Exception):
-    """A configuration the kernel must not silently reinterpret."""
+    pass
 
 
 def _session_options(info):
@@ -145,7 +145,6 @@ def _connection_specs(db_name):
 DEFAULT_TICK = 60
 
 CHECKOUT = pathlib.Path(__file__).resolve().parents[2]
-# the files `engine-py/build.rs` checksums into `__source_crc__`, in its order
 SOURCE_INPUTS = (
     ("Cargo.toml", ""),
     ("Cargo.lock", ""),
@@ -178,14 +177,6 @@ def source_crc(root: pathlib.Path) -> str:
 
 
 def stale_extension(engine_py, root: pathlib.Path = CHECKOUT) -> str | None:
-    """Why this `engine_py` must not serve this checkout, or None.
-
-    The shims are compiled into the extension, so an extension built before a
-    change to them imports cleanly and serves the old code: the workspace
-    venv's copy once routed `web_read_group` at 3.96x Python, a defect its
-    checkout had already fixed. An addon deployed without its checkout has
-    nothing to compare against and is not refused.
-    """
     if (
         os.environ.get(SKIP_FRESHNESS_ENV)
         or not (root / "engine-py/build.rs").is_file()
@@ -209,11 +200,6 @@ def stale_extension(engine_py, root: pathlib.Path = CHECKOUT) -> str | None:
     return None
 
 
-# The kernel logs below DEBUG, where Python has no level. `engine_py` registers
-# the name, but too late to be selected: Odoo resolves a `--log-handler
-# name:LEVEL` with `getattr(logging, LEVEL, logging.INFO)` in `odoo/logutils.py`
-# and runs that before any addon is imported, so `:TRACE` read as INFO and the
-# finest level was unreachable from the command line.
 TRACE_LEVEL = 5
 
 
@@ -230,8 +216,6 @@ def _open_trace_level() -> None:
 
 
 PARAM_MODE = "rust_engine.mode"
-# a model that raised this many unexpected kernel errors is served from Python
-# until reset_breaker(); refusals and divergences do not count
 DEFAULT_BREAKER = 3
 PARAM_SAMPLE = "rust_engine.verify_sample"
 
@@ -242,8 +226,6 @@ def _switch_connection():
     pid = os.getpid()
     owner, conn = _STATE.get("switch_conn") or (None, None)
     if owner != pid:
-        # a socket inherited across fork() belongs to the parent; closing it
-        # here would send its Terminate message, so it is only dropped
         conn = None
     if conn is None or conn.closed:
         conn = psycopg.connect(**_STATE["psycopg_info"], autocommit=True)
@@ -257,8 +239,6 @@ def _read_params():
     conn = _switch_connection()
     try:
         with conn.cursor() as cur:
-            # read over a private psycopg connection, never the rust cursor:
-            # the kill switch has to work when the engine itself is the problem
             cur.execute(
                 "SELECT key, value FROM ir_config_parameter WHERE key = ANY(%s)",
                 ([PARAM_MODE, PARAM_SAMPLE],),
@@ -271,20 +251,6 @@ def _read_params():
 
 
 def _set_mode(orm_shim, mode) -> None:
-    """One switch, both layers.
-
-    `mode` decides two things that used to be decided separately. The ORM
-    shim's mode says whether reads are routed to the kernel. The db shim's
-    `ACTIVE` says whether the process's connections are rust ones at all --
-    and until it existed, `db_shim.install()` at post_load replaced the driver
-    for EVERY cursor in the process regardless of the mode, so `off` stopped
-    the routing and left the driver swap in place. That is not what "changes
-    nothing until someone says otherwise" means. `off` now means off for both;
-    `shadow` and `on` both need rust cursors, because the kernel runs inside
-    the caller's transaction.
-
-    Raises `ValueError` on an unknown mode, before touching either layer.
-    """
     orm_shim.set_mode(mode)
     shims = _STATE["shims"]
     if shims is not None:
@@ -320,8 +286,6 @@ def _apply_params(orm_shim, params) -> None:
 
 def _report(orm_shim, final=False) -> None:
     snap = orm_shim.stats()
-    # a refusal is the kernel declining a call it cannot answer and Python
-    # answering it: routine, and not what an operator reads "error" as
     refused = snap.get("kernel_refused", 0)
     _logger.info(
         "rust kernel%s: mode=%s sample=%.3f routed=%d share=%.2f "
@@ -342,8 +306,6 @@ def _report(orm_shim, final=False) -> None:
         snap.get("quarantined") or "-",
         snap.get("registry_stale", 0),
     )
-    # The persistence port on the same line's cadence: without it a burn-in
-    # with a write profile could not say whether one create went native
     port = _STATE.get("port")
     if port is not None:
         pstats = port.stats()
@@ -356,9 +318,6 @@ def _report(orm_shim, final=False) -> None:
             pstats.get("delegated") or "-",
             pstats.get("native_share", 0.0),
         )
-    # The eight commonest reasons a call was NOT routed. Each distinct reason
-    # is one capability to widen; `odoo.rust_kernel.gate` at DEBUG names the
-    # individual calls behind each count.
     for (model, method, reason), n in snap.get("gate_reasons", ()):
         _logger.info("rust kernel gate: %5d  %s.%s: %s", n, model, method, reason)
     for model, msg in sorted(snap.get("errors", {}).items()):
@@ -391,8 +350,6 @@ def _start_reporter(orm_shim, seconds) -> None:
                 continue
 
     threading.Thread(target=tick, name="rust_engine.tick", daemon=True).start()
-    # the periodic line is a snapshot; the totals a run ends on are what a
-    # stage reads, so log them once more when the process exits
     atexit.register(lambda: _report(orm_shim, final=True))
 
 
@@ -406,8 +363,6 @@ def _build_kernel(registry):
     kernel = engine_py.RustKernel.build(_STATE["rust_db"], export)
     orm_shim.snapshot_orders(export)
     orm_shim.DBNAME = _STATE["db"]
-    # This runs once per worker, on the first registry load: a slow startup
-    # after arming is one of these two halves, and they have different fixes.
     _logger.info(
         "rust kernel ready for %s: %d models, routing mode %r "
         "(export %.0f ms, build %.0f ms, pid %d)",
@@ -507,18 +462,6 @@ def _apply_config(orm_shim, config) -> None:
 
 
 def _arm_port(engine_py, orm_shim, config, db_name) -> None:
-    """Install the persistence port, or leave `env.backend` as the fork built it.
-
-    Nothing here may abort `start()`. By the time it runs the db shim and the
-    method routing are already installed, and the registry hook is armed only
-    AFTER it: an exception here once left a server with the shims in and no
-    hook to publish a kernel -- half armed, and reported only as a CRITICAL
-    "Couldn't load module rust_engine" line. It was reached through an
-    `engine_py` older than this addon, the venv's copy predating the port,
-    which every odoo-bin run without `PYTHONPATH` on the fresh build imports.
-    The addon and the extension are versioned apart, so an older extension is
-    a state to serve through, not an error.
-    """
     if str(config.get("rust_engine_port", "on")).strip().lower() == "off":
         return
     install_backend = getattr(engine_py, "install_backend", None)
@@ -622,8 +565,6 @@ def start() -> None:
         orm_shim.DBNAME = db_name
         orm_shim.KERNEL_FACTORY = _build_kernel_for
         orm_shim.PROCESS_HOOK = _report_here
-        # `install()` above only patches; whether a borrow hands out a rust
-        # connection is `ACTIVE`, and that follows the mode from here on.
         _apply_config(orm_shim, config)
         orm_shim.install()
 

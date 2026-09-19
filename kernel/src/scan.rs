@@ -40,9 +40,6 @@ pub(crate) fn col_kind(field: &Field) -> Result<ColKind> {
     })
 }
 
-// `_read_group_empty_value`: a NULL cell of a read_group is False for every
-// aggregate but a count and for every non-relational group-by, where a read
-// of the same column would give the field's falsy value (0, 0.0)
 pub(crate) fn decode_group(row: &tokio_postgres::Row, i: usize, kind: &ColKind) -> Result<Json> {
     let null = match kind {
         ColKind::IntZero => match *row.columns()[i].type_() {
@@ -117,10 +114,6 @@ pub(crate) fn records_to_json(names: &[&str], cells: &[Vec<Json>]) -> Result<Str
         }
         for (i, cell) in rec.iter().enumerate() {
             let frag = frags.get(i).ok_or_else(|| {
-                // NOT a refusal: the reader built a row wider than the column
-                // plan it announced, which is a defect here rather than a
-                // capability the kernel lacks. `error` so it survives the
-                // default `warn` filter.
                 tracing::error!(
                     target: "odoo_kernel::scan",
                     cells = rec.len(),
@@ -139,8 +132,6 @@ pub(crate) fn records_to_json(names: &[&str], cells: &[Vec<Json>]) -> Result<Str
     Ok(String::from_utf8(buf)?)
 }
 
-// the expression a model's display_name is read from: the declared column(s)
-// as an ordered coalesce of non-empty values, else the _rec_name field
 pub(crate) fn display_name_expr(
     ctx: &ExprCtx<'_>,
     model: &Model,
@@ -341,10 +332,6 @@ impl<'a> Orm<'a> {
             select.offset(offset);
         }
 
-        // The column plan: how many columns come out of the main SELECT, and
-        // how many fields need a round trip of their own afterwards. An x2many
-        // is one extra query each and a many2one label one per comodel, so
-        // this is the shape a slow search_read is explained by.
         tracing::debug!(
             target: "odoo_kernel::scan",
             model = %model_name,
@@ -412,8 +399,6 @@ impl<'a> Orm<'a> {
                 .iter()
                 .flat_map(|r| columns.iter().filter_map(|ci| r[*ci].as_i64()))
                 .collect();
-            // one query per comodel, not per row: the distinct-id count is
-            // what the label query actually costs
             tracing::trace!(
                 target: "odoo_kernel::scan",
                 %comodel, columns = columns.len(), distinct_ids = ids.len(),
@@ -452,10 +437,6 @@ impl<'a> Orm<'a> {
             .map(|k| k.0.as_str())
             .chain(x2many.iter().map(|f| f.name.as_str()))
             .collect();
-        // The phases account for the whole read: main query, decoding its rows
-        // into JSON, one label query per comodel, one query per x2many, then
-        // the serialisation below. A phase missing from this line is a phase
-        // nobody can attribute a slow read to.
         let t_serialise = std::time::Instant::now();
         let json = records_to_json(&names, &cells)?;
         tracing::debug!(
@@ -580,8 +561,6 @@ impl<'a> Orm<'a> {
         if !env.su && !comodel.display_name_access_pure && out.len() < ids.len() {
             return Err(widened());
         }
-        // fewer names than ids means the record rules hid some corecords;
-        // whether Odoo would still show their names is what display_name_access_pure records
         tracing::trace!(
             target: "odoo_kernel::scan",
             comodel = %comodel_name, asked = ids.len(), rendered = out.len(),
@@ -687,8 +666,6 @@ impl<'a> Orm<'a> {
                 members += 1;
             }
         }
-        // one query for every parent at once, ordered by the comodel's _order:
-        // the member count is what the field costs to answer
         tracing::debug!(
             target: "odoo_kernel::scan",
             model = %owner.name,
@@ -709,8 +686,6 @@ impl<'a> Orm<'a> {
         let cond = self
             .build_condition(model, domain_json, env, &rules, req.trusted_domain)
             .await?;
-        // a limited count is COUNT(*) over a capped subquery, which stops the
-        // scan early; an unlimited one counts every matching row
         tracing::debug!(
             target: "odoo_kernel::scan",
             model = %model_name, ?limit, capped = limit.is_some(),
@@ -781,17 +756,12 @@ impl<'a> Orm<'a> {
 
         let group_compiler = Compiler::root(&ctx, model, &rules, env.su);
         let mut gbs: Vec<GbSpec> = Vec::new();
-        // two specs walking the same hop share its join: `group_id.name` and
-        // `group_id.privilege_id.name` both bind `ir_model_access__group_id`
-        // once, or PostgreSQL refuses the alias specified twice
         let mut joined: BTreeSet<String> = BTreeSet::new();
         for spec in groupby {
             let (path, gran) = match spec.split_once(':') {
                 Some((f, g)) => (f, Some(g.to_string())),
                 None => (spec.as_str(), None),
             };
-            // a dotted spec walks many2one hops to the field it groups by,
-            // each hop a left join of the comodel under its own rules
             let hops: Vec<&str> = path.split('.').collect();
             let (last, heads) = hops.split_last().expect("a spec has a name");
             let mut holder = model;
@@ -1040,9 +1010,6 @@ impl<'a> Orm<'a> {
                 );
             }
             if traverse_many2one && gb.granularity.is_none() && comodel_ordered {
-                // ordering a many2one group by the COMODEL's _order rather
-                // than by its id: the join it needs is wrapped in ANY_VALUE
-                // so it survives the GROUP BY
                 tracing::debug!(
                     target: "odoo_kernel::scan",
                     model = %model_name,
@@ -1104,9 +1071,6 @@ impl<'a> Orm<'a> {
         let t_main = std::time::Instant::now();
         let (sql, values) = select.build_postgres(PostgresQueryBuilder);
         let rows = self.db.query(&sql, &values.as_params()).await?;
-        // `hidden_columns` are the ones only the ORDER BY needs -- a __count
-        // nobody asked for, a day_of_week rotation -- and they are grouped by
-        // as well, which is what keeps the group set the same as Odoo's
         tracing::debug!(
             target: "odoo_kernel::scan",
             model = %model_name,
@@ -1153,7 +1117,6 @@ impl<'a> Orm<'a> {
                         Some(x) => json!(x),
                         None => json!(false),
                     },
-                    // _read_group_empty_value: a NULL aggregate is False, or []
                     AggKind::Bool => json!(row.try_get::<_, Option<bool>>(i)?.unwrap_or(false)),
                     AggKind::IntArray => {
                         json!(

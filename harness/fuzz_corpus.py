@@ -169,7 +169,6 @@ class Gen:
         value = self.value_for(target, field, operator)
         r = rng.random()
         if operator in ("in", "not in") and isinstance(value, list) and r < 0.15:
-            # a scalar where a list is expected: falsy is the empty set
             value = rng.choice(value + [False, 0, ""])
         elif operator in ("=", "!=") and r < 0.1 and not isinstance(value, list):
             value = [value, False] if rng.random() < 0.5 else [value]
@@ -483,8 +482,6 @@ def main(env) -> None:
             case["aggregates"] = aggregates
             if rng.random() < 0.3:
                 term = rng.choice(aggregates + [g.split(":")[0] for g in groupbys])
-                # the group-by specs make the order total: rows equal under the
-                # requested term come back in either order on both sides
                 tail = ", ".join(g for g in groupbys if g != term)
                 case["order"] = (
                     term + rng.choice(["", " desc"]) + (", " + tail if tail else "")

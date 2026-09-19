@@ -15,12 +15,7 @@ import weakref
 from rust_engine_errors import KernelRefused, KernelRegistryStale
 
 _logger = logging.getLogger("odoo.rust_kernel.routing")
-# Every call the gate turns away, one line each, with the reason. `STATS` and
-# `GATE_REASONS` are the same information aggregated; this logger is what says
-# WHICH call, which is what a session widening the routed share needs.
 _gate_logger = logging.getLogger("odoo.rust_kernel.gate")
-# One line per call that reached the kernel, with the wire sizes and the split
-# between the kernel's own time and the revive/warm work this shim does after.
 _call_logger = logging.getLogger("odoo.rust_kernel.call")
 
 KERNEL = None
@@ -122,8 +117,6 @@ def _ensure_kernel(env):
         _logger.debug("no kernel factory yet; the addon has not armed this process")
         return False
     if os.getpid() == _KERNEL_TRIED_PID:
-        # one attempt per process: a worker that could not build the kernel
-        # serves from Python for its whole life rather than retrying per call
         return False
     loading = (os.getpid(), id(env.registry), len(env.registry.models))
     if loading == _KERNEL_INCOMPLETE[0]:
@@ -178,8 +171,6 @@ def _policy_allows(name) -> bool:
     if MODE == "off":
         return _refuse("routing mode is off")
     if _in_baseline():
-        # the shadow comparison is running Python's own answer; routing it
-        # again would compare the kernel with itself
         return _refuse("inside the shadow baseline")
     if ONLY and name not in ONLY:
         return _refuse("not in RUSTORM_ROUTE_ONLY")
@@ -297,8 +288,6 @@ def _verified_baseline(model, method, kernel_result, fn, *args, **kwargs):
     try:
         return _baseline(fn, *args, **kwargs)
     except Exception as exc:
-        # A native value and a Python exception are different outcomes. Keep
-        # Python's exception, quarantine immediately, and never invoke it twice.
         _quarantine(model, method, kernel_result, {"python_error": repr(exc)})
         raise
 
@@ -317,29 +306,10 @@ SECURITY_MODELS = frozenset(
     }
 )
 DIRTY_CRS = weakref.WeakSet()
-#: Cursors that COMMITTED a security write the registry has not signalled yet.
-#: A commit puts the rows in the database, but the kernel's per-identity
-#: caches are keyed on the `orm_signaling` sequences, and the fork bumps
-#: those at the end of the transaction scope (`_commit_and_signal_changes`),
-#: not inside `Cursor.commit`. Between the two, a routed read as the user
-#: whose groups just changed would be served from the cache the write made
-#: stale; the taint stays until `Registry.signal_changes` runs.
 COMMITTED_DIRTY = weakref.WeakSet()
 
 
 def _harmless_user_write(records, vals) -> bool:
-    """A write to res.users that changes nothing Python's security caches read.
-
-    Every write to res.users used to taint the cursor, and in the browser tours
-    that was the largest single reason a read fell back to Python -- through
-    `odoobot_state`, `image_1920`, a notification preference. Odoo itself
-    names the fields whose change invalidates what it caches about a user:
-    `_get_fields_invalidation()` (groups, active, lang, tz, companies, the
-    session-token fields), overridable by addons, and a write outside that set
-    leaves the rule domains Python answers from as they were. The kernel's
-    snapshot of that user can stay in step with it. Creates and unlinks, and
-    every other security model, still taint.
-    """
     if records._name != "res.users" or not isinstance(vals, dict) or not vals:
         return False
     invalidating = getattr(records, "_get_fields_invalidation", None)
@@ -373,16 +343,6 @@ ORDERS = {}
 
 
 def snapshot_orders(export) -> None:
-    """Record the `_order` of every model as the kernel was built with it.
-
-    From the export, not from `registry[name]._order`: that is the class
-    attribute, and a model whose `_order` is a property -- res.partner ranks
-    by a context search mode -- yields the descriptor there, which no live
-    order ever equals, so the model drifted on every call and was refused.
-    The export reads the order through an instance in a plain environment,
-    which is what the kernel sorts by; a context that changes it at call time
-    is the drift this snapshot exists to catch.
-    """
     ORDERS.clear()
     models = json.loads(export)["models"] if isinstance(export, str) else export
     ORDERS.update({name: m["order"] for name, m in models.items()})
@@ -414,17 +374,6 @@ def _order_drifted(model, order, groupby=()):
     return False
 
 
-# Python's search_read, search_count and _read_group never call read(), so a
-# read() override (res.users reading its own record under sudo) leaves them on
-# the kernel; the ids of a read() travel as a search_read
-# Every row a routed read returns is a row Python would have produced through
-# `_fetch_query` (`search_fetch`, `read` -> `fetch`), and every grouped cell
-# through the `_read_group_*` hooks that compose and post-process the SQL. A
-# model that overrides one of them answers differently from its columns --
-# `calendar.event._fetch_query` masks a private event the caller does not
-# attend, `mail.message.fetch` decides a portal user's access before reading as
-# sudo, `stock.quant._read_group_select` turns an aggregate into NULL under a
-# context key -- and the gate must see that, or the kernel serves the column.
 _FETCH_HOOKS = ("_fetch_query",)
 _READ_GROUP_HOOKS = (
     "_read_group_select",
@@ -465,9 +414,6 @@ def _clean_model(model, method=None):
     cached = _GATE_CACHE.get(key)
     if cached is not None:
         return cached
-    # an override the export lists as transparent touches only the fields it
-    # names, which the kernel's registry no longer carries, so naming one of
-    # them refuses on its own and the model stays routable for the rest
     import purity
 
     base = _BASE_METHODS["__class__"]
@@ -485,7 +431,6 @@ def _renders_column(model, name):
         return False
     if f.store:
         return True
-    # a delegated column under _inherits reads through the parent's row
     head, _dot, tail = (f.related or "").partition(".")
     hf = model._fields.get(head) if tail and "." not in tail else None
     if hf is None or hf.type != "many2one" or not hf.store:
@@ -604,19 +549,10 @@ def _rules_read_through_x2many(model, fields):
 
 def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: ARG001  order and domain are the routed call shape, kept for the reasons log
     if not _policy_allows(model._name):
-        # _policy_allows has already recorded which policy it was
         return False
     if not _bound_db(model.env):
         return _refuse("another database")
     if not getattr(model.env.registry, "ready", True):
-        # `Registry.new(update_module=True)` from the web client reloads the
-        # registry in THIS worker: `setup_signaling` reads the sequence before
-        # `load_modules` and the bump comes after, so the kernel built from
-        # the previous registry carries the same sequence as the one being
-        # loaded and the watermark cannot tell them apart. A registry that is
-        # not ready is one whose fields, casts and translations may differ
-        # from what the kernel exported; every read serves from Python until
-        # `_new_finalize` sets `ready` and the hook publishes a new kernel.
         return _refuse("registry is loading")
     if not _ensure_kernel(model.env):
         return _refuse("kernel not built")
@@ -655,9 +591,6 @@ def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: AR
 
 
 def _path_field(model, spec):
-    """The (holder, field) a dotted groupby spec ends on, walking stored
-    many2one hops as `_read_group_groupby_many2one_path` does; (None, None)
-    where a hop is not one."""
     holder = model
     parts = spec.split(".")
     for hop in parts[:-1]:
@@ -677,8 +610,6 @@ def _written_x2many(model, vals_list):
     fields = model._fields
     inverses = getattr(getattr(model, "pool", None), "field_inverses", None)
     for vals in vals_list:
-        # a create() may receive shapes the ORM normalises later; only a dict
-        # of field names says which x2many fields this transaction touched
         if not isinstance(vals, dict):
             continue
         for name in vals:
@@ -698,11 +629,6 @@ def _written_x2many(model, vals_list):
 
 
 def _unhashable_cursor(cr, what) -> None:
-    # These three bookkeepers are the SAFETY NET: they record that this
-    # transaction wrote something the kernel would otherwise read staleley, and
-    # the gate refuses on what they recorded. A cursor that cannot go in a
-    # WeakSet silently records nothing, and the gate then sees a clean
-    # transaction -- so the failure is louder than the thing it guards.
     _logger.warning(
         "cursor %r is unhashable, so %s was not recorded; the gate cannot "
         "refuse on it and a routed read may answer from before the write",
@@ -796,10 +722,6 @@ def _read_dependencies(model, domain, order, fields):
 def _flush_if_needed(env, model, domain=None, order=None, fields=None) -> bool | None:
     if not _needs_flush(env):
         return True
-    # The kernel reads the database, so anything this transaction has computed
-    # but not written has to land first. Flushing more than the read needs is
-    # correct but costs; `deps` is the narrow set, and falling back to
-    # `flush_all` is the wide one.
     started = time.monotonic()
     try:
         try:
@@ -824,10 +746,6 @@ def _flush_if_needed(env, model, domain=None, order=None, fields=None) -> bool |
         return True
     except Exception as e:
         if _flush_error_is_the_callers(e):
-            # Python's own `_search` flushes the same fields and lets this
-            # propagate, and the transaction is aborted now: swallowing it
-            # would hand the fallback a dead transaction and lose the
-            # constraint's message for a generic one
             raise
         STATS["fallback_flush"] += 1
         _logger.info("not routing: the flush the kernel needs raised %s", e)
@@ -835,13 +753,6 @@ def _flush_if_needed(env, model, domain=None, order=None, fields=None) -> bool |
 
 
 def _flush_error_is_the_callers(e) -> bool:
-    """Whether a flush error belongs to the caller rather than to routing.
-
-    A database error (a CHECK or unique constraint, a NOT NULL) or a
-    `UserError` raised by a compute/inverse would have reached the caller
-    from Python's own pre-search flush; only a failure of the flush
-    machinery itself is a reason to fall back.
-    """
     import psycopg
 
     from odoo.exceptions import UserError
@@ -866,11 +777,6 @@ def _default_name_fields(model):
 
 
 def _resolve_display_name_exact(model, domain):
-    # _search_display_name on a model declaring _display_name_search_exact:
-    # an "in"/"ilike" with a value first searches those fields exactly, and
-    # any hit is the whole answer; a miss is the default composition. Both
-    # halves are plain domains the kernel compiles, so the leaf is rewritten
-    # here and the kernel refuses one that was not
     exact = getattr(type(model), "_display_name_search_exact", ())
     if not exact:
         return domain
@@ -1130,12 +1036,6 @@ def _request(model, method, **kw):
         "method": method,
         "uid": env.uid,
         "su": bool(env.su),
-        # `env._lang`, not `context['lang']`: the two agree except under
-        # `edit_translations` / `check_translations`, where Odoo reads the
-        # translated columns through the `_xx_XX` pseudo-language. The kernel
-        # validates the code against `res_lang` and refuses one it does not
-        # have, which is exactly the fallback that mode needs; the context
-        # value would have been served as the plain language.
         "lang": env._lang,
         "allowed_company_ids": env.context.get("allowed_company_ids") or None,
         "active_test": bool(env.context.get("active_test", True)),
@@ -1172,8 +1072,6 @@ def _request(model, method, **kw):
 
 
 def _dispatch(model, method, **kw):
-    # RustKernel.dispatch reads inside a savepoint of its own, so a refusal
-    # leaves the caller's transaction usable for Python to answer the call.
     request = _request(model, method, **kw)
     started = time.monotonic()
     raw = KERNEL.dispatch(_rust_conn(model.env), request)
@@ -1189,8 +1087,6 @@ def _dispatch(model, method, **kw):
     return json.loads(raw)
 
 
-# fromisoformat, not strptime: strptime re-normalises the locale on every call
-# and cost 200 ms of a 5000-row read; the kernel writes ISO text with a space
 _parse_dt = datetime.datetime.fromisoformat
 _parse_date = datetime.date.fromisoformat
 
@@ -1199,8 +1095,6 @@ COUNT_AGGREGATES = frozenset({"count", "count_distinct"})
 
 
 def _revive_temporal(field, value):
-    # the kernel serialises temporal columns as text; a numeric granularity
-    # (day_of_week, week_number, ...) and a count reach here as numbers
     if field is None:
         return value
     if isinstance(value, list):
@@ -1215,9 +1109,6 @@ def _revive_temporal(field, value):
 
 
 def _python_key_order(model, records):
-    # read() answers the scalar columns first and the relational fields after
-    # them (_read_format), whatever order the caller asked; a routed answer
-    # keeps the same key order so the two serialise byte for byte
     if not records:
         return records
     from odoo.orm.models.mixins._cache_scan import can_scan_read
@@ -1254,13 +1145,9 @@ def _revive_records(model, records):
 def _warm_cache(model, records) -> None:
     if not records:
         return
-    # A routed read bypasses the ORM cache, so the records it answered with are
-    # written back into it; skipping this makes the NEXT access re-query, which
-    # is how a routed read can look fast and still lose overall.
     started = time.monotonic()
     try:
         recs = model.browse([r["id"] for r in records])
-        # one recordset walk for every field, not one per field
         singles = list(recs)
         cache = model.env.cache
         for name in records[0]:
@@ -1279,8 +1166,6 @@ def _warm_cache(model, records) -> None:
                         v = v[0]
                     elif isinstance(v, dict):
                         v = v.get("id", False)
-                    # False is also the public redaction of an unreadable
-                    # target. It cannot replace the internal foreign key.
                     if not v:
                         continue
                     ids.append(rec.id)
@@ -1309,8 +1194,6 @@ def _record_error(model, e) -> None:
     msg = "%s: %s" % (type(e).__name__, e) if unexpected else str(e)
     STATS["fallback_error"] += 1
     if not unexpected:
-        # the call reached the kernel and it declined: a refusal, which a
-        # stage reads apart from a shim or kernel exception
         STATS["kernel_refused"] = STATS.get("kernel_refused", 0) + 1
     if unexpected:
         STATS["errors_by_model"][model._name] = (
@@ -1455,10 +1338,6 @@ def _web_merge(specification, records, python_records):
 
 
 def _web_split_many2ones(model, specification, many2ones):
-    # A plain many2one is web_read's raw foreign key and needs no label. A
-    # named one keeps the kernel's label when the user may see the target;
-    # a target the label query hid comes back as its bare id for web's own
-    # resolver, and a comodel Python names or guards goes there whole.
     raw, unredacted = [], []
     for name in many2ones:
         named = "fields" in (specification[name] or {})
@@ -1468,9 +1347,6 @@ def _web_split_many2ones(model, specification, many2ones):
 
 
 def _web_resolve_many2ones(model, records, specification, raw, unredacted):
-    # web_read decides a many2one's value with rules of its own: an unreadable
-    # target is still its id, or {"id": id} when a name was asked for, where
-    # read() redacts it to False.
     for name in raw:
         spec = specification[name] or {}
         if "fields" in spec:
@@ -1594,13 +1470,6 @@ _INSTALLED = None
 
 
 def _untaint(cr, committed=False) -> None:
-    # a commit or rollback ends the window the x2many bookkeeper guards --
-    # after either, the relation tables the kernel reads are what Python
-    # sees. The security taint ends with a rollback too, but a COMMIT only
-    # moves it: the rows are in the database and the kernel's caches are not
-    # told until the registry signals, so the cursor stays refused until
-    # `_signalled` for its database. Failing to clear is harmless (it only
-    # keeps the gate refusing), so this one stays quiet.
     with contextlib.suppress(TypeError):
         if committed:
             if cr in DIRTY_CRS:
@@ -1611,9 +1480,6 @@ def _untaint(cr, committed=False) -> None:
 
 
 def _signalled(db_name) -> None:
-    """The registry of `db_name` signalled its changes: the kernel will see
-    them on its next request, and the cursors that committed them may route
-    again."""
     for cr in list(COMMITTED_DIRTY):
         if getattr(cr, "dbname", db_name) == db_name:
             COMMITTED_DIRTY.discard(cr)
@@ -1793,8 +1659,6 @@ def install():
                 ):
                     raise KernelRefused("flush failed; not routing")
                 for g in groupby:
-                    # the hops and the field at the end of a dotted spec live
-                    # on other models, which the flush above does not reach
                     if "." in g:
                         holder, f = _path_field(self, g.split(":")[0])
                         if holder is not None:
@@ -1813,13 +1677,6 @@ def install():
                 STATS["kernel"] += 1
                 out = []
                 gb_fields = [_path_field(self, g.split(":")[0])[1] for g in groupby]
-                # Every group record of a column prefetches with the others,
-                # as `_read_group_postprocess_groupby` builds them. Browsed one
-                # by one, each was its own prefetch set, and a caller reading a
-                # field of the groups -- web_read_group reads their names --
-                # fetched once per record per field: on the captured traffic
-                # 5,372 single-field fetches and routed web_read_group 3.95x
-                # slower than Python.
                 prefetch = [
                     tuple(row[i] for row in rows if row[i])
                     if f.type in ("many2one", "many2many")
@@ -1945,8 +1802,6 @@ def install():
     _cursor_mod.Cursor.rollback = rollback
     _cursor_mod.Cursor.commit = commit
 
-    # The fork signals at the end of the transaction scope, not on commit;
-    # that is the moment the kernel's caches can be trusted again.
     from odoo.orm.runtime.registry import Registry as _Registry
 
     orig_signal_changes = _Registry.signal_changes
@@ -2065,8 +1920,6 @@ def install():
                     result["__version"] = _canonical_digest(result)
                     if MODE != "shadow" and not _verify_this_one():
                         _warm_cache(self, result["records"])
-                        # web_read stamps the JSON-RPC envelope with a version
-                        # of its records; the routed answer carries the same
                         if result["records"]:
                             _stamp_envelope(result["records"])
                         return result

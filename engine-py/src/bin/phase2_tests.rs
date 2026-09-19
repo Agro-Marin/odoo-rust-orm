@@ -180,9 +180,6 @@ fn main() -> Result<()> {
         db_shim.setattr("RUST_DB", &rust_db)?;
         db_shim.setattr("CONNINFO", odoo_kernel::config::dsn())?;
         db_shim.call_method0("install")?;
-        // `install` rebinds the pool factory; the layer itself is off until
-        // switched, and off means psycopg pools under a shim that reports
-        // itself installed -- the routing then raises on every model
         db_shim.call_method1("set_active", (true,))?;
 
         let reg = py

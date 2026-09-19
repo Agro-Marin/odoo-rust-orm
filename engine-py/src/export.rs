@@ -298,9 +298,6 @@ pub fn export_registry(py: Python<'_>, reg: &Py<PyAny>) -> PyResult<String> {
     )?;
     let func = ns.get_item("export_registry")?.unwrap();
     let json: String = func.call1((reg.bind(py),))?.extract()?;
-    // This walk reads every model class in the live registry to decide which
-    // read paths Python overrides; it runs once per worker at registry load,
-    // and its duration is on the first request that pays for it.
     tracing::info!(
         target: "odoo_kernel::export",
         bytes = json.len(),

@@ -142,13 +142,6 @@ def score(expected, actual):
 
 def main() -> None:
     min_compared = 0
-    # Refusals are the designed fallback and never fail a case, so a kernel
-    # that declines nine cases in ten scores zero failures; the floor on
-    # compared values catches a run that compared almost nothing, not one
-    # that quietly lost most of its coverage. The cap is on the share of the
-    # cases the baseline RAN that the kernel declined (refused or rejected):
-    # a lane sets it a little above what it measures today, and a change that
-    # de-routes a whole family of models fails the stage instead of passing.
     max_refused_share = float(os.environ.get("RUSTORM_DIFF_MAX_REFUSED_SHARE", "0.5"))
     json_out = None
     argv = sys.argv[1:]

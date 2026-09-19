@@ -62,12 +62,6 @@ async fn a_stale_plan_inside_a_transaction_is_dropped_and_reported_not_retried()
 #[tokio::test]
 #[ignore]
 async fn a_timed_out_request_is_cancelled_and_the_next_one_runs_on_a_fresh_snapshot() {
-    // The hazard: a request cancelled by a timeout leaves its REPEATABLE READ
-    // transaction open, and the next request on the same connection reads
-    // the stale snapshot. The server's answer is to poison that connection --
-    // cancel the backend's work, never hand it out again -- and open a new
-    // one. This pins that guarantee end to end, using the same two calls the
-    // pool makes.
     let dsn = scratch_dsn();
     let a = connect().await;
     let b = connect().await;
@@ -95,7 +89,6 @@ async fn a_timed_out_request_is_cancelled_and_the_next_one_runs_on_a_fresh_snaps
         .is_err();
     assert!(timed_out);
 
-    // what PooledConn::poison does
     odoo_kernel::connect::cancel(a.cancel_token(), &dsn).await;
     let replacement = connect().await;
 
