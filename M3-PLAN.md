@@ -1716,3 +1716,24 @@ full run found two things nothing else had** (engine `7452d97`):
 A baseline of zero is a contract, and this is what it buys: eleven
 regressions named on the first run after the fork moved, one of them memory
 corruption that no assertion would have caught.
+
+## A thirty-minute prefork burn-in per leg, routing on (2026-09-19)
+
+`harness/burnin.sh --workers 4 --threads 16 --seconds 1800 --sample 0.05` on
+`rustorm_fe_burn` (139 modules with demo: mail, crm, project, sale, calendar),
+engine `e09f172`, odoo `b39df298cdf2`:
+
+    leg   requests    req/s   p50     p95     p99     errors  routed   verified  divergences
+    off   1,434,247    797   19.7ms  26.7ms  30.4ms   0
+    on    2,762,956   1535   10.1ms  13.6ms  17.8ms   0      284,190  12,032    0
+
+    BURNIN OK   284190 reads routed, 0 fell back to python, 500s=0,
+                routing-bugs=0, answers-changed=0; no worker recycled
+
+Every worker held a 0.97 routed share for the whole leg. The req/s ratio
+understates the gain: with `--sample 0.05` one read in twenty is answered
+twice. This is the first multi-worker run longer than five minutes with the
+mode on, and the first since the cursor-contract repair of 2026-09-18; the
+soak stage in `verify.sh` drives the kernel's own HTTP server, not odoo-bin,
+so it could not have measured this. Still open: hours rather than minutes,
+and a write-heavy profile -- the bench profile is reads.
