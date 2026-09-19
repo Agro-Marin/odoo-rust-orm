@@ -192,15 +192,18 @@ def required_fill(model, fields, i):
                 else case(f, 0)
             )
         elif f.type == "many2one":
-            target = (
+            # a different target per row where the comodel has enough rows:
+            # a unique rule over a pair of many2ones (user and partner, mentor
+            # and mentee) collides when every row names the same first record
+            targets = (
                 model.env[f.comodel_name]
                 .sudo()
                 .with_context(active_test=False)
-                .search([], limit=1)
+                .search([], limit=ROWS, order="id")
             )
-            if not target:
+            if not targets:
                 return None
-            vals[f.name] = target.id
+            vals[f.name] = targets.ids[i % len(targets)]
         else:
             return None
     return vals
