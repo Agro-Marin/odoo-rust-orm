@@ -1662,3 +1662,57 @@ Pushed 2026-09-18 evening after a rebase onto origin, which rewrote every odoo a
 
 A commit body citing the left column is citing a hash no fresh clone has; the
 right column is what resolves.
+
+## The write differential, and the first full battery it prompted (2026-09-18, night)
+
+`harness/write_diff.py` and `write_diff_compare.py` (engine `c2dae2d`): every
+model the generator can build, six rows across the value shapes a type has,
+a field-by-field write, a uniform write, a per-row string write, an unlink of
+the odd rows, then every stored scalar column read back with raw SQL -- once
+with the port routing and once without, paired by creation order. OK only
+when every cell agrees AND every model saw native creates. A positive control
+corrupts the last write of a char column and must be reported on every row.
+
+    rustorm_fe_wide (410 models)   157 models   469 rows   1939 cells   0 mismatches
+    positive control               3 faulted rows, 3 reported
+    verify.sh stage (probe db)     50 models   148 rows    664 cells   0 mismatches
+
+Three corrections the build made to the plan: the armed leg must arm the port
+itself (a shell never runs the addon's post_load for its own database, and the
+first leg compared Python with Python -- refused, correctly, by the compare);
+a fault on the create alone is overwritten by the per-row string writes before
+the readback, so the control rides `update_rows` too; `parent_path` spells the
+row's own id and is excluded. 253 of 410 models are skipped with their reason
+in the dump -- unique constraints on computed defaults, required fields with
+no fillable value, validation and check constraints -- a generator worklist,
+not a port question.
+
+**The battery it was added to had not run in full since 2026-09-13, and the
+full run found two things nothing else had** (engine `7452d97`):
+
+- the three battery binaries (`phase1_shell`, `phase2_tests`, `phase2_verify`)
+  had been running on psycopg since the db shim's layer learned to be off
+  (`caabfb4`): `install()` without `set_active(True)`, under a line saying
+  "all connections are rust-backed". Two of the three passed that way. The
+  registry sweep was the one that did not, at 0 routed shapes;
+- **cursor parity read ONLY-RUST 11 against a baseline of 0, and the rust leg
+  aborted the interpreter**: `tcache_thread_shutdown(): unaligned tcache chunk
+  detected`, 2 runs in 3, under the fork's real-race test. The fork's cursor
+  contract had moved 2026-09-14..17 (pipeline arming, savepoint refused in a
+  block, session reset and liveness probe on libpq's simple query, permits on
+  dead backends) and the shim's `pgconn` was the shared adapter connection's
+  handle -- so every cursor return reset a connection nobody used, and six
+  returning threads drove one libpq PGconn at once. No `unsafe` anywhere in
+  the engine; the corruption was libpq's, reached through a Python attribute.
+  Four defects in all (the reset seam, pipeline mode as a nullcontext, a
+  terminated backend raising the socket's error instead of the server's
+  FATAL, a dropped cursor pinned by its own error's `__context__` traceback);
+  write-up in `agromarin-knowledge/research/2026-09-18-rust-cursor-parity-regressions.md`.
+
+    cursor parity   ran psycopg=387 rust=387   both=20   ONLY-RUST 11 -> 0
+    race test       3 of 3 clean (was SIGABRT 2 of 3)
+    verify.sh       every stage OK on rustorm_fe_probe (mail, contacts)
+
+A baseline of zero is a contract, and this is what it buys: eleven
+regressions named on the first run after the fork moved, one of them memory
+corruption that no assertion would have caught.

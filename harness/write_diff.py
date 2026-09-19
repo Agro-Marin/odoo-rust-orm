@@ -124,6 +124,43 @@ def writable(model):
     return out
 
 
+def create_rows(model, fields, vals_list):
+    """The six creates, with two retries for what the first attempt cannot
+    know: a unique rule over a defaulted char the comparison excludes (the
+    six rows share the default), answered by a distinct value per row; and
+    a create override written for one record, answered one row at a time."""
+    env = model.env
+    try:
+        with env.cr.savepoint():
+            return model.create(vals_list)
+    except Exception as e:
+        first = e
+    if type(first).__name__ == "UniqueViolation":
+        covered = {f.name for f in fields}
+        defaulted = [
+            f
+            for f in model._fields.values()
+            if f.store
+            and f.type in ("char", "text")
+            and not f.compute
+            and not getattr(f, "translate", False)
+            and f.name not in covered
+        ]
+        retry = [
+            dict(v, **{f.name: "%s uniq %d" % (f.name, i) for f in defaulted})
+            for i, v in enumerate(vals_list)
+        ]
+        with env.cr.savepoint():
+            return model.create(retry)
+    if isinstance(first, ValueError) and "singleton" in str(first):
+        with env.cr.savepoint():
+            recs = model.browse()
+            for v in vals_list:
+                recs |= model.create([v])
+            return recs
+    raise first
+
+
 def required_fill(model, fields, i):
     """Row i's values for the required fields the comparison does not cover:
     an existing row for a many2one, a first choice for a selection, a per-row
@@ -277,11 +314,18 @@ def main(env):
                     dict(bases[i], **{f.name: case(f, i) for f in fields})
                     for i in range(ROWS)
                 ]
-                for v in vals_list:
+                for i, v in enumerate(vals_list):
                     for f in fields:
                         if f.required and v.get(f.name) in (False, None, ""):
-                            v[f.name] = case(f, 0) if f.type != "boolean" else True
-                recs = model.create(vals_list)
+                            # per row: a required char is often the unique one
+                            v[f.name] = (
+                                True
+                                if f.type == "boolean"
+                                else "%s req %d" % (f.name, i)
+                                if f.type in ("char", "text", "html")
+                                else case(f, 0)
+                            )
+                recs = create_rows(model, fields, vals_list)
                 env.flush_all()
                 # second values: one field at a time on the first record, all at once on the rest
                 for f in fields:
