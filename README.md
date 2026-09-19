@@ -390,7 +390,17 @@ One command runs everything this file claims:
 cargo build --release --workspace
 harness/verify.sh --db <any odoo database>          # or --quick to skip the sweep
 harness/verify.sh --db newdb --build base,mail,account   # create it first
+harness/gate.sh                                          # unattended: build, test, deploy, both databases, the battery, cleanup
 ```
+
+`harness/gate.sh` is the one command for after a sync, or for a timer: it
+builds and tests the crates, deploys the extension into the venv, creates the
+probe database (`--build mail,contacts`) and the ORM-lane database, runs the
+battery with the ORM lane, drops both, and leaves `summary.txt` with the five
+repositories' tips under `~/.cache/rustorm-gate/<stamp>/`. Exit 0 only when
+everything passed. There is no CI here, and the fork's cursor contract moved
+for four days in September 2026 before anyone ran the battery; this is the
+answer to that. A run is about 50 minutes.
 
 **A conf that has been armed for a deployment names a DIFFERENT database, and
 the battery used to fail three stages over it.** `rust_engine_db` arms the
