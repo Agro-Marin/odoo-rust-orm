@@ -74,8 +74,9 @@ mkdir -p "$OUT"
 # the same `InvalidCatalogName` under a different name, and a twenty-line
 # FAIL column is worse than one refusal: it reads as the code. Measured
 # 2026-09-18 after the probe database was dropped between two runs.
-if ! psql -U marin -lqt 2>/dev/null | cut -d'|' -f1 | sed 's/ //g' | grep -qx "$DB"; then
-  echo "verify: database '$DB' does not exist; create it through odoo-bin (-d $DB -i base --stop-after-init)" >&2
+if [ -z "$BUILD" ] && ! psql -U marin -lqt 2>/dev/null | cut -d'|' -f1 | sed 's/ //g' | grep -qx "$DB"; then
+  echo "verify: database '$DB' does not exist; pass --build mail,contacts (the corpus," \
+       "runtime contracts and tours want mail) or create it through odoo-bin" >&2
   exit 2
 fi
 
