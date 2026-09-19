@@ -1764,3 +1764,24 @@ the path, and nothing raised. The first attempt of this run wrote `phone`,
 a field this fork's `crm.lead` no longer has, and read 25% request errors on
 BOTH legs -- a profile bug, and a reminder that a write bench's errors are
 first suspected of the bench.
+
+## The routing gain measured with the verify sample off (2026-09-19)
+
+`burnin.sh --workers 4 --threads 16 --seconds 120 --sample 0`, three
+profiles, on a 7-module demo database (mail, crm, project, sale, calendar);
+engine `33f65fb`, odoo `dab5239bd19d`. Same server binary and conf, restarted
+between legs, warm-up discarded, 0 errors on every leg.
+
+    profile   leg   requests   req/s   p50      p95      p99      routed    gain
+    default   off    97,696     814   19.1ms   25.8ms   29.7ms
+              on    210,357   1,753    8.8ms   11.1ms   12.9ms   274,944   2.15x, p50 -54%
+    heavy     off    71,191     593   26.3ms   33.2ms   37.0ms
+              on    172,479   1,437   10.8ms   13.6ms   15.3ms   227,683   2.42x, p50 -59%
+    writes    off    33,018     275   56.0ms   87.8ms  101.1ms
+              on     36,023     300   51.2ms   83.0ms   96.0ms    18,863   1.09x, p50 -8%
+
+The write profile is a form save: create, write, read, unlink. Its cost is
+the flush, the mail thread and the access checks, all still Python; the port
+replaces the INSERT and the UPDATE and buys nine percent. The two read
+profiles are what the engine owns, and the gain is the whole request
+including HTTP, session, dispatch and JSON on both sides.
