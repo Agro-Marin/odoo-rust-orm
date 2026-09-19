@@ -17,6 +17,7 @@ PROTOCOL_METHODS = (
     "update_rows",
     "fetch",
     "search",
+    "search_raw",
     "as_query",
     "ancestors",
     "descendants",
@@ -80,7 +81,7 @@ def reset_stats() -> None:
 
 
 class RustBackend:
-    NATIVE: frozenset = frozenset({"update_rows", "create_rows"})
+    NATIVE: frozenset = frozenset({"update_rows", "create_rows", "search_raw"})
 
     __slots__ = ("_delegate",)
 
@@ -133,6 +134,16 @@ class RustBackend:
             _count("native", "update_rows")
             return None
         return self._delegate.update_rows(model, fnames, rows)
+
+    def search_raw(self, model, domain, offset, limit, order, check_access=True):
+        if self._armed("search_raw", model):
+            query = _search_native(model, domain, offset, limit, order, check_access)
+            if query is not None:
+                _count("native", "search_raw")
+                return query
+        return self._delegate.search_raw(
+            model, domain, offset, limit, order, check_access=check_access
+        )
 
     def fetch(self, *args, **kwargs):
         _delegated("fetch", "not implemented natively")

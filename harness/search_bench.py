@@ -60,7 +60,9 @@ for case in corpus:
 
 
 def run(*, armed):
-    port.RustBackend.NATIVE = (ORIGINAL | {"search"}) if armed else ORIGINAL
+    port.RustBackend.NATIVE = (
+        (ORIGINAL | {"search_raw"}) if armed else ORIGINAL - {"search", "search_raw"}
+    )
     build = execute = 0.0
     port.reset_stats()
     for n, (model, domain, order, limit) in enumerate(picked, 1):
@@ -93,7 +95,10 @@ try:
                     build,
                     execute,
                     "native=%s online=%s"
-                    % (native.get("search", 0), native.get("search.online", 0))
+                    % (
+                        native.get("search", 0) + native.get("search_raw", 0),
+                        native.get("search.online", 0),
+                    )
                     if armed
                     else "",
                 )

@@ -2341,6 +2341,10 @@ def test_an_unarmed_port_is_its_delegate() -> None:
             ("model", "domain", 0, None, None),
             {"check_access": False, "prof": "p"},
         ),
+        "search_raw": (
+            ("model", "domain", 0, None, None),
+            {"check_access": False},
+        ),
         "as_query": (("model", False), {}),
         "descendants": (
             ("model", "parent_id", [1]),
@@ -2558,6 +2562,8 @@ def test_the_port_arms_only_what_the_contract_covers() -> None:
     verified_by = {
         "update_rows": "harness/write_sql_contract.json, both derivations",
         "create_rows": "write_sql_contract.json insert_cases; write_path.py creates",
+        "search_raw": "search_path.py, the battery's search stage: ids, counts, "
+        "sub-select and flush set against python over the sweep corpus",
     }
     unverified = sorted(set(backend.RustBackend.NATIVE) - set(verified_by))
     check(
@@ -2830,6 +2836,7 @@ def test_a_stale_extension_is_refused() -> None:
 def test_search_is_implemented_and_not_armed() -> None:
     backend = _backend()
     check("search is not armed", "search" in backend.RustBackend.NATIVE, False)
+    check("search_raw is armed", "search_raw" in backend.RustBackend.NATIVE, True)
     check(
         "but it is implemented",
         callable(getattr(backend, "_search_native", None)),

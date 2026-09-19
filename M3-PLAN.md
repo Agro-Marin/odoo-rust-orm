@@ -1830,3 +1830,24 @@ Two defects the attempt found are kept:
   reason in the profile; in a server, any request that unlinks anything
   lost routing for its remainder. An empty recordset writes nothing and no
   longer taints.
+
+## Phase 3, first milestone landed: the kernel compiles the raw domain (2026-09-19)
+
+The fork's `_search` now asks `backend.search_raw` before `optimize_full`
+(odoo `0cba695f8c52`), and the port answers it from the kernel, armed. Same
+profile as above, 200 form-save cycles on `crm.lead`, in process:
+
+                              python     engine      
+    per cycle                 27.8 ms    24.2 ms     -13%
+    domain work per cycle      4.0 ms     1.4 ms
+    internal searches                    4,001 of 4,025 compiled in the kernel
+
+Arming the port's `search` on the optimised domain had measured zero the
+same morning; the difference is only WHERE the port is asked. The battery's
+search stage now reads 2,991 native and matched (was 2,701) with 80
+delegated, and the gate with the A/B differential is green on it.
+
+What is left of a save, from the same profile: the driver's 26 round trips,
+the write pipeline in orm/models, field access and compute dispatch in
+orm/fields, and the Python computes -- Phase 3 proper, in that order of
+size.

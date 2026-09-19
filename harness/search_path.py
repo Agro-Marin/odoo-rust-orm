@@ -39,15 +39,17 @@ if port.installed() is None or backend_name != "RustBackend":
     sys.exit(3)
 
 ORIGINAL = port.RustBackend.NATIVE
-ARMED = ORIGINAL | {"search"}
-DISARMED = port.RustBackend.NATIVE - {"search"}
+ARMED = ORIGINAL | {"search", "search_raw"}
+DISARMED = port.RustBackend.NATIVE - {"search", "search_raw"}
 
 
 def leg(model, domain, order, limit, *, armed):
     port.RustBackend.NATIVE = ARMED if armed else DISARMED
     port.reset_stats()
     query = model._search(domain, limit=limit, order=order)
-    native = port.stats()["native"].get("search", 0)
+    native = port.stats()["native"].get("search", 0) + port.stats()["native"].get(
+        "search_raw", 0
+    )
     reasons = port.stats()["reasons_by_method"].get("search", {})
     ids = list(query.get_result_ids())
     count = model._search(domain).count_matching() if limit is None else None
