@@ -50,11 +50,11 @@ impl RustKernel {
             KernelRefused::new_err("export has no registry_sequence; regenerate it")
         })?;
         let conn = db.connect(py, None)?;
-        let handle = conn.handle().clone();
+        let rt = conn.runtime();
         let client = conn.client()?;
         conn.ensure_tx(py)?;
         let registry = py
-            .detach(|| handle.block_on(Registry::from_export(&client, &export)))
+            .detach(|| rt.block_on(Registry::from_export(&client, &export)))
             .map_err(from_kernel);
         conn.rollback(py)?;
         let registry = registry?;
@@ -161,14 +161,14 @@ impl RustKernel {
         conn.ensure_tx(py)?;
         let checked = conn.checked_signals(self.generation);
         let client = conn.client()?;
-        let handle = conn.handle().clone();
+        let rt = conn.runtime();
         let stmts = conn.kernel_stmts_at(self.generation);
         py.detach(|| {
             let mut orm = Orm::new(&self.registry, &client, self.caches.clone(), &stmts);
             if offline {
                 orm = orm.offline();
             }
-            let result = handle.block_on(orm.compile_where(&req, checked.clone()));
+            let result = rt.block_on(orm.compile_where(&req, checked.clone()));
             if let Err(e) = &result {
                 if odoo_kernel::error::needs_round_trip(e) {
                     return Ok(None);
@@ -236,17 +236,17 @@ impl RustKernel {
         conn.ensure_tx(py)?;
         let checked = conn.checked_signals(self.generation);
         let client = conn.client()?;
-        let handle = conn.handle().clone();
+        let rt = conn.runtime();
         let stmts = conn.kernel_stmts_at(self.generation);
         let t0 = std::time::Instant::now();
         let out = py.detach(|| {
             let _ = client.batch_execute(SAVEPOINT_OPEN).now_or_never();
             let orm = Orm::new(&self.registry, &client, self.caches.clone(), &stmts);
-            let result = handle.block_on(orm.dispatch_with(&req, checked.clone()));
+            let result = rt.block_on(orm.dispatch_with(&req, checked.clone()));
             if result.is_ok() {
                 let _ = client.batch_execute(SAVEPOINT_RELEASE).now_or_never();
             } else {
-                let undone = handle.block_on(client.batch_execute(SAVEPOINT_UNDO));
+                let undone = rt.block_on(client.batch_execute(SAVEPOINT_UNDO));
                 conn.clear_prepared_after_rollback();
                 if let Err(e) = undone {
                     tracing::warn!(

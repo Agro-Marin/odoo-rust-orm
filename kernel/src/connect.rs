@@ -187,10 +187,15 @@ fn describe_fault(e: &tokio_postgres::Error) -> String {
 }
 
 pub async fn connect(dsn: &str) -> Result<Client> {
-    connect_with_fault(dsn).await.map(|(client, _)| client)
+    connect_with_fault(dsn).await.map(|(client, _, _)| client)
 }
 
-pub async fn connect_with_fault(dsn: &str) -> Result<(Client, FaultSlot)> {
+/// The connection task's handle comes back too: a caller that drives the
+/// task on its own single-thread runtime has to poll it once more after
+/// dropping the client, or the socket stays open and the backend with it.
+pub type Driver = tokio::task::JoinHandle<()>;
+
+pub async fn connect_with_fault(dsn: &str) -> Result<(Client, FaultSlot, Driver)> {
     let fault: FaultSlot = Arc::new(std::sync::Mutex::new(None));
     let t0 = std::time::Instant::now();
     let parsed = Dsn::parse(dsn)?;
@@ -211,7 +216,7 @@ pub async fn connect_with_fault(dsn: &str) -> Result<(Client, FaultSlot)> {
             let (client, conn) = parsed.config.connect(tokio_postgres::NoTls).await?;
             opened(t0);
             let slot = fault.clone();
-            tokio::spawn(async move {
+            let driver = tokio::spawn(async move {
                 if let Err(e) = conn.await {
                     tracing::error!(error = %e, "postgres connection dropped");
                     if let Ok(mut s) = slot.lock() {
@@ -219,13 +224,13 @@ pub async fn connect_with_fault(dsn: &str) -> Result<(Client, FaultSlot)> {
                     }
                 }
             });
-            Ok((client, fault))
+            Ok((client, fault, driver))
         }
         Some(tls) => {
             let (client, conn) = parsed.config.connect(tls).await?;
             opened(t0);
             let slot = fault.clone();
-            tokio::spawn(async move {
+            let driver = tokio::spawn(async move {
                 if let Err(e) = conn.await {
                     tracing::error!(error = %e, "postgres connection dropped");
                     if let Ok(mut s) = slot.lock() {
@@ -233,7 +238,7 @@ pub async fn connect_with_fault(dsn: &str) -> Result<(Client, FaultSlot)> {
                     }
                 }
             });
-            Ok((client, fault))
+            Ok((client, fault, driver))
         }
     }
 }

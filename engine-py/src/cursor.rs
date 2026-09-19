@@ -1259,7 +1259,11 @@ pub struct RustResult {
 #[pyclass]
 pub struct RustConn {
     client: std::sync::RwLock<Option<Arc<Client>>>,
-    handle: Handle,
+    /// One single-thread runtime per connection, driven on the calling
+    /// thread: a statement is a `block_on` here, with no handoff to a
+    /// worker thread and back, which cost about eight microseconds of a
+    /// twenty-microsecond round trip under the shared multi-thread runtime.
+    rt: Arc<tokio::runtime::Runtime>,
     stmt_cache: std::sync::Mutex<HashMap<String, tokio_postgres::Statement>>,
 
     kernel_stmts: Arc<odoo_kernel::orm::StmtCache>,
@@ -1273,6 +1277,7 @@ pub struct RustConn {
     pub readonly: AtomicBool,
     closed: AtomicBool,
     fault: odoo_kernel::connect::FaultSlot,
+    driver: std::sync::Mutex<Option<odoo_kernel::connect::Driver>>,
 }
 
 fn statement_is_ddl(sql: &str) -> bool {
@@ -1328,8 +1333,18 @@ impl RustConn {
             .ok_or_else(|| rerr("connection is closed"))
     }
 
-    pub fn handle(&self) -> &Handle {
-        &self.handle
+    pub fn handle(&self) -> Handle {
+        self.rt.handle().clone()
+    }
+
+    pub fn runtime(&self) -> Arc<tokio::runtime::Runtime> {
+        self.rt.clone()
+    }
+
+    /// Drive a future on this connection's runtime, which also drives the
+    /// connection task the runtime owns; the only way a statement runs.
+    pub fn block_on<F: std::future::Future>(&self, fut: F) -> F::Output {
+        self.rt.block_on(fut)
     }
 
     pub fn kernel_stmts(&self) -> Arc<odoo_kernel::orm::StmtCache> {
@@ -1366,10 +1381,10 @@ impl RustConn {
         }
     }
 
-    pub fn new(client: Arc<Client>, handle: Handle) -> Self {
+    pub fn new(client: Arc<Client>, rt: Arc<tokio::runtime::Runtime>) -> Self {
         RustConn {
             client: std::sync::RwLock::new(Some(client)),
-            handle,
+            rt,
             stmt_cache: std::sync::Mutex::new(HashMap::new()),
             kernel_stmts: Arc::new(odoo_kernel::orm::StmtCache::default()),
             kernel_generation: std::sync::atomic::AtomicU64::new(0),
@@ -1382,7 +1397,15 @@ impl RustConn {
             readonly: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             fault: Arc::new(std::sync::Mutex::new(None)),
+            driver: std::sync::Mutex::new(None),
         }
+    }
+
+    pub fn with_driver(self, driver: odoo_kernel::connect::Driver) -> Self {
+        if let Ok(mut slot) = self.driver.lock() {
+            *slot = Some(driver);
+        }
+        self
     }
 
     pub fn with_fault(mut self, fault: odoo_kernel::connect::FaultSlot) -> Self {
@@ -1463,7 +1486,7 @@ impl RustConn {
         F: std::future::Future + Send,
         F::Output: Send,
     {
-        py.detach(|| self.handle.block_on(fut))
+        py.detach(|| self.rt.block_on(fut))
     }
 
     fn note_lost_backend(&self, py: Python<'_>, err: &PyErr) {
@@ -2009,7 +2032,7 @@ impl RustConn {
         );
         Ok(RustCopy {
             sink: Some(Box::pin(sink)),
-            handle: self.handle.clone(),
+            rt: self.rt.clone(),
             types: Vec::new(),
             buf: bytes::BytesMut::with_capacity(COPY_FLUSH_AT * 2),
             rows: 0,
@@ -2117,18 +2140,41 @@ impl RustConn {
             if let Ok(mut slot) = self.client.write() {
                 slot.take();
             }
+            // the connection task ends once the client is gone, but only
+            // when polled: drive it to its end so the socket closes now
+            // and the backend does not outlive the cursor
+            let driver = self.driver.lock().ok().and_then(|mut d| d.take());
+            if let Some(driver) = driver {
+                let rt = self.rt.clone();
+                py.detach(move || {
+                    // the timeout's timer needs the runtime context, so it
+                    // is built inside block_on, not passed to it
+                    let _ = rt.block_on(async {
+                        tokio::time::timeout(std::time::Duration::from_secs(2), driver).await
+                    });
+                });
+            }
         }
         Ok(())
     }
 
     #[getter]
     fn closed(&self) -> bool {
-        self.closed.load(Ordering::SeqCst)
-            || self
-                .client
-                .read()
-                .map(|slot| slot.as_ref().is_none_or(|client| client.is_closed()))
-                .unwrap_or(true)
+        if self.closed.load(Ordering::SeqCst) {
+            return true;
+        }
+        // the connection task learns of a closed socket only when polled,
+        // and on this runtime nothing polls it between statements: give
+        // the scheduler two turns so a terminated backend reads as closed
+        // now, as psycopg's does, rather than at the next statement
+        self.rt.block_on(async {
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+        });
+        self.client
+            .read()
+            .map(|slot| slot.as_ref().is_none_or(|client| client.is_closed()))
+            .unwrap_or(true)
     }
 }
 
@@ -2343,7 +2389,7 @@ SET b = 2;"
 #[pyclass]
 pub struct RustCopy {
     sink: Option<std::pin::Pin<Box<tokio_postgres::CopyInSink<bytes::Bytes>>>>,
-    handle: Handle,
+    rt: Arc<tokio::runtime::Runtime>,
     types: Vec<Type>,
     buf: bytes::BytesMut,
     rows: i64,
@@ -2548,8 +2594,8 @@ impl RustCopy {
             .as_mut()
             .ok_or_else(|| rerr("COPY already finished"))?;
         use futures_util::SinkExt;
-        let handle = &self.handle;
-        py.detach(|| handle.block_on(sink.send(chunk)))
+        let rt = &self.rt;
+        py.detach(|| rt.block_on(sink.send(chunk)))
             .map_err(db_err)
     }
 }
@@ -2684,9 +2730,9 @@ impl RustCopy {
             .sink
             .take()
             .ok_or_else(|| rerr("COPY already finished"))?;
-        let handle = self.handle.clone();
+        let rt = self.rt.clone();
         let n = py
-            .detach(move || handle.block_on(async { sink.as_mut().finish().await }))
+            .detach(move || rt.block_on(async { sink.as_mut().finish().await }))
             .map_err(db_err)?;
         Ok(n as i64)
     }
@@ -2811,11 +2857,19 @@ impl RustDb {
             pid = std::process::id(),
             "opening a rust-backed connection for a Python cursor"
         );
-        let for_conn = handle.clone();
-        let (client, fault) = py
-            .detach(move || handle.block_on(odoo_kernel::connect::connect_with_fault(&dsn)))
+        let _ = handle;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| rerr(format!("cannot build the connection's runtime: {e}")))?;
+        // connect inside the runtime: the connection task it spawns lands
+        // on it, and every later block_on drives that task
+        let (client, fault, driver) = py
+            .detach(|| rt.block_on(odoo_kernel::connect::connect_with_fault(&dsn)))
             .map_err(|e| rerr(format!("{e:#}")))?;
-        Ok(RustConn::new(Arc::new(client), for_conn).with_fault(fault))
+        Ok(RustConn::new(Arc::new(client), Arc::new(rt))
+            .with_fault(fault)
+            .with_driver(driver))
     }
 }
 

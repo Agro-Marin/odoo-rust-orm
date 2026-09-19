@@ -1851,3 +1851,37 @@ What is left of a save, from the same profile: the driver's 26 round trips,
 the write pipeline in orm/models, field access and compute dispatch in
 orm/fields, and the Python computes -- Phase 3 proper, in that order of
 size.
+
+## Phase 3, second milestone: one runtime per connection, the round trip halved (2026-09-19)
+
+The rust cursor was SLOWER than psycopg per statement: a `SELECT 1` cost
+20.5 us raw against psycopg's 13.8, and an empty query 18.2 us, because every
+statement was a `Handle::block_on` onto the shared multi-thread runtime -- a
+futex handoff to a worker thread and back on a path whose whole cost is
+a unix-socket round trip. Each connection now owns a single-thread runtime
+and drives its own connection task inside `block_on` on the calling thread;
+the kernel's compile and dispatch sites, the COPY sink and connect itself
+moved with it.
+
+    per statement, in process              before     after     psycopg
+      rust conn.execute('SELECT 1')         20.5 us   10.0 us
+      odoo cr.execute + fetchone            23.7 us   13.1 us   19.6 us
+      50-row SELECT                         58.2 us   41.4 us
+    form-save cycle (crm.lead, 200x)        24.2 ms   23.0 ms   28.3 ms   (-19% vs python)
+
+Two contracts caught what the change broke, both from the same cause -- on
+this runtime nothing polls the connection task between statements:
+
+- a closed connection kept its backend open: dropping the client ends the
+  task only when polled. `connect_with_fault` returns the task's handle and
+  `close()` drives it to its end (0.23 ms, the backend gone);
+- a terminated backend read as open until the next statement. `closed`
+  gives the scheduler two turns before reading the client (1.6 us on a
+  live connection; 300 us to observe a termination).
+
+The prefork burn-in (4 workers, 16 threads, 120 s, sample 0) reads default
+1,621 req/s and heavy 1,381 against 1,753 and 1,437 an hour earlier on the
+shared runtime, with the python legs 811 and 563 against 814 and 593 -- the
+box was 5% slower in the second run and the difference is inside the
+README's stated ten percent of noise. The micro and in-process figures are
+the measurement; the burn-in says only that nothing regressed at load.
