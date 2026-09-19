@@ -1751,8 +1751,9 @@ say whether one create had gone native. 4 workers, 8 threads, 300 s per leg:
     off    85,205    284    25.8ms   63.2ms    0
     on     82,708    276    26.6ms   66.3ms    0       37,275   1,844     0
 
-    port, summed over the HTTP workers' last reports (on leg):
-      create_rows 8,822   update_rows 17,646   native   500s=0   fallbacks=0
+    port, summed over the workers' last reports (on leg; four HTTP workers
+    at ~14,000 creates and ~9,300 updates each, two cron workers with the rest):
+      create_rows 60,360   update_rows 46,039   native   500s=0   fallbacks=0
 
 Reads-and-writes throughput is flat between the legs, as expected: a form
 save's cost is the flush machinery, the mail thread and the access checks,
