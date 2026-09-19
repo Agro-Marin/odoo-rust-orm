@@ -1,5 +1,7 @@
 import collections
+import contextlib
 import logging
+import weakref
 
 from rust_engine_errors import KernelRefused, KernelRegistryStale
 
@@ -120,12 +122,15 @@ class RustBackend:
         return _routing_allows(model, method)
 
     def create_rows(self, model, stored_list, columns, col_fields):
+        ids = None
         if self._armed("create_rows", model):
             ids = _create_rows_native(model, stored_list, columns, col_fields)
             if ids is not None:
                 _count("native", "create_rows")
-                return ids
-        return self._delegate.create_rows(model, stored_list, columns, col_fields)
+        if ids is None:
+            ids = self._delegate.create_rows(model, stored_list, columns, col_fields)
+        note_created(model, ids)
+        return ids
 
     def update_rows(self, model, fnames, rows) -> None:
         if self._armed("update_rows", model) and _update_rows_native(
@@ -137,6 +142,10 @@ class RustBackend:
 
     def search_raw(self, model, domain, offset, limit, order, check_access=True):
         if self._armed("search_raw", model):
+            query = empty_by_construction(model, domain)
+            if query is not None:
+                _count("native", "search_raw.empty")
+                return query
             query = _search_native(model, domain, offset, limit, order, check_access)
             if query is not None:
                 _count("native", "search_raw")
@@ -458,6 +467,106 @@ def _security_written(env):
             return "this transaction wrote a security model"
     except TypeError:
         return "the cursor cannot be tracked for security writes"
+    return None
+
+
+#: Per cursor, the ids each model created in the open transaction. Cleared
+#: with the transaction (the method shim's untaint hook), never on a
+#: savepoint rollback: an id rolled back exists nowhere, so a search for
+#: references to it is empty either way.
+_CREATED = weakref.WeakKeyDictionary()
+
+
+def note_created(model, ids):
+    env = getattr(model, "env", None)
+    if not ids or env is None:
+        return
+    try:
+        created = _CREATED.setdefault(env.cr, {})
+    except TypeError:
+        return
+    created.setdefault(model._name, set()).update(ids)
+
+
+def forget_created(cr) -> None:
+    with contextlib.suppress(TypeError):
+        _CREATED.pop(cr, None)
+
+
+def _ids_of(value):
+    if isinstance(value, int) and not isinstance(value, bool):
+        return {value}
+    if isinstance(value, (list, tuple, set, frozenset)) and value:
+        if all(isinstance(v, int) and not isinstance(v, bool) for v in value):
+            return set(value)
+    return None
+
+
+def empty_by_construction(model, domain):
+    """A Query with no rows, when the domain can match none: it asks a
+    table this transaction has not written for rows that reference an id
+    this transaction created. No other transaction can see that id, so a
+    row naming it can only have been written here -- and none was.
+
+    The shape is deliberately narrow: an AND-only domain, one leaf on a
+    many2one to the created model (or the `model`/`res_id` pair), every id
+    in the leaf created here, the searched table absent from the
+    connection's written set, and no write the scanner could not read.
+    Anything else compiles as usual. A trigger writing one table on an
+    insert into another is the one path outside this reasoning, and Odoo
+    defines none.
+    """
+    from odoo.orm.domain.ast import DomainCondition, DomainNot, DomainOr
+
+    env = model.env
+    try:
+        created = _CREATED.get(env.cr)
+    except TypeError:
+        return None
+    if not created:
+        return None
+    try:
+        import rust_orm_shim
+
+        conn = rust_orm_shim._rust_conn(env)
+    except Exception:
+        return None
+    if conn.writes_untracked:
+        return None
+    table = getattr(model, "_table", None)
+    if not table or not model._auto or table in conn.written_tables:
+        return None
+
+    leaves = []
+    for node in _walk(domain):
+        if isinstance(node, (DomainOr, DomainNot)):
+            return None
+        if isinstance(node, DomainCondition):
+            if isinstance(node.value, type(domain)):
+                return None  # a sub-domain: `any`/`not any`, out of shape
+            leaves.append(node)
+    named_model = None
+    for leaf in leaves:
+        if leaf.field_expr in ("model", "res_model") and leaf.operator == "=":
+            named_model = leaf.value
+    for leaf in leaves:
+        if leaf.operator not in ("in", "="):
+            continue
+        ids = _ids_of(leaf.value)
+        if not ids:
+            continue
+        field = model._fields.get(leaf.field_expr)
+        if field is None:
+            continue
+        if field.type == "many2one":
+            target = field.comodel_name
+        elif leaf.field_expr == "res_id" and named_model:
+            target = named_model
+        else:
+            continue
+        mine = created.get(target)
+        if mine and ids <= mine:
+            return model.browse()._as_query()
     return None
 
 

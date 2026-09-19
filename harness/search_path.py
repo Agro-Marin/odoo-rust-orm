@@ -209,6 +209,62 @@ user = Users.search(
     order="id",
     limit=1,
 )
+# A reference search on a table this transaction has not written, for an id
+# it created, is answered empty by construction: no round trip, and the same
+# answer python gives. A write to that table then puts the round trip back.
+if "mail.followers" in env.registry:  # noqa: F821
+
+    class _Undo(Exception):
+        pass
+
+    port.RustBackend.NATIVE = ARMED
+    try:
+        with env.cr.savepoint():  # noqa: F821
+            partner = env["res.partner"].sudo().create({"name": "search_path empty"})  # noqa: F821
+            env.flush_all()  # noqa: F821
+            Followers = env["mail.followers"].sudo()  # noqa: F821
+            dom = [("res_model", "=", "res.partner"), ("res_id", "in", partner.ids)]
+            port.reset_stats()
+            armed_ids = Followers.search(dom).ids
+            empty_answers = port.stats()["native"].get("search_raw.empty", 0)
+            port.RustBackend.NATIVE = DISARMED
+            python_ids = Followers.search(dom).ids
+            port.RustBackend.NATIVE = ARMED
+            if armed_ids != python_ids:
+                failures.append(
+                    "empty by construction disagreed with python: %r != %r"
+                    % (armed_ids, python_ids)
+                )
+            if not empty_answers:
+                failures.append(
+                    "a reference search on an unwritten table for a created id was "
+                    "compiled instead of answered empty: %r"
+                    % (port.stats()["reasons_by_method"].get("search_raw", {}),)
+                )
+            Followers.create(
+                {
+                    "res_model": "res.partner",
+                    "res_id": partner.id,
+                    "partner_id": env.user.partner_id.id,  # noqa: F821
+                }
+            )
+            env.flush_all()  # noqa: F821
+            port.reset_stats()
+            found = Followers.search(dom).ids
+            if len(found) != 1 or port.stats()["native"].get("search_raw.empty"):
+                failures.append(
+                    "after a follower was written the port still answered the "
+                    "search empty: found %r, empty answers %r"
+                    % (found, port.stats()["native"].get("search_raw.empty", 0))
+                )
+            print(
+                "SEARCH empty by construction: %d empty answer(s) before the write, "
+                "%d follower(s) found after it" % (empty_answers, len(found))
+            )
+            raise _Undo
+    except _Undo:
+        pass
+
 if not user:
     failures.append(
         "no internal user besides the administrator to run the rule scenario as"

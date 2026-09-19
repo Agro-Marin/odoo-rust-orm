@@ -1497,6 +1497,12 @@ _INSTALLED = None
 
 
 def _untaint(cr, committed=False) -> None:
+    try:
+        import rust_backend
+
+        rust_backend.forget_created(cr)
+    except ImportError:
+        pass
     with contextlib.suppress(TypeError):
         if committed:
             if cr in DIRTY_CRS:

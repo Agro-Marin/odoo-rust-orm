@@ -1885,3 +1885,35 @@ shared runtime, with the python legs 811 and 563 against 814 and 593 -- the
 box was 5% slower in the second run and the difference is inside the
 README's stated ten percent of noise. The micro and in-process figures are
 the measurement; the burn-in says only that nothing regressed at load.
+
+## Phase 3, third milestone: a reference search answered from what the transaction knows (2026-09-19)
+
+Of the 16 internal searches a save makes, most are housekeeping scans on
+unlink and on create -- followers, activities, attachments, scheduled
+messages, notifications, xmlids -- asking a table for rows that reference
+an id the transaction itself just created. No other transaction can see
+that id, so a row naming it can only have been written here; if this
+connection has written nothing to that table, the answer is empty and no
+statement is needed.
+
+The rust connection now records the table of every INSERT, UPDATE, DELETE,
+MERGE, TRUNCATE and COPY it runs (a scanner over the statement text, unit
+tested; a write keyword with no readable table marks the transaction
+untracked), cleared with the transaction. The port records the ids every
+`create_rows` returns, native or delegated, per cursor, forgotten with the
+method shim's untaint. `search_raw` answers an AND-only domain whose leaf
+is a many2one to a created model (or the `res_model`/`res_id` pair) with
+every id created here, on a table not in the written set, with an empty
+Query; anything else compiles as before.
+
+    form-save cycle (crm.lead, 200x, in process)   python 28.2 ms   engine 22.1 ms   (-22%)
+    internal searches per cycle                    20     of which 8.8 answered empty
+    (was 24.2 -> 23.0 after the two milestones above; this one takes 1 ms more)
+
+Less than the round trips alone would suggest, because an empty search
+still pays `search_fetch`'s Python around it -- the Domain, the Query, the
+browse. The stage check: a follower search for a fresh partner is empty by
+construction, agrees with python, and after a follower is written it is
+compiled again and finds the row. The one path outside the reasoning is a
+database trigger writing table B on an insert into table A; Odoo defines
+none, and the A/B differential would show it.

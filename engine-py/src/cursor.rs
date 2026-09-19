@@ -1278,6 +1278,13 @@ pub struct RustConn {
     closed: AtomicBool,
     fault: odoo_kernel::connect::FaultSlot,
     driver: std::sync::Mutex<Option<odoo_kernel::connect::Driver>>,
+    /// The tables this transaction has written, by statement text: every
+    /// INSERT, UPDATE, DELETE, MERGE, TRUNCATE and COPY that ran on this
+    /// connection names its table here until the transaction ends. A write
+    /// whose table the scanner could not read sets `writes_untracked`, and
+    /// the port then assumes every table dirty.
+    written: std::sync::Mutex<std::collections::HashSet<String>>,
+    writes_untracked: AtomicBool,
 }
 
 fn statement_is_ddl(sql: &str) -> bool {
@@ -1398,6 +1405,24 @@ impl RustConn {
             closed: AtomicBool::new(false),
             fault: Arc::new(std::sync::Mutex::new(None)),
             driver: std::sync::Mutex::new(None),
+            written: std::sync::Mutex::new(std::collections::HashSet::new()),
+            writes_untracked: AtomicBool::new(false),
+        }
+    }
+
+    /// Record the table a write statement names. Over-marking is safe: a
+    /// table marked written only loses a short-circuit; a write missed
+    /// would let the port answer a search from stale knowledge, so a write
+    /// keyword with no readable table marks the whole transaction.
+    fn note_write(&self, sql: &str) {
+        let (tables, unreadable) = write_targets(sql);
+        if unreadable {
+            self.writes_untracked.store(true, Ordering::SeqCst);
+        }
+        if !tables.is_empty() {
+            if let Ok(mut set) = self.written.lock() {
+                set.extend(tables);
+            }
         }
     }
 
@@ -1470,6 +1495,10 @@ impl RustConn {
         let was_open = self.in_tx.swap(false, Ordering::SeqCst);
         self.aborted.store(false, Ordering::SeqCst);
         self.ddl_in_tx.store(false, Ordering::SeqCst);
+        if let Ok(mut set) = self.written.lock() {
+            set.clear();
+        }
+        self.writes_untracked.store(false, Ordering::SeqCst);
         tracing::trace!(
             target: "odoo_kernel::cursor",
             end = stmt, was_open, "ending the Python cursor's transaction"
@@ -1623,6 +1652,64 @@ fn declared_type(v: &Bound<'_, PyAny>) -> Type {
     }
 }
 
+/// The tables a statement writes, read from its text: the identifier after
+/// `INSERT INTO`, `UPDATE` (not `FOR UPDATE`), `DELETE FROM`, `MERGE INTO`,
+/// `TRUNCATE` and `COPY`, unquoted and without its schema. The second value
+/// says a write keyword was seen with no identifier after it.
+fn write_targets(sql: &str) -> (Vec<String>, bool) {
+    let lower = sql.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mut tables = Vec::new();
+    let mut unreadable = false;
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'"' || b == b'.';
+    for (keyword, skip) in [
+        ("insert into", 0usize),
+        ("delete from", 0),
+        ("merge into", 0),
+        ("truncate", 0),
+        ("copy", 0),
+        ("update", 0),
+    ] {
+        let mut from = 0;
+        while let Some(pos) = lower[from..].find(keyword) {
+            let at = from + pos;
+            from = at + keyword.len();
+            let word_start = at == 0 || !is_ident(bytes[at - 1]);
+            let word_end = from >= bytes.len() || !is_ident(bytes[from]);
+            if !word_start || !word_end {
+                continue;
+            }
+            if keyword == "update" && at >= 4 && &lower[at - 4..at] == "for " {
+                continue;
+            }
+            if keyword == "update" && at >= 3 && &lower[at - 3..at] == "do " {
+                continue; // ON CONFLICT DO UPDATE: the INSERT's own table
+            }
+            let mut i = from + skip;
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i < bytes.len() && bytes[i] == b'(' {
+                // TRUNCATE (a, b) or COPY (query): unreadable for our purpose
+                unreadable = true;
+                continue;
+            }
+            let start = i;
+            while i < bytes.len() && is_ident(bytes[i]) {
+                i += 1;
+            }
+            let ident = &lower[start..i];
+            let ident = ident.rsplit('.').next().unwrap_or(ident).replace('"', "");
+            if ident.is_empty() || ident == "only" && keyword == "update" {
+                unreadable = true;
+            } else {
+                tables.push(ident);
+            }
+        }
+    }
+    (tables, unreadable)
+}
+
 fn leading_keyword(sql: &str) -> String {
     let bytes = sql.as_bytes();
     let mut i = 0;
@@ -1758,6 +1845,7 @@ impl RustConn {
         } else if statement_invalidates_prepared(query) {
             self.clear_prepared_after_rollback();
         }
+        self.note_write(query);
         if unparameterised && has_multiple_statements(query) {
             self.ddl_in_tx.store(in_tx, Ordering::SeqCst);
             tracing::debug!(
@@ -2020,6 +2108,7 @@ impl RustConn {
         if self.closed.load(Ordering::SeqCst) {
             return Err(rerr("connection is closed"));
         }
+        self.note_write(statement);
         self.ensure_tx(py)?;
         let sink = self
             .block(py, self.client()?.copy_in::<_, bytes::Bytes>(statement))
@@ -2159,6 +2248,19 @@ impl RustConn {
     }
 
     #[getter]
+    fn written_tables(&self) -> Vec<String> {
+        self.written
+            .lock()
+            .map(|set| set.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    #[getter]
+    fn writes_untracked(&self) -> bool {
+        self.writes_untracked.load(Ordering::SeqCst)
+    }
+
+    #[getter]
     fn closed(&self) -> bool {
         if self.closed.load(Ordering::SeqCst) {
             return true;
@@ -2283,6 +2385,29 @@ mod tests {
         assert!(!returns_rows("-- SELECT in a comment\nUPDATE t SET a = 1"));
         assert_eq!(leading_keyword("  (with x as (select 1) select 1)"), "WITH");
         assert_eq!(leading_keyword(""), "");
+    }
+
+    #[test]
+    fn write_targets_read_the_table_after_the_write_keyword() {
+        use super::write_targets;
+        let (t, u) = write_targets(r#"INSERT INTO "crm_lead" ("name") VALUES ($1) RETURNING id"#);
+        assert_eq!((t, u), (vec!["crm_lead".to_string()], false));
+        let (t, u) = write_targets(r#"UPDATE "res_partner" SET "name" = $1 WHERE id = $2"#);
+        assert_eq!((t, u), (vec!["res_partner".to_string()], false));
+        let (t, u) = write_targets("DELETE FROM public.mail_message WHERE id = ANY($1)");
+        assert_eq!((t, u), (vec!["mail_message".to_string()], false));
+        let (t, u) = write_targets(r#"SELECT id FROM "res_users" WHERE id = 1 FOR UPDATE NOWAIT"#);
+        assert_eq!((t, u), (vec![], false));
+        let (t, u) = write_targets("COPY res_partner (id, name) FROM STDIN");
+        assert_eq!((t, u), (vec!["res_partner".to_string()], false));
+        let (t, u) = write_targets("WITH x AS (SELECT 1) INSERT INTO t (a) SELECT 1 FROM x");
+        assert_eq!((t, u), (vec!["t".to_string()], false));
+        let (t, u) = write_targets("INSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET a = 2");
+        assert_eq!((t, u), (vec!["t".to_string()], false));
+        let (_, u) = write_targets("TRUNCATE (a)");
+        assert!(u);
+        let (t, _) = write_targets("SELECT last_update FROM t");
+        assert_eq!(t, Vec::<String>::new());
     }
 
     #[test]

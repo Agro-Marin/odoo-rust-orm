@@ -3070,3 +3070,120 @@ def test_db_shim_kill_switch_follows_active() -> None:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def test_a_reference_search_on_an_unwritten_table_is_empty_by_construction() -> None:
+    backend = _backend()
+    _odoo()
+    import rust_orm_shim
+
+    from odoo.orm.domain import Domain
+
+    class Cr:
+        pass
+
+    class Conn:
+        written_tables = ["crm_lead", "mail_message"]
+        writes_untracked = False
+
+    class Field:
+        def __init__(self, type_, comodel=None):
+            self.type = type_
+            self.comodel_name = comodel
+
+    class Env:
+        cr = Cr()
+
+    empty = object()
+
+    class Recordset:
+        def _as_query(self):
+            return empty
+
+    class Model:
+        _name = "mail.followers"
+        _table = "mail_followers"
+        _auto = True
+        env = Env()
+        _fields = {
+            "res_id": Field("integer"),
+            "res_model": Field("char"),
+            "partner_id": Field("many2one", "res.partner"),
+            "lead_id": Field("many2one", "crm.lead"),
+        }
+
+        def browse(self):
+            return Recordset()
+
+    model = Model()
+    original = rust_orm_shim._rust_conn
+    rust_orm_shim._rust_conn = lambda _env: Conn()
+    try:
+        backend.forget_created(model.env.cr)
+        check(
+            "nothing created: compiled as usual",
+            backend.empty_by_construction(model, Domain([("lead_id", "in", [7])])),
+            None,
+        )
+
+        class Lead:
+            _name = "crm.lead"
+            env = model.env
+
+        backend.note_created(Lead(), [7, 8])
+        check(
+            "a many2one to the created model, all ids created here: empty",
+            backend.empty_by_construction(model, Domain([("lead_id", "in", [7, 8])])),
+            empty,
+        )
+        check(
+            "the res_model/res_id pair: empty",
+            backend.empty_by_construction(
+                model, Domain([("res_model", "=", "crm.lead"), ("res_id", "=", 7)])
+            ),
+            empty,
+        )
+        check(
+            "an id not created here: compiled",
+            backend.empty_by_construction(model, Domain([("lead_id", "in", [7, 9])])),
+            None,
+        )
+        check(
+            "an OR anywhere: compiled",
+            backend.empty_by_construction(
+                model, Domain(["|", ("lead_id", "in", [7]), ("partner_id", "=", 1)])
+            ),
+            None,
+        )
+        check(
+            "a NOT: compiled",
+            backend.empty_by_construction(model, Domain(["!", ("lead_id", "in", [7])])),
+            None,
+        )
+        check(
+            "res_id without its model: compiled",
+            backend.empty_by_construction(model, Domain([("res_id", "in", [7])])),
+            None,
+        )
+        Conn.written_tables = ["crm_lead", "mail_followers"]
+        check(
+            "the table written this transaction: compiled",
+            backend.empty_by_construction(model, Domain([("lead_id", "in", [7])])),
+            None,
+        )
+        Conn.written_tables = ["crm_lead"]
+        Conn.writes_untracked = True
+        check(
+            "a write the scanner could not read: compiled",
+            backend.empty_by_construction(model, Domain([("lead_id", "in", [7])])),
+            None,
+        )
+        Conn.writes_untracked = False
+        backend.forget_created(model.env.cr)
+        check(
+            "forgotten with the transaction: compiled",
+            backend.empty_by_construction(model, Domain([("lead_id", "in", [7])])),
+            None,
+        )
+    finally:
+        rust_orm_shim._rust_conn = original
