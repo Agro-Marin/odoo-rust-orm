@@ -181,7 +181,48 @@ HEAVY_CALLS = [
         },
     ),
 ]
-PROFILES = {"default": CALLS, "heavy": HEAVY_CALLS}
+
+
+# A write cycle, one record at a time, the way a form saves: create, write,
+# read back, unlink -- nothing accumulates, and the burn-in's "on" leg
+# exercises the persistence port's create_rows and update_rows under
+# prefork rather than only the routed reads. The answers are not comparable
+# between calls (every create returns a fresh id), so this profile carries
+# no expected list; what guards the port's rows is the write differential,
+# and what this measures is that nothing raises and nothing leaks under load.
+def _write_cycle(state, i):
+    step = i % 5
+    if step == 0:
+        return ("crm.lead", "create", [{"name": "burn lead %d" % i}], {}), "lead"
+    if step == 1:
+        return (
+            "crm.lead",
+            "write",
+            [
+                [state.get("lead", 0)],
+                {"name": "burn lead %d w" % i, "description": "burn %d" % i},
+            ],
+            {},
+        ), None
+    if step == 2:
+        return (
+            "crm.lead",
+            "read",
+            [[state.get("lead", 0)]],
+            {"fields": ["name", "description"]},
+        ), None
+    if step == 3:
+        return ("crm.lead", "unlink", [[state.get("lead", 0)]], {}), None
+    return (
+        "res.partner",
+        "search_read",
+        [],
+        {"domain": [["is_company", "=", True]], "fields": ["name"], "limit": 20},
+    ), None
+
+
+WRITE_PROFILE = "writes"
+PROFILES = {"default": CALLS, "heavy": HEAVY_CALLS, WRITE_PROFILE: _write_cycle}
 ACTIVE = CALLS
 
 
@@ -207,12 +248,17 @@ def make_opener(port, db, login, password):
     return opener
 
 
-def call(opener, port, model, method, kwargs):
+def call(opener, port, model, method, kwargs, args=()):
     body = json.dumps(
         {
             "jsonrpc": "2.0",
             "method": "call",
-            "params": {"model": model, "method": method, "args": [], "kwargs": kwargs},
+            "params": {
+                "model": model,
+                "method": method,
+                "args": list(args),
+                "kwargs": kwargs,
+            },
         }
     ).encode()
     req = urllib.request.Request(
@@ -234,17 +280,29 @@ def worker(port, db, login, password, latencies, errors, expected) -> None:
         errors.append("auth: %s" % exc)
         return
     i = 0
+    state: dict = {}
     while not STOP.is_set():
-        model, method, kwargs = ACTIVE[i % len(ACTIVE)]
+        if callable(ACTIVE):
+            (model, method, args, kwargs), remember = ACTIVE(state, i)
+        else:
+            model, method, kwargs = ACTIVE[i % len(ACTIVE)]
+            args, remember = (), None
         i += 1
         t0 = time.monotonic()
         try:
-            got = call(opener, port, model, method, kwargs)
+            got = call(opener, port, model, method, kwargs, args)
         except Exception as exc:
             errors.append("%s.%s: %s" % (model, method, exc))
             continue
         latencies.append(time.monotonic() - t0)
-        if expected is not None and got != expected[(i - 1) % len(ACTIVE)]:
+        if remember is not None:
+            result = json.loads(got).get("result")
+            state[remember] = result[0] if isinstance(result, list) else result
+        if (
+            expected is not None
+            and not callable(ACTIVE)
+            and got != expected[(i - 1) % len(ACTIVE)]
+        ):
             errors.append("ANSWER CHANGED for %s.%s" % (model, method))
 
 
@@ -280,6 +338,8 @@ def run(args, expected, seconds):
 
 def baseline(args):
     opener = make_opener(args.port, args.db, args.login, args.password)
+    if callable(ACTIVE):
+        return []
     return [call(opener, args.port, m, meth, kw) for m, meth, kw in ACTIVE]
 
 

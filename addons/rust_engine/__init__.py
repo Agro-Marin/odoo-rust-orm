@@ -342,6 +342,20 @@ def _report(orm_shim, final=False) -> None:
         snap.get("quarantined") or "-",
         snap.get("registry_stale", 0),
     )
+    # The persistence port on the same line's cadence: without it a burn-in
+    # with a write profile could not say whether one create went native
+    port = _STATE.get("port")
+    if port is not None:
+        pstats = port.stats()
+        native = pstats.get("native", {})
+        _logger.info(
+            "rust port%s: create_rows=%d update_rows=%d delegated=%s share=%.2f",
+            " (final)" if final else "",
+            native.get("create_rows", 0),
+            native.get("update_rows", 0),
+            pstats.get("delegated") or "-",
+            pstats.get("native_share", 0.0),
+        )
     # The eight commonest reasons a call was NOT routed. Each distinct reason
     # is one capability to widen; `odoo.rust_kernel.gate` at DEBUG names the
     # individual calls behind each count.

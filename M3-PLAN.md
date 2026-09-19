@@ -1737,3 +1737,29 @@ mode on, and the first since the cursor-contract repair of 2026-09-18; the
 soak stage in `verify.sh` drives the kernel's own HTTP server, not odoo-bin,
 so it could not have measured this. Still open: hours rather than minutes,
 and a write-heavy profile -- the bench profile is reads.
+
+## A write profile for the burn-in, and the port under prefork (2026-09-19)
+
+`http_bench.py --profile writes` cycles create / write / read / unlink on
+`crm.lead` plus one company search, per client thread, so nothing
+accumulates and the "on" leg drives the persistence port's `create_rows` and
+`update_rows` under prefork rather than only the routed reads. The addon's
+periodic report gains a `rust port:` line, because the first run could not
+say whether one create had gone native. 4 workers, 8 threads, 300 s per leg:
+
+    leg   requests   req/s   p50      p99      errors   routed   verified  divergences
+    off    85,205    284    25.8ms   63.2ms    0
+    on     82,708    276    26.6ms   66.3ms    0       37,275   1,844     0
+
+    port, summed over the HTTP workers' last reports (on leg):
+      create_rows 8,822   update_rows 17,646   native   500s=0   fallbacks=0
+
+Reads-and-writes throughput is flat between the legs, as expected: a form
+save's cost is the flush machinery, the mail thread and the access checks,
+and the port replaces only the INSERT and the UPDATE. What the run
+establishes is narrower and was unmeasured: thousands of native creates and
+updates per worker under load, with the fork's own crm and mail overrides in
+the path, and nothing raised. The first attempt of this run wrote `phone`,
+a field this fork's `crm.lead` no longer has, and read 25% request errors on
+BOTH legs -- a profile bug, and a reminder that a write bench's errors are
+first suspected of the bench.
