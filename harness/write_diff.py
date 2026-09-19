@@ -303,8 +303,94 @@ def scenario_bulk_copy(env, model_name):
     return model, list(recs.ids), fields
 
 
+def scenario_customer_invoice(env):
+    """A posted customer invoice: two product lines, a price rewritten in
+    draft, then posting -- so the receivable and tax lines the fork computes
+    are written through the port, and every line's amounts plus the move's
+    totals are read back raw. `name` is left out: the sequence is not rolled
+    back with the transaction, so the two legs draw different numbers."""
+    Move = env["account.move"].sudo()
+    partner = env["res.partner"].sudo().search([("is_company", "=", True)], limit=1)
+    products = env["product.product"].sudo().search([("sale_ok", "=", True)], limit=2)
+    if not partner or len(products) < 2:
+        return None
+    invoice = Move.create(
+        {
+            "move_type": "out_invoice",
+            "partner_id": partner.id,
+            "invoice_line_ids": [
+                (
+                    0,
+                    0,
+                    {"product_id": products[0].id, "quantity": 3, "price_unit": 100.0},
+                ),
+                (
+                    0,
+                    0,
+                    {"product_id": products[1].id, "quantity": 1, "price_unit": 49.99},
+                ),
+            ],
+        }
+    )
+    env.flush_all()
+    first = invoice.invoice_line_ids.sorted("id")[0]
+    invoice.write(
+        {"invoice_line_ids": [(1, first.id, {"price_unit": 125.5, "quantity": 2})]}
+    )
+    env.flush_all()
+    invoice.action_post()
+    env.flush_all()
+    Line = env["account.move.line"]
+    fields = [
+        Line._fields[n]
+        for n in (
+            "debit",
+            "credit",
+            "balance",
+            "amount_currency",
+            "amount_residual",
+            "quantity",
+            "price_unit",
+            "price_subtotal",
+            "price_total",
+            "display_type",
+            "reconciled",
+        )
+    ]
+    return Line, list(invoice.line_ids.sorted("id").ids), fields
+
+
+def scenario_invoice_totals(env):
+    """The same invoice, read at the move: totals and state after posting."""
+    built = scenario_customer_invoice(env)
+    if built is None:
+        return None
+    Line, ids, _ = built
+    move = Line.browse(ids[0]).move_id
+    Move = env["account.move"]
+    fields = [
+        Move._fields[n]
+        for n in (
+            "amount_untaxed",
+            "amount_tax",
+            "amount_total",
+            "amount_residual",
+            "amount_untaxed_signed",
+            "amount_total_signed",
+            "state",
+            "move_type",
+            "payment_state",
+        )
+    ]
+    return Move, [move.id], fields
+
+
 def run_scenarios(env, result, stats):
-    scenarios = [("balanced entry", "entry", lambda: scenario_balanced_entry(env))]
+    scenarios = [
+        ("balanced entry", "entry", lambda: scenario_balanced_entry(env)),
+        ("customer invoice lines", "entry", lambda: scenario_customer_invoice(env)),
+        ("customer invoice totals", "entry", lambda: scenario_invoice_totals(env)),
+    ]
     scenarios += [
         ("bulk copy %s" % m, "copy", (lambda m=m: scenario_bulk_copy(env, m)))
         for m in ("res.partner", "crm.lead", "product.template")
