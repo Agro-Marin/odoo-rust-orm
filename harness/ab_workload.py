@@ -113,6 +113,20 @@ def main(env):
             inv.action_post()
         env.flush_all()
         made["invoices"] = len(invoices)
+        if invoices and "account.move.reversal" in env.registry:
+            reversal = (
+                su["account.move.reversal"]
+                .with_context(active_model="account.move", active_ids=invoices[-1].ids)
+                .create(
+                    {
+                        "reason": "ab credit note",
+                        "journal_id": invoices[-1].journal_id.id,
+                    }
+                )
+            )
+            reversal.refund_moves()
+            env.flush_all()
+            made["credit_notes"] = 1
         if invoices and "account.payment.register" in env.registry:
             for inv in invoices[:2]:
                 wizard = (
@@ -154,6 +168,21 @@ def main(env):
             first(po, "action_confirm", "button_confirm")()
         env.flush_all()
         made["purchase_orders"] = len(pos)
+        bills = su["account.move"].browse()
+        for po in pos[:2]:
+            create = getattr(po, "_create_invoices", None)
+            if create is None:
+                break
+            try:
+                with env.cr.savepoint():
+                    bills |= create()
+            except Exception:
+                break
+        for bill in bills:
+            bill.write({"invoice_date": bill.date or bill.create_date.date()})
+            bill.action_post()
+        env.flush_all()
+        made["vendor_bills"] = len(bills)
         pickings = (
             pos[:3].mapped("picking_ids")
             if hasattr(pos, "picking_ids")

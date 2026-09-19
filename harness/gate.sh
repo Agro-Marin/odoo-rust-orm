@@ -3,7 +3,7 @@ set -uo pipefail
 
 usage() {
   cat <<'USAGE'
-usage: harness/gate.sh [--keep] [--quick]
+usage: harness/gate.sh [--keep] [--quick] [--ab]
 
 The whole gate, unattended: build and test the crates, deploy the extension
 into the venv, create the two scratch databases the battery needs, run
@@ -16,6 +16,7 @@ This is the one command to run after a sync, or from a timer.
 
   --keep    keep the scratch databases (for a re-run or a look)
   --quick   pass --quick to verify.sh (skips sweep, fuzz, tours, soak)
+  --ab      also run harness/ab_diff.sh, the A/B database differential (~15 min)
 
 environment: RUSTORM_GATE_OUT (summary dir, default ~/.cache/rustorm-gate),
   RUSTORM_GATE_DB_PREFIX (default rustorm_gate), plus everything verify.sh reads.
@@ -30,11 +31,12 @@ CONF="${RUSTORM_ODOO_CONF:-$WORKSPACE/p314o19m.conf}"
 PREFIX="${RUSTORM_GATE_DB_PREFIX:-rustorm_gate}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT="${RUSTORM_GATE_OUT:-$HOME/.cache/rustorm-gate}/$STAMP"
-KEEP=0; QUICK=""
+KEEP=0; QUICK=""; AB=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --keep)  KEEP=1; shift ;;
     --quick) QUICK="--quick"; shift ;;
+    --ab)    AB=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -75,6 +77,13 @@ RUSTORM_VERIFY_OUT="$OUT/verify" RUSTORM_DB="$PROBE" RUSTORM_ORM_TEST_DB="$ORMT"
 rc=$?
 cat "$OUT/verify.out" >> "$SUMMARY"
 step "verify.sh" $rc
+
+if [ "$AB" = 1 ]; then
+  RUSTORM_AB_PREFIX="${PREFIX}_ab" RUSTORM_AB_OUT="$OUT/ab" bash "$ROOT/harness/ab_diff.sh" > "$OUT/ab.out" 2>&1
+  rc=$?
+  cat "$OUT/ab.out" >> "$SUMMARY"
+  step "ab_diff.sh" $rc
+fi
 
 if [ "$KEEP" = 0 ]; then
   for db in "$PROBE" "$ORMT"; do
