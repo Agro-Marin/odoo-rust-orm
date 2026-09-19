@@ -1917,3 +1917,47 @@ construction, agrees with python, and after a follower is written it is
 compiled again and finds the row. The one path outside the reasoning is a
 database trigger writing table B on an insert into table A; Odoo defines
 none, and the A/B differential would show it.
+
+## The save profile without unlink, and where the engine's ceiling is (2026-09-19)
+
+Half of the cycle profiled above was unlink, which real traffic rarely does.
+A create-plus-write cycle on `crm.lead`, 200x in process:
+
+    python 15.6 ms    engine 14.7 ms    (-6%)
+    of the create's 11 ms: crm computes 6.0 (naive-bayes probability 3.2,
+    won status 3.3), the mail message post 4.0, the ORM around them the rest
+
+The three Phase 3 milestones take what the ORM does around a save; what a
+save mostly does on this model is crm's own Python, which the engine calls
+back and cannot shorten. The engine's ceiling on writes is therefore set by
+the business code, not by the ORM, until computes themselves move -- and
+that is the plan's Phase 3 proper, not a port switch. The read side is where
+the engine still leaves the most on the table: grouped views.
+
+## Grouped views: dates route through the kernel, and fill_temporal rides along (2026-09-19)
+
+`web_read_group` refused every date and datetime groupby and every
+`fill_temporal` context, so a graph or a pivot over time -- the shape of
+most dashboards -- fell to Python whole, while the plain `_read_group`
+path had compiled `date_trunc` buckets natively for months. The formatted
+plan now accepts `field:granularity` on a date or datetime, the kernel
+buckets it, and two of the fork's own helpers finish the job over the
+kernel's groups exactly as they do over Python's: `_web_read_group_fill_temporal`
+fills the empty periods, `_web_read_group_format` builds the label and the
+`__range`. The gate's field check strips the granularity before it looks
+the field up, which is what had been refusing the spec as an unknown field
+and quietly sending the call down the plain path underneath Python's
+formatter.
+
+Six shapes on `crm.lead` against Python, identical results, every one
+routed through the formatted path with no refusal:
+
+    date_deadline:month                          4 groups
+    create_date:week + expected_revenue:sum     10 groups
+    date_deadline:month, fill_temporal           4 groups
+    date_deadline:quarter, stage_id              9 groups
+    create_date:day, fill_temporal min_groups=5 80 groups
+    stage_id                                     4 groups
+
+Still refused on purpose: `fill_temporal` with a limit or an offset, which
+Python raises on, and a granularity Python does not know.

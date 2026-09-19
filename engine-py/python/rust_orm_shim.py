@@ -603,6 +603,9 @@ def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: AR
     if ctx.get("prefetch_langs") or ctx.get("edit_translations"):
         return _refuse("translation context")
     for fname in fields or ():
+        if method == "_read_group":
+            # a groupby spec carries its granularity: `date_deadline:month`
+            fname = fname.split(":")[0]
         if fname == "display_name" and not _display_ok(model):
             return _refuse("display_name computed in python")
         holder, f = (
@@ -2104,7 +2107,7 @@ def install():
                 for name, method in group_hooks.items()
             )
 
-        def _formatted_group_plan(model, groupby, aggregates, having):
+        def _formatted_group_plan(model, groupby, aggregates, having, limit, offset):
             if having:
                 return _refuse("having")
             if not groupby:
@@ -2112,18 +2115,34 @@ def install():
             if not _group_hooks_clean(model):
                 return _refuse("read_group formatting hooks overridden in python")
             fill_temporal = model.env.context.get("fill_temporal")
-            if fill_temporal or isinstance(fill_temporal, dict):
-                return _refuse("fill_temporal")
+            if (fill_temporal or isinstance(fill_temporal, dict)) and (limit or offset):
+                # python raises on this combination; let it
+                return _refuse("fill_temporal with a limit or an offset")
             for aggregate in aggregates:
                 if (
                     aggregate != "__count"
                     and aggregate.rsplit(":", 1)[-1] not in AGGREGATE_FUNCS
                 ):
                     return _refuse(f"aggregate {aggregate}")
+            from odoo.orm.constants import READ_GROUP_TIME_GRANULARITY
+
             fields = []
             for spec in groupby:
-                if ":" in spec or "." in spec or spec == "id":
+                if "." in spec or spec == "id":
                     return _refuse(f"groupby {spec}")
+                name, _, granularity = spec.partition(":")
+                if granularity:
+                    # a date or datetime bucketed by the kernel's date_trunc;
+                    # the fork's own formatter labels it afterwards
+                    field = model._fields.get(name)
+                    if (
+                        field is None
+                        or field.type not in ("date", "datetime")
+                        or granularity not in READ_GROUP_TIME_GRANULARITY
+                    ):
+                        return _refuse(f"groupby {spec}")
+                    fields.append(field)
+                    continue
                 field = model._fields.get(spec)
                 grouped = (
                     model._fields.get(field.group_by_field)
@@ -2210,7 +2229,9 @@ def install():
             )
             if not order:
                 order = ", ".join(groupby)
-            gb_fields = _formatted_group_plan(self, groupby, aggregates, having)
+            gb_fields = _formatted_group_plan(
+                self, groupby, aggregates, having, limit, offset
+            )
             if gb_fields and _gate(
                 self, list(groupby), order=order, domain=domain, method="_read_group"
             ):
@@ -2277,15 +2298,35 @@ def install():
                         )
                         if not limit or len(expanded) <= limit:
                             groups = expanded
-                    result = _format_routed_groups(
-                        self,
-                        groupby,
-                        gb_fields,
-                        aggregates,
-                        groups,
-                        labels,
-                        expand_field,
-                    )
+                    fill_temporal = self.env.context.get("fill_temporal")
+                    if fill_temporal or isinstance(fill_temporal, dict):
+                        # the fork's own filler over the kernel's groups, as
+                        # web_read_group applies it over python's
+                        groups = self._web_read_group_fill_temporal(
+                            groups,
+                            list(groupby),
+                            list(aggregates),
+                            **(
+                                fill_temporal if isinstance(fill_temporal, dict) else {}
+                            ),
+                        )
+                    if any(":" in spec for spec in groupby):
+                        # a temporal bucket carries a label and a __range the
+                        # fork's formatter builds; python's own path, over
+                        # the kernel's groups
+                        result = self._web_read_group_format(
+                            groupby, aggregates, groups
+                        )
+                    else:
+                        result = _format_routed_groups(
+                            self,
+                            groupby,
+                            gb_fields,
+                            aggregates,
+                            groups,
+                            labels,
+                            expand_field,
+                        )
                     if MODE != "shadow" and not _verify_this_one():
                         return result
                 except Exception as e:
