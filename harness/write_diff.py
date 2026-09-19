@@ -261,8 +261,145 @@ def dump(v):
     return v
 
 
+def readback(env, model, ids, fields):
+    cols = ["id", *(f.name for f in fields)]
+    env.cr.execute(
+        "SELECT %s FROM %s WHERE id = ANY(%%s) ORDER BY id"
+        % (", ".join('"%s"' % c for c in cols), model._table),
+        (ids,),
+    )
+    rows = {r[0]: [dump(v) for v in r[1:]] for r in env.cr.fetchall()}
+    return cols[1:], [f.type for f in fields], [rows.get(i) for i in ids]
+
+
+def scenario_balanced_entry(env):
+    """A journal entry that balances, so the amount columns of account.move.line
+    -- debit, credit, balance, amount_currency -- are in the comparison; the
+    generic generator cannot write them one at a time without tripping the
+    balance constraint, and drops them."""
+    Move = env["account.move"].sudo()
+    journal = env["account.journal"].sudo().search([("type", "=", "general")], limit=1)
+    accounts = env["account.account"].sudo().search([], limit=2)
+    if not journal or len(accounts) < 2:
+        return None
+    lines = [
+        (0, 0, {"account_id": accounts[0].id, "name": "wd debit", "debit": 100.25}),
+        (0, 0, {"account_id": accounts[1].id, "name": "wd credit", "credit": 100.25}),
+    ]
+    move = Move.create({"journal_id": journal.id, "line_ids": lines})
+    env.flush_all()
+    debit, credit = move.line_ids.sorted("id")
+    # both sides in one write: the entry must balance at every flush
+    move.write(
+        {
+            "line_ids": [
+                (1, debit.id, {"debit": 250.5, "name": "wd debit w"}),
+                (1, credit.id, {"credit": 250.5, "name": "wd credit w"}),
+            ]
+        }
+    )
+    env.flush_all()
+    move.write({"ref": "wd ref \u00fc\u65e5\u672c"})
+    env.flush_all()
+    Line = env["account.move.line"]
+    fields = [
+        Line._fields[n]
+        for n in (
+            "name",
+            "debit",
+            "credit",
+            "balance",
+            "amount_currency",
+            "display_type",
+        )
+    ]
+    return Line, list(move.line_ids.sorted("id").ids), fields
+
+
+def scenario_bulk_copy(env, model_name):
+    """COPY_THRESHOLD + 2 rows in one create: above the threshold the fork
+    writes through COPY, which the port declines, so the armed leg's rows
+    come through the rust cursor's COPY encoder and the control's through
+    psycopg's -- the two encoders, cell for cell."""
+    from odoo.orm.runtime.backend import COPY_THRESHOLD
+
+    if model_name not in env.registry:
+        raise ValueError("model not installed")
+    model = env[model_name].sudo()
+    fields = [f for f in writable(model) if not f.required]
+    if not fields:
+        raise ValueError("no writable scalar field")
+    n = COPY_THRESHOLD + 2
+    bases = [required_fill(model, fields, i) for i in range(n)]
+    if any(b is None for b in bases):
+        raise ValueError("a required field the generator cannot fill")
+    vals_list = [
+        dict(bases[i], **{f.name: case(f, i) for f in fields}) for i in range(n)
+    ]
+    for i, v in enumerate(vals_list):
+        for f in model._fields.values():
+            if (
+                f.name in v
+                and v[f.name] in (False, None, "")
+                and (f.required or f.name == "name")
+            ):
+                # `name` on every row: a check constraint wants one on a
+                # company partner, and the shapes carry an empty one
+                v[f.name] = (
+                    "%s req %d" % (f.name, i)
+                    if f.type in ("char", "text", "html")
+                    else case(f, 0)
+                )
+    recs = create_rows(model, fields, vals_list)
+    env.flush_all()
+    return model, list(recs.ids), fields
+
+
+def run_scenarios(env, result, stats):
+    scenarios = [("balanced entry", "entry", lambda: scenario_balanced_entry(env))]
+    scenarios += [
+        ("bulk copy %s" % m, "copy", (lambda m=m: scenario_bulk_copy(env, m)))
+        for m in ("res.partner", "crm.lead", "product.template")
+    ]
+    for label, kind, build in scenarios:
+        before = dict(stats["native"]) if stats else {}
+        try:
+            with env.cr.savepoint():
+                built = build()
+                if built is None:
+                    result["skipped"]["scenario: " + label] = (
+                        "not applicable on this database"
+                    )
+                    raise _Rollback
+                model, ids, fields = built
+                columns, types, rows = readback(env, model, ids, fields)
+                result["models"]["scenario: " + label] = {
+                    "columns": columns,
+                    "types": types,
+                    "rows": rows,
+                    "unlinked": [],
+                    "dropped": [],
+                    "scenario": kind,
+                    "native": {
+                        k: v - before.get(k, 0)
+                        for k, v in (stats["native"].items() if stats else [])
+                        if v - before.get(k, 0)
+                    },
+                }
+                raise _Rollback
+        except _Rollback:
+            pass
+        except Exception as e:
+            result["skipped"]["scenario: " + label] = "%s: %s" % (
+                type(e).__name__,
+                str(e)[:120],
+            )
+
+
 def candidates(env):
-    return ONLY or sorted(
+    if ONLY:
+        return [n for n in ONLY if not n.startswith("scenario")]
+    return sorted(
         n
         for n, m in ((n, env[n]) for n in env.registry)
         if not m._abstract
@@ -438,17 +575,11 @@ def main(env):
                 ids = list(recs.ids)
                 recs[1::2].unlink()
                 env.flush_all()
-                cols = ["id", *(f.name for f in fields)]
-                env.cr.execute(
-                    "SELECT %s FROM %s WHERE id = ANY(%%s) ORDER BY id"
-                    % (", ".join('"%s"' % c for c in cols), model._table),
-                    (ids,),
-                )
-                rows = {r[0]: [dump(v) for v in r[1:]] for r in env.cr.fetchall()}
+                columns, types, rows = readback(env, model, ids, fields)
                 result["models"][name] = {
-                    "columns": cols[1:],
-                    "types": [f.type for f in fields],
-                    "rows": [rows.get(i) for i in ids],
+                    "columns": columns,
+                    "types": types,
+                    "rows": rows,
                     "unlinked": [k for k in range(len(ids)) if k % 2 == 1],
                     "dropped": sorted(dropped),
                     "native": {
@@ -462,6 +593,8 @@ def main(env):
             done += 1
         except Exception as e:
             result["skipped"][name] = "%s: %s" % (type(e).__name__, str(e)[:120])
+    if not ONLY or any(o.startswith("scenario") for o in ONLY):
+        run_scenarios(env, result, stats)
     env.cr.rollback()
     with pathlib.Path(OUT).open("w", encoding="utf-8") as fh:
         json.dump(result, fh, indent=1, default=str)

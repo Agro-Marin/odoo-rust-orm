@@ -51,7 +51,9 @@ for name, m in sorted(armed["models"].items()):
             (name, "*", "columns differ or model absent on the control leg")
         )
         continue
-    if not any(k.startswith("create_rows") for k in m["native"]):
+    if m.get("scenario") != "copy" and not any(
+        k.startswith("create_rows") for k in m["native"]
+    ):
         not_native.append(name)
     models += 1
     for k, (ra, rc) in enumerate(zip(m["rows"], c["rows"], strict=True)):
