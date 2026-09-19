@@ -391,7 +391,18 @@ cargo build --release --workspace
 harness/verify.sh --db <any odoo database>          # or --quick to skip the sweep
 harness/verify.sh --db newdb --build base,mail,account   # create it first
 harness/gate.sh                                          # unattended: build, test, deploy, both databases, the battery, cleanup
+harness/ab_diff.sh                                       # the A/B database differential: one workload, two databases, every table compared
 ```
+
+`harness/ab_diff.sh` is the write path's strongest check: one demo snapshot,
+three clones, the same committed business workload (partners, sale orders
+confirmed and invoiced, payments, purchase orders, leads through their
+stages, tasks) run on A with the engine on, on B on Python and on C on
+Python as the control, then `ab_compare.py` reads every table of A and B in
+id order and compares cell by cell, timestamps and the columns the control
+proved random left out. It found a sub-second race in crm's `day_close` on
+its second run -- a fork defect, not the engine's -- which is the kind of
+thing it exists for. About 15 minutes; it drops its four databases.
 
 `harness/gate.sh` is the one command for after a sync, or for a timer: it
 builds and tests the crates, deploys the extension into the venv, creates the
