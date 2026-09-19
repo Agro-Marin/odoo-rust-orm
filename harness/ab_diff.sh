@@ -49,7 +49,7 @@ trap drop_all EXIT
 
 "$PY" "$ODOO/odoo-bin" -c "$CONF" -d "$BASE" -i "$MODULES" --with-demo \
     --stop-after-init --no-http --db_maxconn=8 > "$OUT/snapshot.log" 2>&1 \
-  || { echo "snapshot install failed; see $OUT/snapshot.log"; exit 1; }
+  || { echo "AB DIFF FAILED  snapshot install failed; see $OUT/snapshot.log"; exit 1; }
 psql -U marin -d postgres -Atc "select pg_terminate_backend(pid) from pg_stat_activity where datname='$BASE' and pid<>pg_backend_pid()" >/dev/null
 for x in a b c; do
   psql -U marin -d postgres -c "CREATE DATABASE ${PREFIX}_$x TEMPLATE $BASE" >/dev/null || { echo "clone $x failed"; exit 1; }

@@ -47,6 +47,7 @@ def main(env):
             ("sale_ok", "=", True),
             ("purchase_ok", "=", True),
             ("route_ids", "=", False),
+            ("is_storable", "=", True),
         ],
         order="id",
         limit=6,
@@ -86,6 +87,21 @@ def main(env):
             first(so, "action_confirm")()
         env.flush_all()
         made["sale_orders"] = len(orders)
+        # the deliveries of the confirmed orders: stock moves, quants and
+        # the valuation entries the port writes, half of them validated
+        deliveries = (
+            orders[:6].mapped("picking_ids")
+            if hasattr(orders, "picking_ids")
+            else su["stock.picking"].browse()
+        )
+        for pick in deliveries.sorted("id")[:3]:
+            for move in pick.move_ids:
+                move.write({"quantity": move.product_uom_qty, "picked": True})
+            pick.with_context(
+                skip_backorder=True, skip_immediate=True
+            ).button_validate()
+        env.flush_all()
+        made["deliveries"] = len(deliveries.sorted("id")[:3])
         invoices = su["account.move"].browse()
         for so in orders[:4]:
             create = getattr(so, "_create_invoices", None)
@@ -143,12 +159,14 @@ def main(env):
             if hasattr(pos, "picking_ids")
             else su["stock.picking"].browse()
         )
-        for pick in pickings[:2]:
+        for pick in pickings.sorted("id")[:2]:
             for move in pick.move_ids:
-                move.write({"quantity": move.product_uom_qty})
-            pick.button_validate()
+                move.write({"quantity": move.product_uom_qty, "picked": True})
+            pick.with_context(
+                skip_backorder=True, skip_immediate=True
+            ).button_validate()
         env.flush_all()
-        made["receipts"] = len(pickings[:2])
+        made["receipts"] = len(pickings.sorted("id")[:2])
 
     if "crm.lead" in env.registry:
         Lead = su["crm.lead"]
