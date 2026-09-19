@@ -124,6 +124,48 @@ def writable(model):
     return out
 
 
+def _constrained():
+    import psycopg
+
+    from odoo.exceptions import UserError, ValidationError
+
+    return (
+        ValidationError,
+        UserError,
+        ValueError,
+        KeyError,
+        psycopg.errors.CheckViolation,
+        psycopg.errors.NotNullViolation,
+        psycopg.errors.NumericValueOutOfRange,
+        psycopg.errors.UniqueViolation,
+    )
+
+
+_CONSTRAINED = _constrained()
+
+
+def write_or_drop(env, recs, vals, dropped):
+    """The batch write, or -- when a constraint refuses it -- each field on
+    its own, so the refused ones join `dropped` and the rest are written."""
+    if not vals:
+        return
+    try:
+        with env.cr.savepoint():
+            recs.write(vals)
+            env.flush_all()
+        return
+    except _CONSTRAINED:
+        pass
+    for name, value in vals.items():
+        try:
+            with env.cr.savepoint():
+                recs.write({name: value})
+                env.flush_all()
+        except _CONSTRAINED:
+            if name not in dropped:
+                dropped.append(name)
+
+
 def create_rows(model, fields, vals_list):
     """The six creates, with two retries for what the first attempt cannot
     know: a unique rule over a defaulted char the comparison excludes (the
@@ -328,11 +370,42 @@ def main(env):
                                 if f.type in ("char", "text", "html")
                                 else case(f, 0)
                             )
-                recs = create_rows(model, fields, vals_list)
+                try:
+                    recs = create_rows(model, fields, vals_list)
+                except _CONSTRAINED as first:
+                    # a model whose constraints refuse the generated shapes
+                    # is still worth its plain columns: create the required
+                    # ones only, and let the field-by-field writes below
+                    # find out which fields the constraints admit
+                    minimal = [
+                        dict(
+                            bases[i],
+                            **{
+                                f.name: v[f.name]
+                                for f in fields
+                                if f.required and f.name in v
+                            },
+                        )
+                        for i, v in enumerate(vals_list)
+                    ]
+                    try:
+                        recs = create_rows(model, fields, minimal)
+                    except Exception:
+                        raise first from None
                 env.flush_all()
-                # second values: one field at a time on the first record, all at once on the rest
+                # second values: one field at a time on the first record, each
+                # in its own savepoint -- a field a constraint refuses is
+                # dropped from the comparison rather than the whole model
+                dropped = []
                 for f in fields:
-                    recs[0].write({f.name: case(f, 3)})
+                    try:
+                        with env.cr.savepoint():
+                            recs[0].write({f.name: case(f, 3)})
+                            env.flush_all()
+                    except _CONSTRAINED:
+                        dropped.append(f.name)
+                if dropped:
+                    fields = [f for f in fields if f.name not in dropped]
                 if len(recs) > 1:
                     # one value onto many rows (`update_rows.uniform`) for the
                     # types a unique constraint cannot catch; strings get a
@@ -341,17 +414,26 @@ def main(env):
                         f for f in fields if f.type not in ("char", "text", "html")
                     ]
                     if uniform:
-                        recs[1:].write({f.name: case(f, 4) for f in uniform})
+                        write_or_drop(
+                            env,
+                            recs[1:],
+                            {f.name: case(f, 4) for f in uniform},
+                            dropped,
+                        )
                     for k, rec in enumerate(recs[1:]):
-                        rec.write(
+                        write_or_drop(
+                            env,
+                            rec,
                             {
                                 f.name: case(f, 4)
                                 if k == 0
                                 else "%s row %d" % (f.name, k)
                                 for f in fields
                                 if f.type in ("char", "text", "html")
-                            }
+                            },
+                            dropped,
                         )
+                    fields = [f for f in fields if f.name not in dropped]
                 env.flush_all()
                 ids = list(recs.ids)
                 recs[1::2].unlink()
@@ -368,6 +450,7 @@ def main(env):
                     "types": [f.type for f in fields],
                     "rows": [rows.get(i) for i in ids],
                     "unlinked": [k for k in range(len(ids)) if k % 2 == 1],
+                    "dropped": sorted(dropped),
                     "native": {
                         k: v - before.get(k, 0)
                         for k, v in (stats["native"].items() if stats else [])
