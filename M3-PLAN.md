@@ -1961,3 +1961,15 @@ routed through the formatted path with no refusal:
 
 Still refused on purpose: `fill_temporal` with a limit or an offset, which
 Python raises on, and a granularity Python does not know.
+
+### The trigger assumption, measured and then enforced (2026-09-19)
+
+The empty-by-construction answer rests on one thing outside the ORM: no
+database trigger writes table B on an insert into table A. Searched every
+addon in the workspace (`odoo`, `enterprise`, `agromarin`): no `CREATE
+TRIGGER` anywhere, and the fork's core creates none. Rather than leave that
+as a note, the port reads `pg_trigger` once per registry and disables the
+shortcut for a database that carries a user-defined trigger, saying so in
+the log. Measured: 11 empty answers in the probe on a clean database, none
+after `CREATE TRIGGER ... BEFORE INSERT ON res_partner`, 11 again once it
+was dropped and the process restarted.

@@ -3091,8 +3091,12 @@ def test_a_reference_search_on_an_unwritten_table_is_empty_by_construction() -> 
             self.type = type_
             self.comodel_name = comodel
 
+    class Registry:
+        pass
+
     class Env:
         cr = Cr()
+        registry = Registry()
 
     empty = object()
 
@@ -3119,6 +3123,7 @@ def test_a_reference_search_on_an_unwritten_table_is_empty_by_construction() -> 
     original = rust_orm_shim._rust_conn
     rust_orm_shim._rust_conn = lambda _env: Conn()
     try:
+        backend._TRIGGERS[model.env.registry] = False
         backend.forget_created(model.env.cr)
         check(
             "nothing created: compiled as usual",
@@ -3179,6 +3184,13 @@ def test_a_reference_search_on_an_unwritten_table_is_empty_by_construction() -> 
             None,
         )
         Conn.writes_untracked = False
+        backend._TRIGGERS[model.env.registry] = True
+        check(
+            "a database with a user trigger: compiled",
+            backend.empty_by_construction(model, Domain([("lead_id", "in", [7])])),
+            None,
+        )
+        backend._TRIGGERS[model.env.registry] = False
         backend.forget_created(model.env.cr)
         check(
             "forgotten with the transaction: compiled",

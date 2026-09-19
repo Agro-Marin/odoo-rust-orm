@@ -493,6 +493,43 @@ def forget_created(cr) -> None:
         _CREATED.pop(cr, None)
 
 
+#: Per registry: does the database carry a user-defined trigger on any
+#: table? A trigger can write table B on an insert into table A, which is
+#: the one path by which a row naming a fresh id could exist on a table
+#: this connection never wrote. Read once per process; True disables the
+#: short-circuit for that database. No database in this workspace has one.
+_TRIGGERS = weakref.WeakKeyDictionary()
+
+
+def _has_user_triggers(env):
+    registry = getattr(env, "registry", None)
+    if registry is None:
+        return True
+    try:
+        known = _TRIGGERS.get(registry)
+    except TypeError:
+        return True
+    if known is not None:
+        return known
+    try:
+        with env.cr.savepoint(flush=False):
+            env.cr.execute(
+                "SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE NOT t.tgisinternal AND n.nspname = 'public'"
+            )
+            known = bool(env.cr.fetchone()[0])
+    except Exception:
+        known = True
+    _TRIGGERS[registry] = known
+    if known:
+        _logger.info(
+            "rust_backend: the database carries user-defined triggers; "
+            "reference searches are never answered empty by construction"
+        )
+    return known
+
+
 def _ids_of(value):
     if isinstance(value, int) and not isinstance(value, bool):
         return {value}
@@ -531,7 +568,7 @@ def empty_by_construction(model, domain):
         conn = rust_orm_shim._rust_conn(env)
     except Exception:
         return None
-    if conn.writes_untracked:
+    if conn.writes_untracked or _has_user_triggers(env):
         return None
     table = getattr(model, "_table", None)
     if not table or not model._auto or table in conn.written_tables:
