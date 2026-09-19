@@ -1785,3 +1785,48 @@ the flush, the mail thread and the access checks, all still Python; the port
 replaces the INSERT and the UPDATE and buys nine percent. The two read
 profiles are what the engine owns, and the gain is the whole request
 including HTTP, session, dispatch and JSON on both sides.
+
+## Phase 3 opens with a profile, and the first obvious move measured zero (2026-09-19)
+
+`cProfile` over 200 form-save cycles on `crm.lead` (create, write, read,
+unlink, flush), in process, pure Python, on a 4-module demo database:
+
+    27 ms per cycle, of which
+      driver round trips (26 statements)             17%
+      domain optimisation (`optimize_full`, 5,700 calls)   14%
+      orm/models (the write pipeline)                 14%
+      orm/fields (field access, compute dispatch)     11%
+      python computes (mail thread, crm)              27% cumulative
+      16 internal `search()` calls per cycle         40% cumulative
+
+**Arming the port's native `search` changes none of it.** `search_bench.py`
+reads native 0.88x Python per search, so it was armed and the cycle measured
+again: 4,001 of 4,025 internal searches answered natively, 28.3 ms against
+28.1. The fork's `_search` runs `domain.optimize_full(self)` BEFORE it calls
+`backend.search`, so the 14% of domain work stays in Python whichever side
+compiles the SQL, and the port adds a JSON hop for the rest. Reverted; the
+port arms `create_rows` and `update_rows` as before. The milestone that
+would move a save is therefore **the kernel compiling the raw domain before
+Python optimises it** -- what the routed `search_read` already does -- which
+is a fork API question (`_search` asking the backend first) and not a port
+switch. Worth about a quarter of the cycle by this profile; the rest is the
+write pipeline and the computes, which is Phase 3 proper.
+
+Two defects the attempt found are kept:
+
+- **the kernel build deadlocked on itself once the port could search.**
+  Building the kernel exports the registry; the export reads the company
+  and the company-dependent fallbacks through the ORM; those reads reached
+  the port, which asked `_ensure_kernel` for the kernel being built, under
+  a lock the same thread held. One second of CPU in twenty minutes, every
+  connection idle. `building()` marks the thread for both build paths (the
+  addon's registry hook and `_ensure_kernel`) and a read from it is served
+  by Python;
+- **every unlink tainted the transaction as a security write.**
+  `ir.default.discard_records` runs `stale.unlink()` on every unlink of any
+  model, and an EMPTY `ir.default` unlink marked the cursor dirty, after
+  which every routed read and every port search in that transaction fell
+  back to Python. Measured: 4,385 of 4,463 port searches delegated for that
+  reason in the profile; in a server, any request that unlinks anything
+  lost routing for its remainder. An empty recordset writes nothing and no
+  longer taints.

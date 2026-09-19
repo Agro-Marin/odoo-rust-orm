@@ -24,6 +24,7 @@ DBNAME = None
 KERNEL_FACTORY = None
 _KERNEL_TRIED_PID = None
 _KERNEL_LOCK = threading.Lock()
+_KERNEL_BUILDING_THREAD = None
 _KERNEL_INCOMPLETE = [None]
 
 PROCESS_HOOK = None
@@ -103,6 +104,24 @@ def _bound_db(env):
     return DBNAME is None or env.registry.db_name == DBNAME
 
 
+def building_here():
+    """True on the thread that is building the kernel right now: the export
+    reads the database through the ORM, and with the port's search armed
+    those reads ask for the kernel being built. They are served by python."""
+    return threading.get_ident() == _KERNEL_BUILDING_THREAD
+
+
+@contextlib.contextmanager
+def building():
+    global _KERNEL_BUILDING_THREAD
+    previous = _KERNEL_BUILDING_THREAD
+    _KERNEL_BUILDING_THREAD = threading.get_ident()
+    try:
+        yield
+    finally:
+        _KERNEL_BUILDING_THREAD = previous
+
+
 def _ensure_kernel(env):
     global KERNEL, _KERNEL_TRIED_PID, _PROCESS_PID
     if os.getpid() != _PROCESS_PID and PROCESS_HOOK is not None:
@@ -121,6 +140,13 @@ def _ensure_kernel(env):
     loading = (os.getpid(), id(env.registry), len(env.registry.models))
     if loading == _KERNEL_INCOMPLETE[0]:
         return False
+    # Building the kernel exports the registry, and the export reads the
+    # database through the ORM (company-dependent fallbacks, the company);
+    # with the port's search armed those reads come back here for the
+    # kernel that is being built. The lock is not reentrant, so the thread
+    # that holds it must be answered "not yet" and served by python.
+    if building_here():
+        return False
     with _KERNEL_LOCK:
         if KERNEL is not None:
             return True
@@ -128,7 +154,8 @@ def _ensure_kernel(env):
             return False
         started = time.monotonic()
         try:
-            KERNEL = KERNEL_FACTORY(env.registry)
+            with building():
+                KERNEL = KERNEL_FACTORY(env.registry)
             forget_gates()
             _logger.info(
                 "built the rust kernel in pid %d in %.1f ms",
@@ -1750,8 +1777,13 @@ def install():
     orig_write = BaseModel.write
     orig_unlink = BaseModel.unlink
 
-    def _taint(self, vals=None) -> None:
-        if _harmless_user_write(self, vals):
+    def _taint(self, vals=None, *, creating=False) -> None:
+        # an empty recordset writes nothing: ir.default.discard_records runs
+        # `stale.unlink()` on EVERY unlink of any model, stale or not, and an
+        # empty ir.default unlink used to taint the transaction -- after
+        # which every search and routed read in it was served by python.
+        # A create is called on the empty model and always writes.
+        if (not creating and not self) or _harmless_user_write(self, vals):
             return
         if self._name in SECURITY_MODELS:
             if _gate_logger.isEnabledFor(logging.DEBUG):
@@ -1768,7 +1800,7 @@ def install():
                 _unhashable_cursor(self.env.cr, "a write to %s" % self._name)
 
     def create(self, vals_list):
-        _taint(self)
+        _taint(self, creating=True)
         _note_written(self, vals_list if isinstance(vals_list, list) else [vals_list])
         return orig_create(self, vals_list)
 

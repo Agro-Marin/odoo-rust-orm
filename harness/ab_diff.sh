@@ -32,6 +32,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 BASE="${PREFIX}_base"
+mkdir -p "$OUT"
 echo "A/B differential   (artifacts in $OUT)"
 for db in "$BASE" "${PREFIX}_a" "${PREFIX}_b" "${PREFIX}_c"; do
   if psql -U marin -lqt 2>/dev/null | cut -d'|' -f1 | sed 's/ //g' | grep -qx "$db"; then

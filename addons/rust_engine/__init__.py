@@ -403,7 +403,10 @@ def _arm_registry_hook() -> None:
         if db_name == _STATE["db"]:
             orm_shim = _STATE["shims"][1]
             try:
-                orm_shim.KERNEL = _build_kernel(registry)
+                # the export reads through the ORM; a read that reaches the
+                # port must be served by python while the kernel is built
+                with orm_shim.building():
+                    orm_shim.KERNEL = _build_kernel(registry)
                 orm_shim.forget_gates()
             except Exception:
                 _, orm_shim = _STATE["shims"]
