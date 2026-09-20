@@ -2106,3 +2106,29 @@ always taints, and a model absent from the table taints on every write.
 
     tours (shadow)  share 0.12 -> 0.15, routed 110, verified 110, diff 0
     what still taints them: res.groups.implied_ids, a res.company create, a res.lang archive -- all real
+
+## `_read_group` routes `having` (2026-09-20)
+
+Twenty-three production callers pass `having=` -- duplicate checks
+(`__count > 1` on lots, warehouses, workcenters, document types), the
+auto-reconcile wizard's residual test, the bank statement, calendar and
+timesheet reports -- and every one was refused by name. Python's
+`_read_group_having` is a small prefix-form compiler over aggregate specs
+with eight comparators; the kernel now carries the same: `Request.having`,
+and `having_condition` in `scan.rs` compiled over the very aggregate
+expressions the SELECT builds (`aggregate_of` is one closure for both), so
+a numeric sum compares as the float8 the SELECT returns and `__count` as
+`COUNT(*)`. The shim admits a having list when every spec passes
+`_bad_aggregate`, the comparator is one of python's eight, and the value is
+a scalar or a list of scalars; anything else names itself in the refusal.
+
+    /test_read_group  off 0 failed of 149   on 0 failed of 149   routed 506 -> 610, kernel errors 0
+    shell probe, five shapes (count, sum, | with in, !, not in []): one kernel call each, routed == python
+
+One defect on the way, and it is the shape to remember: the shim's
+`having=()` default met python's `having=None`, and `_having_specs(None)`
+raised inside the routed branch -- a Python TypeError the breaker counted
+as three errors and then stopped routing the model for the rest of the
+process, which read as "routed 506 -> 134" rather than as a red. A kernel
+refusal is a fallback; an exception in the shim's own preparation is a
+breaker trip, and the difference is only visible in the routed count.

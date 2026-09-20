@@ -883,12 +883,9 @@ impl<'a> Orm<'a> {
             TextArray,
             ByField(ColKind),
         }
-        let mut agg_kinds: Vec<AggKind> = Vec::new();
-        for agg in aggregates {
+        let aggregate_of = |agg: &str| -> Result<(Expr, AggKind)> {
             if agg == "__count" {
-                select.expr(Expr::cust("COUNT(*)"));
-                agg_kinds.push(AggKind::Count);
-                continue;
+                return Ok((Expr::cust("COUNT(*)"), AggKind::Count));
             }
             let (fname, func) = agg
                 .rsplit_once(':')
@@ -918,8 +915,7 @@ impl<'a> Orm<'a> {
             } else {
                 agg
             };
-            select.expr(agg);
-            agg_kinds.push(match func {
+            let kind = match func {
                 "count" | "count_distinct" => AggKind::Count,
                 "sum" if f.ttype == FieldType::Integer => AggKind::SumInt,
                 "avg" | "sum" => AggKind::Float,
@@ -940,7 +936,17 @@ impl<'a> Orm<'a> {
                     model.name,
                     f.name
                 ),
-            });
+            };
+            Ok((agg, kind))
+        };
+        let mut agg_kinds: Vec<AggKind> = Vec::new();
+        for agg in aggregates {
+            let (expr, kind) = aggregate_of(agg)?;
+            select.expr(expr);
+            agg_kinds.push(kind);
+        }
+        if let Some(having) = having_condition(&req.having, &aggregate_of)? {
+            select.and_having(having);
         }
 
         for n in &gb_ordinals {
@@ -1280,4 +1286,83 @@ mod tests {
     fn more_cells_than_names_is_an_error_not_a_panic() {
         assert!(records_to_json(&["id"], &[vec![json!(1), json!(2)]]).is_err());
     }
+}
+
+fn having_condition<F, K>(having: &Json, aggregate_of: &F) -> Result<Option<Expr>>
+where
+    F: Fn(&str) -> Result<(Expr, K)>,
+{
+    let items = match having {
+        Json::Null => return Ok(None),
+        Json::Array(items) if items.is_empty() => return Ok(None),
+        Json::Array(items) => items,
+        other => refuse!("having must be a list, not {other}"),
+    };
+    let mut stack: Vec<Expr> = Vec::new();
+    for item in items.iter().rev() {
+        match item {
+            Json::String(op) if op == "!" => {
+                let a = stack.pop().ok_or_else(|| refusal!("malformed having {having}"))?;
+                stack.push(a.not());
+            }
+            Json::String(op) if op == "&" || op == "|" => {
+                let a = stack.pop().ok_or_else(|| refusal!("malformed having {having}"))?;
+                let b = stack.pop().ok_or_else(|| refusal!("malformed having {having}"))?;
+                stack.push(if op == "&" { a.and(b) } else { a.or(b) });
+            }
+            Json::Array(triple) if triple.len() == 3 => {
+                let spec = triple[0]
+                    .as_str()
+                    .ok_or_else(|| refusal!("having spec must be a string: {}", triple[0]))?;
+                let operator = triple[1]
+                    .as_str()
+                    .ok_or_else(|| refusal!("having operator must be a string: {}", triple[1]))?;
+                let (left, _kind) = aggregate_of(spec)?;
+                let right = &triple[2];
+                let expr = match operator {
+                    "in" | "not in" => {
+                        let values: Vec<sea_query::Value> = match right {
+                            Json::Array(values) => values
+                                .iter()
+                                .map(having_value)
+                                .collect::<Result<_>>()?,
+                            scalar => vec![having_value(scalar)?],
+                        };
+                        if values.is_empty() {
+                            Expr::cust(if operator == "in" { "FALSE" } else { "TRUE" })
+                        } else if operator == "in" {
+                            left.is_in(values)
+                        } else {
+                            left.is_not_in(values)
+                        }
+                    }
+                    "=" => left.eq(having_value(right)?),
+                    "!=" => left.ne(having_value(right)?),
+                    "<" => left.lt(having_value(right)?),
+                    ">" => left.gt(having_value(right)?),
+                    "<=" => left.lte(having_value(right)?),
+                    ">=" => left.gte(having_value(right)?),
+                    other => refuse!("unsupported having comparator {other}"),
+                };
+                stack.push(expr);
+            }
+            other => refuse!("malformed having clause {other}"),
+        }
+    }
+    while stack.len() > 1 {
+        let a = stack.pop().expect("len > 1");
+        let b = stack.pop().expect("len > 1");
+        stack.push(a.and(b));
+    }
+    Ok(stack.pop())
+}
+
+fn having_value(value: &Json) -> Result<sea_query::Value> {
+    Ok(match value {
+        Json::Number(n) if n.is_i64() => sea_query::Value::from(n.as_i64().expect("i64")),
+        Json::Number(n) => sea_query::Value::from(n.as_f64().ok_or_else(|| refusal!("bad number {n}"))?),
+        Json::Bool(b) => sea_query::Value::from(*b),
+        Json::String(s) => sea_query::Value::from(s.clone()),
+        other => refuse!("unsupported having value {other}"),
+    })
 }

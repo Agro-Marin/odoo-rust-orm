@@ -157,6 +157,8 @@ pub struct Request {
     pub groupby: Json,
     #[serde(default)]
     pub aggregates: Vec<String>,
+    #[serde(default)]
+    pub having: Json,
 
     #[serde(default)]
     pub uid: Option<UidSpec>,

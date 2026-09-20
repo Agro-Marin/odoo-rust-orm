@@ -1291,6 +1291,30 @@ def test_revive_temporal() -> None:
     )
     check("a stored sum still routes", bad(_Model, ["amount:sum", "__count"]), None)
 
+    having = orm_shim._bad_having
+    check("a count having routes", having(_Model, [("__count", ">", 1)]), None)
+    check(
+        "a prefix operator and a list value route",
+        having(_Model, ["|", ("amount:sum", "in", [1, 2.5]), ("__count", "<=", 3)]),
+        None,
+    )
+    check(
+        "a comparator python refuses is refused",
+        having(_Model, [("amount:sum", "like", 1)]),
+        "having comparator 'like'",
+    )
+    check(
+        "a through-records aggregate is refused",
+        having(_Model, [("total:sum", ">", 0)]),
+        "having aggregate total:sum",
+    )
+    check(
+        "a recordset spec is refused",
+        having(_Model, [("partner_id:recordset", "!=", False)]),
+        "having spec 'partner_id:recordset'",
+    )
+    check("a bare item is refused", having(_Model, ["nope"]), "having clause 'nope'")
+
 
 def test_label_dependencies_with_a_fake_model() -> None:
     orm_shim = _shims()[1]

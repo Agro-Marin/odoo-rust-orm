@@ -1498,6 +1498,36 @@ def _bad_aggregate(model, aggregates):
     return None
 
 
+HAVING_OPERATORS = frozenset({"in", "not in", "<", ">", "<=", ">=", "=", "!="})
+
+
+def _having_specs(having):
+    return [
+        item[0] for item in having if isinstance(item, (list, tuple)) and len(item) == 3
+    ]
+
+
+def _bad_having(model, having):
+    for item in having:
+        if item in ("&", "|", "!"):
+            continue
+        if not (isinstance(item, (list, tuple)) and len(item) == 3):
+            return f"having clause {item!r}"
+        spec, operator, value = item
+        if not isinstance(spec, str) or spec.endswith(":recordset"):
+            return f"having spec {spec!r}"
+        if (bad := _bad_aggregate(model, [spec])) is not None:
+            return f"having aggregate {bad}"
+        if operator not in HAVING_OPERATORS:
+            return f"having comparator {operator!r}"
+        values = (
+            list(value) if isinstance(value, (list, tuple, set, frozenset)) else [value]
+        )
+        if any(not isinstance(v, (bool, int, float, str)) for v in values):
+            return f"having value {value!r}"
+    return None
+
+
 def _recordset_aggregates(model, aggregates, rows, offset):
     for index, spec in enumerate(aggregates):
         if spec.rpartition(":")[2] != "recordset":
@@ -1761,13 +1791,15 @@ def install():
         limit=None,
         order=None,
     ):
+        having = list(having or ())
         bad_aggregate = _bad_aggregate(self, aggregates)
-        if having:
-            supported = _refuse("having")
-        elif not groupby:
+        bad_having = _bad_having(self, having) if having else None
+        if not groupby:
             supported = _refuse("no groupby")
         elif bad_aggregate is not None:
             supported = _refuse(f"aggregate {bad_aggregate}")
+        elif bad_having is not None:
+            supported = _refuse(bad_having)
         else:
             supported = _gate(
                 self,
@@ -1784,7 +1816,11 @@ def install():
                     domain,
                     order,
                     [g.split(":")[0].split(".")[0] for g in groupby]
-                    + [a.rsplit(":", 1)[0] for a in aggregates if a != "__count"],
+                    + [
+                        a.rsplit(":", 1)[0]
+                        for a in (*aggregates, *_having_specs(having))
+                        if a != "__count"
+                    ],
                 ):
                     raise KernelRefused("flush failed; not routing")
                 for g in groupby:
@@ -1799,6 +1835,10 @@ def install():
                     groupby=list(groupby),
                     aggregates=[
                         a.replace(":recordset", ":array_agg") for a in aggregates
+                    ],
+                    having=[
+                        list(item) if isinstance(item, (list, tuple)) else item
+                        for item in having
                     ],
                     order=order or None,
                     offset=offset or 0,
@@ -2220,8 +2260,8 @@ def install():
             )
 
         def _formatted_group_plan(model, groupby, aggregates, having, limit, offset):
-            if having:
-                return _refuse("having")
+            if having and (bad := _bad_having(model, having)) is not None:
+                return _refuse(bad)
             if not groupby:
                 return _refuse("no groupby")
             if not _group_hooks_clean(model):
@@ -2336,6 +2376,7 @@ def install():
             order=None,
         ):
             groupby = tuple(groupby)
+            having = list(having or ())
             aggregates = tuple(
                 agg.replace(":recordset", ":array_agg") for agg in aggregates
             )
@@ -2354,7 +2395,11 @@ def install():
                         domain,
                         order,
                         list(groupby)
-                        + [a.rsplit(":", 1)[0] for a in aggregates if a != "__count"],
+                        + [
+                            a.rsplit(":", 1)[0]
+                            for a in (*aggregates, *_having_specs(having))
+                            if a != "__count"
+                        ],
                     ):
                         raise KernelRefused("flush failed; not routing")
                     rows = _dispatch(
@@ -2363,6 +2408,10 @@ def install():
                         domain=domain or [],
                         groupby=list(groupby),
                         aggregates=list(aggregates),
+                        having=[
+                            list(item) if isinstance(item, (list, tuple)) else item
+                            for item in having
+                        ],
                         order=order,
                         offset=offset or 0,
                         limit=limit,
