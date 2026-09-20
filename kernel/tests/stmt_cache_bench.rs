@@ -17,6 +17,7 @@ fn req(model: &str, fields: &[&str], limit: Option<u64>) -> Request {
         order: None,
         groupby: serde_json::Value::Null,
         aggregates: vec![],
+        having: serde_json::Value::Null,
         uid: Some(odoo_kernel::orm::UidSpec::Id(2)),
         su: false,
         lang: None,

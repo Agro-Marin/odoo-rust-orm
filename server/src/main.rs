@@ -290,6 +290,7 @@ async fn main() -> Result<()> {
                 order,
                 groupby: serde_json::json!(groupby),
                 aggregates,
+                having: serde_json::Value::Null,
                 uid: uid.map(|u| match u.parse::<i32>() {
                     Ok(n) => odoo_kernel::orm::UidSpec::Id(n),
                     Err(_) => odoo_kernel::orm::UidSpec::Symbol(u),

@@ -3248,6 +3248,7 @@ fn a_request_naming_no_groupby_is_answered_not_refused() {
         order: None,
         groupby,
         aggregates: Vec::new(),
+        having: serde_json::Value::Null,
         uid: None,
         su: false,
         lang: None,
