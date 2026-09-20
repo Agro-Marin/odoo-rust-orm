@@ -1223,8 +1223,74 @@ impl<'a> Orm<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_name_cell, records_to_json};
+    use super::{display_name_cell, having_condition, records_to_json};
+    use sea_query::{Expr, PostgresQueryBuilder, Query};
     use serde_json::json;
+
+    fn having_sql(having: serde_json::Value) -> anyhow::Result<Option<String>> {
+        let aggregate_of = |spec: &str| -> anyhow::Result<(Expr, ())> {
+            Ok((
+                match spec {
+                    "__count" => Expr::cust("COUNT(*)"),
+                    "value:sum" => Expr::cust("(SUM(\"t\".\"value\"))::float8"),
+                    other => anyhow::bail!("unknown {other}"),
+                },
+                (),
+            ))
+        };
+        Ok(having_condition(&having, &aggregate_of)?.map(|expr| {
+            let mut select = Query::select();
+            select.expr(Expr::cust("1")).from(sea_query::Alias::new("t"));
+            select.add_group_by([Expr::cust("1")]);
+            select.and_having(expr);
+            select.to_string(PostgresQueryBuilder)
+        }))
+    }
+
+    #[test]
+    fn having_compiles_pythons_prefix_list_as_its_sql_compiler_does() {
+        let flat = |sql: String| sql.replace(['(', ')'], "");
+        assert_eq!(having_sql(json!(null)).unwrap(), None);
+        assert_eq!(having_sql(json!([])).unwrap(), None);
+        let sql = flat(having_sql(json!([["__count", ">", 1]])).unwrap().unwrap());
+        assert!(sql.ends_with("HAVING COUNT* > 1"), "{sql}");
+        let sql = flat(
+            having_sql(json!([
+                "|",
+                ["__count", "=", 1],
+                ["value:sum", "in", [12, 99.5]]
+            ]))
+            .unwrap()
+            .unwrap(),
+        );
+        assert!(
+            sql.contains("COUNT* = 1 OR SUM\"t\".\"value\"::float8 IN 12, 99.5"),
+            "{sql}"
+        );
+        let sql = flat(having_sql(json!(["!", ["value:sum", "<", 9]])).unwrap().unwrap());
+        assert!(sql.contains("NOT SUM\"t\".\"value\"::float8 < 9"), "{sql}");
+        // two bare triples AND together, as python's stack does
+        let sql = flat(
+            having_sql(json!([["__count", "<", 3], ["value:sum", ">=", 4]]))
+                .unwrap()
+                .unwrap(),
+        );
+        assert!(sql.contains("COUNT* < 3 AND"), "{sql}");
+        assert!(sql.contains("::float8 >= 4"), "{sql}");
+        let sql = flat(having_sql(json!([["__count", "not in", []]])).unwrap().unwrap());
+        assert!(sql.ends_with("HAVING TRUE"), "{sql}");
+        let sql = flat(having_sql(json!([["__count", "in", []]])).unwrap().unwrap());
+        assert!(sql.ends_with("HAVING FALSE"), "{sql}");
+    }
+
+    #[test]
+    fn having_refuses_what_python_refuses() {
+        assert!(having_sql(json!([["__count", "like", 1]])).is_err());
+        assert!(having_sql(json!(["&", ["__count", ">", 1]])).is_err());
+        assert!(having_sql(json!(["nope"])).is_err());
+        assert!(having_sql(json!([["nope:sum", ">", 1]])).is_err());
+        assert!(having_sql(json!([["__count", ">", null]])).is_err());
+    }
 
     #[test]
     fn a_falsy_rec_name_renders_display_name_false_as_odoo_does() {
