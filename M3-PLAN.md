@@ -2035,3 +2035,23 @@ purchase's portal date literals, `c12879280f76`). Zero tests fail only under
 routing, so `search_raw` is back in the default armed set
 (`update_rows,create_rows,search_raw`), the kill switch stays, and this lane
 (`harness/orm_tests.sh` over the seven tags) is the check that keeps it there.
+
+## `_read_group` routes the recordset aggregate (2026-09-20)
+
+The seven-suite lane's refusal report, once the fixture taint is set aside,
+named `aggregate id:recordset` on `account.move.line._read_group` as the
+largest production-shaped fallback left in grouped reads: reconciliation
+and the aged reports group lines and ask for the ids as a recordset. The
+kernel already answered `array_agg` ordered by the table's id, which is the
+SQL python emits for `recordset`; what was missing was the fold back into
+records. `_bad_aggregate` admits `:recordset` on `id` and on stored
+relational fields, the dispatch travels as `array_agg`, and
+`_recordset_aggregates` rebuilds each group's value as python's
+`_read_group_postprocess_aggregate` does: unique ids in array order, one
+prefetch set across the groups, the model's own empty value otherwise. An
+aggregate python folds through records (a non-stored compute) is refused
+by name rather than by the kernel's unknown-column error.
+
+    /test_read_group  off 0 failed of 149   on 0 failed of 149   routed=506
+    shell probe, three groups with partner_id:recordset, id:recordset, __count:
+      one kernel call; routed == python; the values are res.partner recordsets

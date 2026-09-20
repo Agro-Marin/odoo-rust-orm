@@ -1250,8 +1250,46 @@ def test_revive_temporal() -> None:
         ok_aggs(["amount:array_agg"]),
         True,
     )
-    check("recordset is not", ok_aggs(["partner_id:recordset"]), False)
+    check("id:recordset rides the kernel's array_agg", ok_aggs(["id:recordset"]), True)
+    check(
+        "recordset on an unknown field is not",
+        ok_aggs(["partner_id:recordset"]),
+        False,
+    )
     check("a bare field spec is not", ok_aggs(["amount"]), False)
+
+    class _Field:
+        def __init__(self, relational, store, compute=False):
+            self.relational, self.store, self.compute = relational, store, compute
+            self.related = False
+
+    class _Model:
+        _fields = {
+            "partner_id": _Field(True, True),
+            "shadow_id": _Field(True, False, compute=True),
+            "total": _Field(False, False, compute=True),
+            "amount": _Field(False, True),
+        }
+
+        @staticmethod
+        def _aggregates_through_records(field, func):
+            return not field.store and bool(field.compute) and func in {"sum", "avg"}
+
+    bad = orm_shim._bad_aggregate
+    check(
+        "recordset on a stored m2o routes", bad(_Model, ["partner_id:recordset"]), None
+    )
+    check(
+        "recordset on a non-stored m2o is refused",
+        bad(_Model, ["shadow_id:recordset"]),
+        "shadow_id:recordset",
+    )
+    check(
+        "an aggregate python folds through records is refused",
+        bad(_Model, ["amount:sum", "total:sum"]),
+        "total:sum",
+    )
+    check("a stored sum still routes", bad(_Model, ["amount:sum", "__count"]), None)
 
 
 def test_label_dependencies_with_a_fake_model() -> None:

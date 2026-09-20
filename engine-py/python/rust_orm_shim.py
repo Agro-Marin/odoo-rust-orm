@@ -1442,10 +1442,64 @@ AGGREGATE_FUNCS = frozenset(
 )
 
 
-def _aggregates_ok(aggregates):
-    return all(
-        a == "__count" or a.rsplit(":", 1)[-1] in AGGREGATE_FUNCS for a in aggregates
-    )
+def _aggregates_ok(aggregates, model=None):
+    return _bad_aggregate(model, aggregates) is None
+
+
+def _bad_aggregate(model, aggregates):
+    """The first aggregate spec the kernel cannot answer, or None.
+
+    ``:recordset`` travels as the kernel's ``array_agg`` and is folded back
+    into records afterwards (`_recordset_aggregates`), so it is admitted on
+    ``id`` and on stored relational fields, which is where python admits it.
+    An aggregate python folds through records (a non-stored compute) is
+    refused: the column does not exist for the kernel to aggregate.
+    """
+    for spec in aggregates:
+        if spec == "__count":
+            continue
+        fname, _, func = spec.rpartition(":")
+        field = model._fields.get(fname) if model is not None and fname else None
+        if func == "recordset":
+            if fname == "id" or (
+                field is not None and field.relational and field.store
+            ):
+                continue
+            return spec
+        if func not in AGGREGATE_FUNCS:
+            return spec
+        if field is not None and model._aggregates_through_records(field, func):
+            return spec
+    return None
+
+
+def _recordset_aggregates(model, aggregates, rows, offset):
+    """Fold the kernel's id arrays back into recordsets, as python's
+    `_read_group_postprocess_aggregate` does: unique ids in array order, one
+    prefetch set across the groups, the model's own empty value otherwise."""
+    for index, spec in enumerate(aggregates):
+        if spec.rpartition(":")[2] != "recordset":
+            continue
+        fname = spec.rpartition(":")[0]
+        field = model._fields[fname]
+        Model = model.env.registry[
+            field.comodel_name if field.relational else model._name
+        ]
+        empty = model._read_group_empty_value(spec)
+        column = offset + index
+        prefetch = tuple(
+            dict.fromkeys(
+                id_ for row in rows if row[column] for id_ in row[column] if id_
+            )
+        )
+        for row in rows:
+            values = row[column]
+            row[column] = (
+                Model(model.env, tuple(dict.fromkeys(i for i in values if i)), prefetch)
+                if values
+                else empty
+            )
+    return rows
 
 
 def _read_fields_ok(model, fields):
@@ -1674,14 +1728,7 @@ def install():
         limit=None,
         order=None,
     ):
-        bad_aggregate = next(
-            (
-                a
-                for a in aggregates
-                if a != "__count" and a.rsplit(":", 1)[-1] not in AGGREGATE_FUNCS
-            ),
-            None,
-        )
+        bad_aggregate = _bad_aggregate(self, aggregates)
         if having:
             supported = _refuse("having")
         elif not groupby:
@@ -1717,7 +1764,9 @@ def install():
                     "read_group",
                     domain=domain or [],
                     groupby=list(groupby),
-                    aggregates=list(aggregates),
+                    aggregates=[
+                        a.replace(":recordset", ":array_agg") for a in aggregates
+                    ],
                     order=order or None,
                     offset=offset or 0,
                     limit=limit,
@@ -1726,6 +1775,10 @@ def install():
                 STATS["kernel"] += 1
                 out = []
                 gb_fields = [_path_field(self, g.split(":")[0])[1] for g in groupby]
+                if any(a.endswith(":recordset") for a in aggregates):
+                    rows = _recordset_aggregates(
+                        self, aggregates, [list(row) for row in rows], len(gb_fields)
+                    )
                 prefetch = [
                     tuple(row[i] for row in rows if row[i])
                     if f.type in ("many2one", "many2many")
@@ -1734,7 +1787,9 @@ def install():
                 ]
                 agg_fields = [
                     None
-                    if a == "__count" or a.rsplit(":", 1)[-1] in COUNT_AGGREGATES
+                    if a == "__count"
+                    or a.rsplit(":", 1)[-1] in COUNT_AGGREGATES
+                    or a.endswith(":recordset")
                     else self._fields.get(a.rsplit(":", 1)[0])
                     for a in aggregates
                 ]
