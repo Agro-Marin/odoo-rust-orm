@@ -2836,7 +2836,7 @@ def test_a_stale_extension_is_refused() -> None:
 def test_search_is_implemented_and_not_armed() -> None:
     backend = _backend()
     check("search is not armed", "search" in backend.RustBackend.NATIVE, False)
-    check("search_raw is opt-in", "search_raw" in backend.RustBackend.NATIVE, False)
+    check("search_raw is armed", "search_raw" in backend.RustBackend.NATIVE, True)
     check(
         "but it is implemented",
         callable(getattr(backend, "_search_native", None)),

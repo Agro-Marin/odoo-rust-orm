@@ -88,14 +88,11 @@ class RustBackend:
     #: empty disarms every method), RUSTORM_PORT_NO_EMPTY=1 keeps the port
     #: from answering a reference search empty by construction -- kill
     #: switches for a single method, without a rebuild or a conf change.
-    #: search_raw is opt-in until its state-dependent divergence is traced:
-    #: seven suites' classes run in one process fail 18 tests only under
-    #: routing with it armed, and none with it off (M3-PLAN, 2026-09-20).
     NATIVE: frozenset = frozenset(
         m
-        for m in os.environ.get("RUSTORM_PORT_NATIVE", "update_rows,create_rows").split(
-            ","
-        )
+        for m in os.environ.get(
+            "RUSTORM_PORT_NATIVE", "update_rows,create_rows,search_raw"
+        ).split(",")
         if m
     )
 

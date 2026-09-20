@@ -2006,3 +2006,32 @@ Until the mechanism is traced, `search_raw` is opt-in (the default armed
 set is create_rows and update_rows), the search stage still arms it over
 the sweep corpus, and this differential is the lane that catches it. The
 milestone's measurement stands; its arming does not.
+
+## search_raw is re-armed: the divergence was the taint's key, not the search (2026-09-20)
+
+The state-dependent failures above had one cause and it was not in the raw
+path. The security taint (`DIRTY_CRS`) and the created-id registry were keyed
+by the cursor object they were given, and an HTTP request in a test wraps the
+transaction's cursor in a `TestCursor` of its own per request. A write made
+through one wrapper tainted that wrapper; the next request, on a new wrapper
+over the same transaction, read the taint as clean and let the port answer a
+search the Python path would have refused -- an AccessError on a group the
+test had just created, a readonly export reading before the write, an
+invoice rendered proforma. Every symptom followed the shape "a write in one
+request, a read in the next", which is why a class alone passed and classes
+in sequence did not. `taint_key(cr)` now resolves the wrapper to the cursor it
+wraps (`_cursor`) for the taint, the gate and the created-id registry
+(`52915e5`); `test_shims.py` pins it.
+
+The seven-suite differential that disarmed it, re-run with `search_raw` armed
+on the fixed extension:
+
+    off  4 failed, 0 error(s) of 6421 tests
+    on   4 failed, 0 error(s) of 6421 tests   routed=1949   share=0.04
+
+The four are the same four on both legs and are Python's own, all fixed in
+the fork since the lane started (crm's assignment budgets, `b0fea93f14af`;
+purchase's portal date literals, `c12879280f76`). Zero tests fail only under
+routing, so `search_raw` is back in the default armed set
+(`update_rows,create_rows,search_raw`), the kill switch stays, and this lane
+(`harness/orm_tests.sh` over the seven tags) is the check that keeps it there.
