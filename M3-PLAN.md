@@ -1973,3 +1973,36 @@ shortcut for a database that carries a user-defined trigger, saying so in
 the log. Measured: 11 empty answers in the probe on a clean database, none
 after `CREATE TRIGGER ... BEFORE INSERT ON res_partner`, 11 again once it
 was dropped and the process restarted.
+
+## The wide differential caught what the gate did not: search_raw is disarmed (2026-09-20)
+
+The two-leg differential over seven suites at once (`/account,/sale,/purchase,
+/stock,/crm,/project,/mail`, 6,421 tests) read 5 failed on Python and 11
+failed, 14 errors under routing -- 19 failing only under routing, in
+account's export and readonly tests, sale's and purchase's product catalog,
+the download-documents controller and the portal signature tour. The gate's
+own lanes (the five ORM test modules, the tours, the sweep) are all green on
+the same build.
+
+Bisected with two new kill switches (`RUSTORM_PORT_NATIVE`, a comma-separated
+armed set; `RUSTORM_PORT_NO_EMPTY=1`) over the seven affected classes:
+
+    all armed               6 failed, 12 errors of 59    (python: 0)
+    empty verdict off       6 failed, 12 errors           unchanged
+    search_raw off          0 failed, 0 errors            routed=58
+
+and each class ALONE passes with everything armed -- the divergence needs
+other classes to have run first in the same process. One symptom is a
+readable one: `missing FROM-clause entry for table
+"account_move_line__account_id"`, a Python read_group ordering by a join
+alias that the domain's compile of a dotted path would have added to the
+Query and the kernel's fragment does not carry; the raw path now refuses
+dotted paths and sub-domains for it, and that class passes. The others do
+not follow from it: an AccessError on account.account for a user whose
+groups the test created, and invoices rendered as proforma, both after
+other classes.
+
+Until the mechanism is traced, `search_raw` is opt-in (the default armed
+set is create_rows and update_rows), the search stage still arms it over
+the sweep corpus, and this differential is the lane that catches it. The
+milestone's measurement stands; its arming does not.

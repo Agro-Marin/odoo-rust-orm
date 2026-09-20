@@ -1,6 +1,7 @@
 import collections
 import contextlib
 import logging
+import os
 import weakref
 
 from rust_engine_errors import KernelRefused, KernelRegistryStale
@@ -83,7 +84,20 @@ def reset_stats() -> None:
 
 
 class RustBackend:
-    NATIVE: frozenset = frozenset({"update_rows", "create_rows", "search_raw"})
+    #: RUSTORM_PORT_NATIVE names the armed set for a process (comma-separated;
+    #: empty disarms every method), RUSTORM_PORT_NO_EMPTY=1 keeps the port
+    #: from answering a reference search empty by construction -- kill
+    #: switches for a single method, without a rebuild or a conf change.
+    #: search_raw is opt-in until its state-dependent divergence is traced:
+    #: seven suites' classes run in one process fail 18 tests only under
+    #: routing with it armed, and none with it off (M3-PLAN, 2026-09-20).
+    NATIVE: frozenset = frozenset(
+        m
+        for m in os.environ.get("RUSTORM_PORT_NATIVE", "update_rows,create_rows").split(
+            ","
+        )
+        if m
+    )
 
     __slots__ = ("_delegate",)
 
@@ -142,7 +156,16 @@ class RustBackend:
 
     def search_raw(self, model, domain, offset, limit, order, check_access=True):
         if self._armed("search_raw", model):
-            query = empty_by_construction(model, domain)
+            # the shape check comes first: a dotted path's compile adds a
+            # join alias to the Query that python's read_group then orders
+            # by, and neither the kernel's fragment nor an empty verdict
+            # carries it (`missing FROM-clause entry for table
+            # "account_move_line__account_id"`, measured on account's tests)
+            why = _raw_domain_out_of_shape(domain)
+            if why:
+                _delegated("search_raw", why)
+                return None
+            query = None if _NO_EMPTY else empty_by_construction(model, domain)
             if query is not None:
                 _count("native", "search_raw.empty")
                 return query
@@ -499,6 +522,7 @@ def forget_created(cr) -> None:
 #: this connection never wrote. Read once per process; True disables the
 #: short-circuit for that database. No database in this workspace has one.
 _TRIGGERS = weakref.WeakKeyDictionary()
+_NO_EMPTY = os.environ.get("RUSTORM_PORT_NO_EMPTY") == "1"
 
 
 def _has_user_triggers(env):
@@ -602,8 +626,50 @@ def empty_by_construction(model, domain):
         else:
             continue
         mine = created.get(target)
-        if mine and ids <= mine:
-            return model.browse()._as_query()
+        if not mine or not ids <= mine:
+            continue
+        # Exactly what python's search does before it queries: flush the
+        # dependencies of the domain. A pending write of `res_id` onto an
+        # existing row -- an attachment re-linked to the record just
+        # created -- or the lines of an invoice created with commands are
+        # in the cache and nowhere else until then; the flush runs the
+        # UPDATE or the INSERT, the connection records the table, and the
+        # check below refuses. Measured on account's readonly and export
+        # tests before this flush: an invoice grouped its lines by account
+        # over an empty verdict.
+        from odoo.orm.runtime._search_flush import flush_search_dependencies
+
+        flush_search_dependencies(model, domain, None)
+        if table in conn.written_tables:
+            return None
+        from odoo.libs.sql.builder import SQL
+        from odoo.tools.query import Query
+
+        # a real Query with a false WHERE, not an id-set one: python's
+        # read_group joins onto the query it gets, and an id-set query
+        # carries no FROM for the join
+        query = Query(env, table, model._table_sql)
+        query.add_where(SQL("FALSE"))
+        return query
+    return None
+
+
+def _raw_domain_out_of_shape(domain):
+    """Why a domain as the caller wrote it cannot go to the kernel as the
+    WHERE of a python Query. A dotted path the kernel compiles with a JOIN
+    whose alias the Query never gets (`missing FROM-clause entry for table
+    "account_move_line__account_id"`, measured on account's readonly
+    tests), and a sub-domain (`any` / `not any`) the same way; python's
+    optimiser rewrites both into sub-selects before the optimised path ever
+    saw them, so the raw path refuses them and python optimises as before."""
+    from odoo.orm.domain.ast import Domain, DomainCondition
+
+    for node in _walk(domain):
+        if isinstance(node, DomainCondition):
+            if "." in node.field_expr:
+                return "a dotted path in the raw domain"
+            if isinstance(node.value, Domain):
+                return "a sub-domain in the raw domain"
     return None
 
 

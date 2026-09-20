@@ -2836,7 +2836,7 @@ def test_a_stale_extension_is_refused() -> None:
 def test_search_is_implemented_and_not_armed() -> None:
     backend = _backend()
     check("search is not armed", "search" in backend.RustBackend.NATIVE, False)
-    check("search_raw is armed", "search_raw" in backend.RustBackend.NATIVE, True)
+    check("search_raw is opt-in", "search_raw" in backend.RustBackend.NATIVE, False)
     check(
         "but it is implemented",
         callable(getattr(backend, "_search_native", None)),
@@ -3075,6 +3075,7 @@ if __name__ == "__main__":
 def test_a_reference_search_on_an_unwritten_table_is_empty_by_construction() -> None:
     backend = _backend()
     _odoo()
+    _shims()
     import rust_orm_shim
 
     from odoo.orm.domain import Domain
@@ -3100,15 +3101,17 @@ def test_a_reference_search_on_an_unwritten_table_is_empty_by_construction() -> 
 
     empty = object()
 
-    class Recordset:
-        def _as_query(self):
-            return empty
-
     class Model:
         _name = "mail.followers"
         _table = "mail_followers"
+        _table_sql = None
         _auto = True
         env = Env()
+        flushed = []
+
+        def flush_model(self, names):
+            self.flushed.append(list(names))
+
         _fields = {
             "res_id": Field("integer"),
             "res_model": Field("char"),
@@ -3116,12 +3119,24 @@ def test_a_reference_search_on_an_unwritten_table_is_empty_by_construction() -> 
             "lead_id": Field("many2one", "crm.lead"),
         }
 
-        def browse(self):
-            return Recordset()
-
     model = Model()
     original = rust_orm_shim._rust_conn
     rust_orm_shim._rust_conn = lambda _env: Conn()
+    from odoo.orm.runtime import _search_flush
+    from odoo.tools.query import Query
+
+    original_flush = _search_flush.flush_search_dependencies
+    _search_flush.flush_search_dependencies = lambda m, d, _o: m.flushed.append(list(d))
+
+    def verdict(query):
+        if query is None:
+            return None
+        check("an empty verdict is a false-where Query", isinstance(query, Query), True)
+        check("built on the searched table", query.table, "mail_followers")
+        return empty
+
+    original_ebc = backend.empty_by_construction
+    backend.empty_by_construction = lambda m, d: verdict(original_ebc(m, d))
     try:
         backend._TRIGGERS[model.env.registry] = False
         backend.forget_created(model.env.cr)
@@ -3197,5 +3212,12 @@ def test_a_reference_search_on_an_unwritten_table_is_empty_by_construction() -> 
             backend.empty_by_construction(model, Domain([("lead_id", "in", [7])])),
             None,
         )
+        check(
+            "the domain was flushed before the verdict",
+            bool(model.flushed),
+            True,
+        )
     finally:
+        _search_flush.flush_search_dependencies = original_flush
+        backend.empty_by_construction = original_ebc
         rust_orm_shim._rust_conn = original
