@@ -105,9 +105,6 @@ def _bound_db(env):
 
 
 def building_here():
-    """True on the thread that is building the kernel right now: the export
-    reads the database through the ORM, and with the port's search armed
-    those reads ask for the kernel being built. They are served by python."""
     return threading.get_ident() == _KERNEL_BUILDING_THREAD
 
 
@@ -140,11 +137,6 @@ def _ensure_kernel(env):
     loading = (os.getpid(), id(env.registry), len(env.registry.models))
     if loading == _KERNEL_INCOMPLETE[0]:
         return False
-    # Building the kernel exports the registry, and the export reads the
-    # database through the ORM (company-dependent fallbacks, the company);
-    # with the port's search armed those reads come back here for the
-    # kernel that is being built. The lock is not reentrant, so the thread
-    # that holds it must be answered "not yet" and served by python.
     if building_here():
         return False
     with _KERNEL_LOCK:
@@ -336,17 +328,22 @@ DIRTY_CRS = weakref.WeakSet()
 
 
 def taint_key(cr):
-    """The object a security taint is kept on: the cursor that owns the
-    transaction. A TestCursor is a per-request wrapper over one shared
-    cursor, so a request under test would otherwise carry none of the taint
-    the test body left, and the kernel would compile -- and cache, until the
-    watermark moves on a commit that never comes -- rules and groups written
-    in a transaction about to be rolled back. Measured 2026-09-20: 19 tests
-    failing only under routing, and only after other classes."""
     return getattr(cr, "_cursor", cr)
 
 
 COMMITTED_DIRTY = weakref.WeakSet()
+DIRTY_USERS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+COMMITTED_DIRTY_USERS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def is_tainted(env) -> bool:
+    key = taint_key(env.cr)
+    return key in DIRTY_CRS or getattr(env, "uid", None) in DIRTY_USERS.get(key, ())
+
+
+def _taint_users(cr, uids) -> None:
+    key = taint_key(cr)
+    DIRTY_USERS.setdefault(key, set()).update(uids)
 
 
 def _harmless_user_write(records, vals) -> bool:
@@ -597,7 +594,7 @@ def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: AR
     if not _ensure_kernel(model.env):
         return _refuse("kernel not built")
     try:
-        if taint_key(model.env.cr) in DIRTY_CRS:
+        if is_tainted(model.env):
             return _refuse("cursor wrote a security model")
     except TypeError:
         return _refuse("unhashable cursor")
@@ -1447,14 +1444,6 @@ def _aggregates_ok(aggregates, model=None):
 
 
 def _bad_aggregate(model, aggregates):
-    """The first aggregate spec the kernel cannot answer, or None.
-
-    ``:recordset`` travels as the kernel's ``array_agg`` and is folded back
-    into records afterwards (`_recordset_aggregates`), so it is admitted on
-    ``id`` and on stored relational fields, which is where python admits it.
-    An aggregate python folds through records (a non-stored compute) is
-    refused: the column does not exist for the kernel to aggregate.
-    """
     for spec in aggregates:
         if spec == "__count":
             continue
@@ -1474,9 +1463,6 @@ def _bad_aggregate(model, aggregates):
 
 
 def _recordset_aggregates(model, aggregates, rows, offset):
-    """Fold the kernel's id arrays back into recordsets, as python's
-    `_read_group_postprocess_aggregate` does: unique ids in array order, one
-    prefetch set across the groups, the model's own empty value otherwise."""
     for index, spec in enumerate(aggregates):
         if spec.rpartition(":")[2] != "recordset":
             continue
@@ -1577,8 +1563,15 @@ def _untaint(cr, committed=False) -> None:
         if committed:
             if cr in DIRTY_CRS:
                 COMMITTED_DIRTY.add(cr)
-        elif cr not in COMMITTED_DIRTY:
-            DIRTY_CRS.discard(cr)
+            if cr in DIRTY_USERS:
+                COMMITTED_DIRTY_USERS.setdefault(cr, set()).update(DIRTY_USERS[cr])
+        else:
+            if cr not in COMMITTED_DIRTY:
+                DIRTY_CRS.discard(cr)
+            if cr in COMMITTED_DIRTY_USERS:
+                DIRTY_USERS[cr] = set(COMMITTED_DIRTY_USERS[cr])
+            else:
+                DIRTY_USERS.pop(cr, None)
         WRITTEN_X2MANY.pop(cr, None)
 
 
@@ -1587,6 +1580,10 @@ def _signalled(db_name) -> None:
         if getattr(cr, "dbname", db_name) == db_name:
             COMMITTED_DIRTY.discard(cr)
             DIRTY_CRS.discard(cr)
+    for cr in list(COMMITTED_DIRTY_USERS):
+        if getattr(cr, "dbname", db_name) == db_name:
+            COMMITTED_DIRTY_USERS.pop(cr, None)
+            DIRTY_USERS.pop(cr, None)
 
 
 def install():
@@ -1855,12 +1852,13 @@ def install():
     orig_unlink = BaseModel.unlink
 
     def _taint(self, vals=None, *, creating=False) -> None:
-        # an empty recordset writes nothing: ir.default.discard_records runs
-        # `stale.unlink()` on EVERY unlink of any model, stale or not, and an
-        # empty ir.default unlink used to taint the transaction -- after
-        # which every search and routed read in it was served by python.
-        # A create is called on the empty model and always writes.
         if (not creating and not self) or _harmless_user_write(self, vals):
+            return
+        if self._name == "res.users" and not creating:
+            try:
+                _taint_users(self.env.cr, self.ids)
+            except TypeError:
+                _unhashable_cursor(self.env.cr, "a write to res.users")
             return
         if self._name in SECURITY_MODELS:
             if _gate_logger.isEnabledFor(logging.DEBUG):
@@ -1877,6 +1875,16 @@ def install():
                 _unhashable_cursor(self.env.cr, "a write to %s" % self._name)
 
     def create(self, vals_list):
+        if self._name == "res.users":
+            _note_written(
+                self, vals_list if isinstance(vals_list, list) else [vals_list]
+            )
+            records = orig_create(self, vals_list)
+            try:
+                _taint_users(self.env.cr, records.ids)
+            except TypeError:
+                _unhashable_cursor(self.env.cr, "a create of res.users")
+            return records
         _taint(self, creating=True)
         _note_written(self, vals_list if isinstance(vals_list, list) else [vals_list])
         return orig_create(self, vals_list)

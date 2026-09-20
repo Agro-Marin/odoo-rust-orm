@@ -2055,3 +2055,36 @@ by name rather than by the kernel's unknown-column error.
     /test_read_group  off 0 failed of 149   on 0 failed of 149   routed=506
     shell probe, three groups with partner_id:recordset, id:recordset, __count:
       one kernel call; routed == python; the values are res.partner recordsets
+
+## The security taint is per user for res.users, per transaction for everything else (2026-09-20)
+
+Every routed lane's refusal report was led by `cursor wrote a security
+model`, by an order of magnitude: the seven-suite lane 3.35M of 4.0M
+refusals, the tours 1,280 of 1,409. Nearly all of it is fixtures creating
+users, which is how a test class begins and how production almost never
+does -- but the taint decided routing for the whole transaction, so a tour
+logged in as admin read through python for the rest of its class because
+`setUpClass` had created a salesman.
+
+What the taint protects is the kernel's security snapshot, and the part of
+it that a `res.users` write can stale is keyed by uid: `groups_of(uid)` at
+the env, and the `user.` paths of a rule, which are rooted at the
+requesting user. So a user created or regrouped in a transaction can only
+mislead reads made AS that user. `res.users` now taints the written ids
+(`DIRTY_USERS`, keyed by the transaction's own cursor like the global
+taint, with the same commit-until-signal lifetime); `is_tainted(env)` is
+the one predicate the gate and the port ask, true for a global taint or
+for `env.uid` among the written users. A write that touches none of
+`_get_fields_invalidation` still taints nothing, as before. `res.groups`,
+`ir.rule`, `ir.model.access`, `res.company` and the rest keep the
+transaction-wide taint: group membership and rules are not keyed by who
+asks.
+
+Measured with the runtime contract rewritten to the new shape (a regrouped
+user's own read does not route, another user's does, a `res.groups` write
+stops everyone) and the differential:
+
+    /base,/mail,/test_access_rights  off 3 failed of 4866   on 3 failed of 4866   routed=3019
+      the same three names both legs, python's own and fixed in the fork since
+    web tours (shadow)               share 0.10 -> 0.12, divergences 0
+    harness/test_shims.py            SHIMS OK (67 tests)

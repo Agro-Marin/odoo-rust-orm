@@ -1401,6 +1401,50 @@ def test_taints_clear_on_commit_and_rollback() -> None:
     check("and forgets the cursor", cr in orm_shim.COMMITTED_DIRTY, False)
 
 
+def test_a_user_write_taints_only_that_user() -> None:
+    orm_shim = _shims()[1]
+
+    class Cr:
+        dbname = "probe"
+
+    class Env:
+        def __init__(self, cr, uid):
+            self.cr, self.uid = cr, uid
+
+    cr = Cr()
+    orm_shim._taint_users(cr, [7])
+    check("the written user is tainted", orm_shim.is_tainted(Env(cr, 7)), True)
+    check("another user is not", orm_shim.is_tainted(Env(cr, 2)), False)
+    check(
+        "the transaction itself carries no global taint",
+        cr in orm_shim.DIRTY_CRS,
+        False,
+    )
+    orm_shim._untaint(cr)
+    check("a rollback clears it", orm_shim.is_tainted(Env(cr, 7)), False)
+
+    orm_shim._taint_users(cr, [7])
+    orm_shim._untaint(cr, committed=True)
+    check("a commit keeps it", orm_shim.is_tainted(Env(cr, 7)), True)
+    orm_shim._taint_users(cr, [9])
+    orm_shim._untaint(cr)
+    check(
+        "a rollback after the commit keeps the committed user",
+        orm_shim.is_tainted(Env(cr, 7)),
+        True,
+    )
+    check("and drops the rolled-back one", orm_shim.is_tainted(Env(cr, 9)), False)
+    orm_shim._signalled("probe")
+    check("the registry's signal clears it", orm_shim.is_tainted(Env(cr, 7)), False)
+    check("and forgets the cursor", cr in orm_shim.COMMITTED_DIRTY_USERS, False)
+
+    orm_shim.DIRTY_CRS.add(cr)
+    check(
+        "a global taint still covers every user", orm_shim.is_tainted(Env(cr, 2)), True
+    )
+    orm_shim.DIRTY_CRS.discard(cr)
+
+
 def test_the_order_snapshot_is_the_exports_not_the_class_attribute() -> None:
     _db_shim, orm_shim = _shims()
     saved = dict(orm_shim.ORDERS)

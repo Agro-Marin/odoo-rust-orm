@@ -84,10 +84,6 @@ def reset_stats() -> None:
 
 
 class RustBackend:
-    #: RUSTORM_PORT_NATIVE names the armed set for a process (comma-separated;
-    #: empty disarms every method), RUSTORM_PORT_NO_EMPTY=1 keeps the port
-    #: from answering a reference search empty by construction -- kill
-    #: switches for a single method, without a rebuild or a conf change.
     NATIVE: frozenset = frozenset(
         m
         for m in os.environ.get(
@@ -153,11 +149,6 @@ class RustBackend:
 
     def search_raw(self, model, domain, offset, limit, order, check_access=True):
         if self._armed("search_raw", model):
-            # the shape check comes first: a dotted path's compile adds a
-            # join alias to the Query that python's read_group then orders
-            # by, and neither the kernel's fragment nor an empty verdict
-            # carries it (`missing FROM-clause entry for table
-            # "account_move_line__account_id"`, measured on account's tests)
             why = _raw_domain_out_of_shape(domain)
             if why:
                 _delegated("search_raw", why)
@@ -483,22 +474,17 @@ def _security_written(env):
     if rust_orm_shim._INSTALLED is None:
         return "the method shim is not installed, so security writes are not tracked"
     try:
-        if rust_orm_shim.taint_key(env.cr) in rust_orm_shim.DIRTY_CRS:
+        if rust_orm_shim.is_tainted(env):
             return "this transaction wrote a security model"
     except TypeError:
         return "the cursor cannot be tracked for security writes"
     return None
 
 
-#: Per cursor, the ids each model created in the open transaction. Cleared
-#: with the transaction (the method shim's untaint hook), never on a
-#: savepoint rollback: an id rolled back exists nowhere, so a search for
-#: references to it is empty either way.
 _CREATED = weakref.WeakKeyDictionary()
 
 
 def _cr_key(cr):
-    # the cursor that owns the transaction, as the shim's taint is keyed
     return getattr(cr, "_cursor", cr)
 
 
@@ -518,11 +504,6 @@ def forget_created(cr) -> None:
         _CREATED.pop(_cr_key(cr), None)
 
 
-#: Per registry: does the database carry a user-defined trigger on any
-#: table? A trigger can write table B on an insert into table A, which is
-#: the one path by which a row naming a fresh id could exist on a table
-#: this connection never wrote. Read once per process; True disables the
-#: short-circuit for that database. No database in this workspace has one.
 _TRIGGERS = weakref.WeakKeyDictionary()
 _NO_EMPTY = os.environ.get("RUSTORM_PORT_NO_EMPTY") == "1"
 
@@ -566,19 +547,6 @@ def _ids_of(value):
 
 
 def empty_by_construction(model, domain):
-    """A Query with no rows, when the domain can match none: it asks a
-    table this transaction has not written for rows that reference an id
-    this transaction created. No other transaction can see that id, so a
-    row naming it can only have been written here -- and none was.
-
-    The shape is deliberately narrow: an AND-only domain, one leaf on a
-    many2one to the created model (or the `model`/`res_id` pair), every id
-    in the leaf created here, the searched table absent from the
-    connection's written set, and no write the scanner could not read.
-    Anything else compiles as usual. A trigger writing one table on an
-    insert into another is the one path outside this reasoning, and Odoo
-    defines none.
-    """
     from odoo.orm.domain.ast import DomainCondition, DomainNot, DomainOr
 
     env = model.env
@@ -630,15 +598,6 @@ def empty_by_construction(model, domain):
         mine = created.get(target)
         if not mine or not ids <= mine:
             continue
-        # Exactly what python's search does before it queries: flush the
-        # dependencies of the domain. A pending write of `res_id` onto an
-        # existing row -- an attachment re-linked to the record just
-        # created -- or the lines of an invoice created with commands are
-        # in the cache and nowhere else until then; the flush runs the
-        # UPDATE or the INSERT, the connection records the table, and the
-        # check below refuses. Measured on account's readonly and export
-        # tests before this flush: an invoice grouped its lines by account
-        # over an empty verdict.
         from odoo.orm.runtime._search_flush import flush_search_dependencies
 
         flush_search_dependencies(model, domain, None)
@@ -647,9 +606,6 @@ def empty_by_construction(model, domain):
         from odoo.libs.sql.builder import SQL
         from odoo.tools.query import Query
 
-        # a real Query with a false WHERE, not an id-set one: python's
-        # read_group joins onto the query it gets, and an id-set query
-        # carries no FROM for the join
         query = Query(env, table, model._table_sql)
         query.add_where(SQL("FALSE"))
         return query
@@ -657,13 +613,6 @@ def empty_by_construction(model, domain):
 
 
 def _raw_domain_out_of_shape(domain):
-    """Why a domain as the caller wrote it cannot go to the kernel as the
-    WHERE of a python Query. A dotted path the kernel compiles with a JOIN
-    whose alias the Query never gets (`missing FROM-clause entry for table
-    "account_move_line__account_id"`, measured on account's readonly
-    tests), and a sub-domain (`any` / `not any`) the same way; python's
-    optimiser rewrites both into sub-selects before the optimised path ever
-    saw them, so the raw path refuses them and python optimises as before."""
     from odoo.orm.domain.ast import Domain, DomainCondition
 
     for node in _walk(domain):

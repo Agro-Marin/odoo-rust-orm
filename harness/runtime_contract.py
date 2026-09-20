@@ -669,15 +669,32 @@ try:
         assert answer == e["res.country"].search_read([("code", "=", "BE")], ["name"])
         shim.MODE = "on"
         me.write({"group_ids": [(4, e.ref("base.group_partner_manager").id)]})
-        assert e.cr in shim.DIRTY_CRS, "a group write did not taint the cursor"
+        assert e.cr not in shim.DIRTY_CRS, "a group write tainted the whole cursor"
+        as_them = odoo.api.Environment(e.cr, uid, {"lang": "en_US"})
+        assert shim.is_tainted(as_them), "a group write did not taint the written user"
+        assert not shim.is_tainted(e), "a group write tainted another user"
+        routed = shim.STATS["kernel"]
+        as_them["res.country"].search_read([("code", "=", "BE")], ["name"])
+        assert shim.STATS["kernel"] == routed, (
+            "a read AS the regrouped user routed on the stale snapshot"
+        )
+        e["res.country"].search_read([("code", "=", "BE")], ["name"])
+        assert shim.STATS["kernel"] == routed + 1, (
+            "a read as another user did not route after someone else's group write"
+        )
+        e["res.groups"].browse(e.ref("base.group_partner_manager").id).write(
+            {"comment": "runtime contract"}
+        )
+        assert e.cr in shim.DIRTY_CRS, "a res.groups write did not taint the cursor"
         routed = shim.STATS["kernel"]
         e["res.country"].search_read([("code", "=", "BE")], ["name"])
-        assert shim.STATS["kernel"] == routed, "a read after a group write routed"
+        assert shim.STATS["kernel"] == routed, "a read after a res.groups write routed"
         e.cr.rollback()
 finally:
     shim.MODE, shim.SAMPLE = previous_mode, previous_sample
 print(
-    "CONTRACT a res.users write taints only through Odoo's own invalidation fields",
+    "CONTRACT a res.users write taints only through Odoo's own invalidation fields, "
+    "and only the written user; every other security model taints the transaction",
     flush=True,
 )
 
