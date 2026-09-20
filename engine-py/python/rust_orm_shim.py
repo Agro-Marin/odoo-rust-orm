@@ -333,6 +333,19 @@ SECURITY_MODELS = frozenset(
     }
 )
 DIRTY_CRS = weakref.WeakSet()
+
+
+def taint_key(cr):
+    """The object a security taint is kept on: the cursor that owns the
+    transaction. A TestCursor is a per-request wrapper over one shared
+    cursor, so a request under test would otherwise carry none of the taint
+    the test body left, and the kernel would compile -- and cache, until the
+    watermark moves on a commit that never comes -- rules and groups written
+    in a transaction about to be rolled back. Measured 2026-09-20: 19 tests
+    failing only under routing, and only after other classes."""
+    return getattr(cr, "_cursor", cr)
+
+
 COMMITTED_DIRTY = weakref.WeakSet()
 
 
@@ -584,7 +597,7 @@ def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: AR
     if not _ensure_kernel(model.env):
         return _refuse("kernel not built")
     try:
-        if model.env.cr in DIRTY_CRS:
+        if taint_key(model.env.cr) in DIRTY_CRS:
             return _refuse("cursor wrote a security model")
     except TypeError:
         return _refuse("unhashable cursor")
@@ -1804,7 +1817,7 @@ def install():
                     else "create/unlink",
                 )
             try:
-                DIRTY_CRS.add(self.env.cr)
+                DIRTY_CRS.add(taint_key(self.env.cr))
             except TypeError:
                 _unhashable_cursor(self.env.cr, "a write to %s" % self._name)
 

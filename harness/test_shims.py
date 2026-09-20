@@ -3221,3 +3221,30 @@ def test_a_reference_search_on_an_unwritten_table_is_empty_by_construction() -> 
         _search_flush.flush_search_dependencies = original_flush
         backend.empty_by_construction = original_ebc
         rust_orm_shim._rust_conn = original
+
+
+def test_the_security_taint_is_keyed_by_the_transactions_own_cursor() -> None:
+    _shims()
+    import rust_orm_shim
+
+    class Cursor:
+        pass
+
+    class TestCursorLike:
+        def __init__(self, cursor):
+            self._cursor = cursor
+
+    shared = Cursor()
+    check("a plain cursor is its own key", rust_orm_shim.taint_key(shared), shared)
+    check(
+        "a wrapper's key is the cursor it wraps",
+        rust_orm_shim.taint_key(TestCursorLike(shared)),
+        shared,
+    )
+    rust_orm_shim.DIRTY_CRS.add(rust_orm_shim.taint_key(TestCursorLike(shared)))
+    check(
+        "a taint left through one wrapper is seen through another",
+        rust_orm_shim.taint_key(TestCursorLike(shared)) in rust_orm_shim.DIRTY_CRS,
+        True,
+    )
+    rust_orm_shim.DIRTY_CRS.discard(shared)

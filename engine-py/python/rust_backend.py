@@ -486,7 +486,7 @@ def _security_written(env):
     if rust_orm_shim._INSTALLED is None:
         return "the method shim is not installed, so security writes are not tracked"
     try:
-        if env.cr in rust_orm_shim.DIRTY_CRS:
+        if rust_orm_shim.taint_key(env.cr) in rust_orm_shim.DIRTY_CRS:
             return "this transaction wrote a security model"
     except TypeError:
         return "the cursor cannot be tracked for security writes"
@@ -500,12 +500,17 @@ def _security_written(env):
 _CREATED = weakref.WeakKeyDictionary()
 
 
+def _cr_key(cr):
+    # the cursor that owns the transaction, as the shim's taint is keyed
+    return getattr(cr, "_cursor", cr)
+
+
 def note_created(model, ids):
     env = getattr(model, "env", None)
     if not ids or env is None:
         return
     try:
-        created = _CREATED.setdefault(env.cr, {})
+        created = _CREATED.setdefault(_cr_key(env.cr), {})
     except TypeError:
         return
     created.setdefault(model._name, set()).update(ids)
@@ -513,7 +518,7 @@ def note_created(model, ids):
 
 def forget_created(cr) -> None:
     with contextlib.suppress(TypeError):
-        _CREATED.pop(cr, None)
+        _CREATED.pop(_cr_key(cr), None)
 
 
 #: Per registry: does the database carry a user-defined trigger on any
@@ -581,7 +586,7 @@ def empty_by_construction(model, domain):
 
     env = model.env
     try:
-        created = _CREATED.get(env.cr)
+        created = _CREATED.get(_cr_key(env.cr))
     except TypeError:
         return None
     if not created:
