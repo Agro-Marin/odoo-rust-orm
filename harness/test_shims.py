@@ -1401,6 +1401,54 @@ def test_taints_clear_on_commit_and_rollback() -> None:
     check("and forgets the cursor", cr in orm_shim.COMMITTED_DIRTY, False)
 
 
+def test_a_write_touching_nothing_the_kernel_reads_is_harmless() -> None:
+    orm_shim = _shims()[1]
+    harmless = orm_shim._harmless_user_write
+
+    class Lang:
+        _name = "res.lang"
+
+    class Users:
+        _name = "res.users"
+
+        @staticmethod
+        def _get_fields_invalidation():
+            return {"group_ids", "active", "company_id"}
+
+    class Rule:
+        _name = "ir.rule"
+
+    check(
+        "a lang's date format is not read by the kernel",
+        harmless(Lang, {"date_format": "%d"}),
+        True,
+    )
+    check("its code is", harmless(Lang, {"code": "fr_FR"}), False)
+    check("its week start is", harmless(Lang, {"week_start": "1"}), False)
+    check("archiving it is", harmless(Lang, {"active": False}), False)
+    check("a user's signature is not", harmless(Users, {"signature": "x"}), True)
+    check("a user's groups are", harmless(Users, {"group_ids": []}), False)
+    check("a rule is read whole", harmless(Rule, {"name": "x"}), False)
+
+    class Company:
+        _name = "res.company"
+
+    class Field:
+        _name = "ir.model.fields"
+
+    check(
+        "a company's mail alias domain is not read",
+        harmless(Company, {"alias_domain_id": 1}),
+        True,
+    )
+    check("its membership is", harmless(Company, {"user_ids": []}), False)
+    check(
+        "a field's label is not read", harmless(Field, {"field_description": "x"}), True
+    )
+    check("its storage is", harmless(Field, {"store": True}), False)
+    check("a create or unlink is never harmless", harmless(Lang, None), False)
+
+
 def test_a_user_write_taints_only_that_user() -> None:
     orm_shim = _shims()[1]
 

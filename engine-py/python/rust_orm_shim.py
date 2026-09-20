@@ -346,19 +346,55 @@ def _taint_users(cr, uids) -> None:
     DIRTY_USERS.setdefault(key, set()).update(uids)
 
 
+#: The columns the kernel's snapshot reads from a security model whose other
+#: columns it never looks at: a write touching none of them cannot stale
+#: anything the kernel holds. res.lang is read as `code, week_start` of the
+#: active rows (registry.rs); res.users answers through its own invalidation
+#: fields. A model absent here taints on every write.
+KERNEL_READ_FIELDS = {
+    "res.lang": frozenset({"code", "week_start", "active"}),
+    # membership comes from res_company_users_rel joined on c.active; a rule's
+    # path through a company record is queried at evaluation time
+    "res.company": frozenset({"user_ids", "active"}),
+    # the columns registry.rs selects from ir_model_fields
+    "ir.model.fields": frozenset(
+        {
+            "model",
+            "model_id",
+            "name",
+            "ttype",
+            "relation",
+            "relation_table",
+            "column1",
+            "column2",
+            "relation_field",
+            "company_dependent",
+            "store",
+            "related",
+        }
+    ),
+}
+
+
+def _kernel_read_fields(records):
+    if records._name == "res.users":
+        invalidating = getattr(records, "_get_fields_invalidation", None)
+        return set(invalidating()) if invalidating is not None else None
+    fields = KERNEL_READ_FIELDS.get(records._name)
+    return set(fields) if fields is not None else None
+
+
 def _harmless_user_write(records, vals) -> bool:
-    if records._name != "res.users" or not isinstance(vals, dict) or not vals:
+    if not isinstance(vals, dict) or not vals:
         return False
-    invalidating = getattr(records, "_get_fields_invalidation", None)
-    if invalidating is None:
-        return False
-    touched = set(vals) & set(invalidating())
-    if touched:
+    watched = _kernel_read_fields(records)
+    if watched is None or set(vals) & watched:
         return False
     if _gate_logger.isEnabledFor(logging.DEBUG):
         _gate_logger.debug(
-            "a write to res.users (%s) touches none of its invalidation fields; "
+            "a write to %s (%s) touches nothing the kernel reads from it; "
             "the cursor stays routable",
+            records._name,
             ", ".join(sorted(vals)),
         )
     return True

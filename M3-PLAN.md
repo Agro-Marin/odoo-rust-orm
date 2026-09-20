@@ -2088,3 +2088,21 @@ stops everyone) and the differential:
       the same three names both legs, python's own and fixed in the fork since
     web tours (shadow)               share 0.10 -> 0.12, divergences 0
     harness/test_shims.py            SHIMS OK (67 tests)
+
+### A write touching nothing the kernel reads from a security model does not taint (2026-09-20)
+
+With the user taint narrowed, the tour lane's remaining "wrote a security
+model" refusals were traced with the gate logger at DEBUG: `res.company`
+writes of `alias_domain_id`, `email`, `name` and `country_id`, `res.lang`'s
+`date_format` and `time_format`, `ir.model.fields`' `field_description` --
+and the kernel reads none of those columns. `registry.rs` takes `code,
+week_start` of the active languages, company membership through
+`res_company_users_rel` joined on `c.active`, and eleven named columns of
+`ir_model_fields`; a rule's path through a company record is queried at
+evaluation time. `res.users`' harmless-write rule is now a table,
+`KERNEL_READ_FIELDS`, of the columns the kernel reads per model: a write
+touching none of them keeps the transaction routable, a create or unlink
+always taints, and a model absent from the table taints on every write.
+
+    tours (shadow)  share 0.12 -> 0.15, routed 110, verified 110, diff 0
+    what still taints them: res.groups.implied_ids, a res.company create, a res.lang archive -- all real
