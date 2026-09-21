@@ -6488,7 +6488,7 @@
  },
  {
   "id": "ch_hier_dotted",
-  "model": "res.partner.bank",
+  "model": "res.partner.bank.account",
   "method": "search_count",
   "domain": [
    [
