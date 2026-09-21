@@ -493,14 +493,40 @@ def _arm_port(engine_py, orm_shim, config, db_name) -> None:
     _STATE["port"] = port
 
 
+CONFIG_KEYS = (
+    "rust_engine_breaker",
+    "rust_engine_capture",
+    "rust_engine_db",
+    "rust_engine_except",
+    "rust_engine_mode",
+    "rust_engine_only",
+    "rust_engine_port",
+    "rust_engine_report_seconds",
+    "rust_engine_threads",
+    "rust_engine_verify_sample",
+)
+
+
+def _routed_database(config):
+    explicit = config.get("rust_engine_db")
+    if explicit:
+        return explicit
+    served = config.get("db_name") or []
+    if isinstance(served, str):
+        served = [name.strip() for name in served.split(",") if name.strip()]
+    return served[0] if len(served) == 1 else None
+
+
 def start() -> None:
     from odoo.tools import config
 
     _open_trace_level()
-    db_name = config.get("rust_engine_db")
+    config.claim_file_options(*CONFIG_KEYS)
+    db_name = _routed_database(config)
     if not db_name:
         _logger.info(
-            "rust_engine loaded but no rust_engine_db is configured; doing nothing"
+            "rust_engine loaded but no rust_engine_db is configured and the "
+            "server does not name exactly one database; doing nothing"
         )
         return
 

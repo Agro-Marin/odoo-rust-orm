@@ -2299,7 +2299,10 @@ def test_every_kernel_failure_path_reports_somewhere() -> None:
         for path in sorted((root / rel).rglob("*.rs")):
             if path.name == "error.rs" or "/bin/" in str(path):
                 continue
-            for n, line in enumerate(path.read_text().splitlines(), 1):
+            lines = path.read_text().splitlines()
+            for n, line in enumerate(lines, 1):
+                if line == "#[cfg(test)]" and lines[n].startswith("mod "):
+                    break
                 if pattern.search(line) and not line.lstrip().startswith("//"):
                     found.append("%s:%d" % (path.relative_to(root), n))
     known = 14
@@ -2308,6 +2311,29 @@ def test_every_kernel_failure_path_reports_somewhere() -> None:
         len(found),
         known,
     )
+
+
+def test_the_routed_database_is_the_named_one_or_the_only_one_served() -> None:
+    routed = _addon()._routed_database
+    for name, config, want in (
+        ("rust_engine_db wins", {"rust_engine_db": "a", "db_name": ["b"]}, "a"),
+        ("the one -d database", {"db_name": ["b"]}, "b"),
+        ("a conf-file string", {"db_name": "b"}, "b"),
+        ("several databases", {"db_name": ["b", "c"]}, None),
+        ("no database", {"db_name": []}, None),
+        ("no key at all", {}, None),
+    ):
+        check("routed database: %s" % name, routed(config), want)
+
+
+def test_the_addon_claims_every_config_key_it_reads() -> None:
+    import re
+
+    addon = _addon()
+    source = pathlib.Path(addon.__file__).read_text(encoding="utf-8")
+    read = set(re.findall(r'"(rust_engine_[a-z_]+)"', source))
+    check("config keys read but not claimed", sorted(read - set(addon.CONFIG_KEYS)), [])
+    check("config keys claimed but not read", sorted(set(addon.CONFIG_KEYS) - read), [])
 
 
 def _backend():
