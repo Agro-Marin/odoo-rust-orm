@@ -177,7 +177,7 @@ def main(env) -> None:
     payload = {
         "db": env.cr.dbname,
         "data_fingerprint": data_fingerprint(env, corpus_tables(env, corpus)),
-        "has_unaccent": bool(env.registry.has_unaccent),
+        "has_unaccent": bool(env.registry.unaccent_status),
         "cases": results,
     }
     with pathlib.Path(EXPECTED).open("w", encoding="utf-8") as f:
