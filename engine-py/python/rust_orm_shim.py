@@ -313,8 +313,7 @@ def _verified_baseline(model, method, kernel_result, fn, *args, **kwargs):
 
 SECURITY_MODELS = frozenset(
     {
-        "ir.rule",
-        "ir.model.access",
+        "ir.access",
         "res.groups",
         "res.users",
         "ir.default",
@@ -609,7 +608,7 @@ def _rules_read_through_x2many(model, fields):
     }
     if not x2many:
         return None
-    domain = model.env["ir.rule"]._get_domain_accessible_records(model._name, "read")
+    domain = model._access_domain("read")
     return next(
         (
             head
@@ -775,7 +774,7 @@ def _read_dependencies(model, domain, order, fields):
     env = model.env
     dom = Domain(domain or [])
     if not env.su:
-        dom &= env["ir.rule"]._get_domain_accessible_records(model._name, "read")
+        dom &= model._access_domain("read")
     collector = _DependencyCollector()
     collector.collect_domain(model, dom)
     collector.collect_order(model, order or model._order)
@@ -984,7 +983,7 @@ def _rules_need_python(env, name):
     key = _rules_key(env, name)
     needed = _RULES_NEED_PYTHON.get(key)
     if needed is None:
-        domain = env["ir.rule"]._get_domain_accessible_records(name, "read")
+        domain = env[name]._access_domain("read")
         needed = not domain.is_true() and _domain_needs_python_search(env[name], domain)
         if len(_RULES_NEED_PYTHON) >= 4096:
             _RULES_NEED_PYTHON.clear()
@@ -1082,7 +1081,7 @@ def _resolved_rules(model, kw, encode):
         try:
             if not _rules_need_python(env, name):
                 continue
-            domain = env["ir.rule"]._get_domain_accessible_records(name, "read")
+            domain = env[name]._access_domain("read")
         except Exception as exc:
             raise KernelRefused(
                 "computing the record rules on %s raised %s"
