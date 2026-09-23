@@ -205,6 +205,10 @@ def export_registry(reg):
             "rec_name": _s(m._rec_name),
             "parent_name": _s(m._parent_name),
             "parent_store": bool(getattr(m, "_parent_store", False)),
+            # a model may declare that its delegates' rules do not govern it
+            # (res.company: the tenant's row is the tenant's, the party's rules
+            # are the party's), and then the rule walk must not climb
+            "inherits_rules": bool(getattr(m, "_inherits_rules", True)),
             "active_name": _s(getattr(m, "_active_name", None)),
             "display_name_column": (
                 list(col) if isinstance(col := getattr(m, "_display_name_column", None), tuple)

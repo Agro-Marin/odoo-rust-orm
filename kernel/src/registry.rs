@@ -243,6 +243,8 @@ pub struct Model {
     pub parent_name: Option<String>,
     pub parent_store: bool,
 
+    pub inherits_rules: bool,
+
     pub read_path_pure: bool,
 
     pub impure_read_methods: Vec<String>,
@@ -865,6 +867,7 @@ impl Registry {
                     rec_name: None,
                     parent_name: None,
                     parent_store: false,
+                    inherits_rules: true,
                     active_name: None,
                     display_name_column: Vec::new(),
                     display_name_guard: None,
@@ -1090,6 +1093,7 @@ impl Registry {
                     rec_name: em["rec_name"].as_str().map(str::to_string),
                     parent_name: em["parent_name"].as_str().map(str::to_string),
                     parent_store: em["parent_store"].as_bool().unwrap_or(false),
+                    inherits_rules: em["inherits_rules"].as_bool().unwrap_or(true),
                     active_name: em["active_name"].as_str().map(str::to_string),
                     display_name_column: em["display_name_column"]
                         .as_array()

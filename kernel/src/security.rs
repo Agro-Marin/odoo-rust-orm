@@ -675,7 +675,11 @@ async fn rules_domain_inner(
     let dynamic = registry.dynamic();
 
     let mut inherited: Vec<Json> = Vec::new();
+    let climbs = registry.get(model).map_or(true, |m| m.inherits_rules);
     for (parent, via) in registry.inherits_of(model) {
+        if !climbs {
+            break;
+        }
         let field = registry
             .get(model)
             .ok()

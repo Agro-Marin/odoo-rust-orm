@@ -91,6 +91,7 @@ fn model(name: &str, order: &str, fields: Vec<Field>) -> Model {
         rec_name: Some("name".into()),
         parent_name: None,
         parent_store: false,
+        inherits_rules: true,
         active_name: None,
         display_name_column: Vec::new(),
         display_name_guard: None,
