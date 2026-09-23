@@ -456,6 +456,50 @@ def test_breaker_counts_only_unexpected_errors() -> None:
     orm_shim.STATS["errors"].pop("probe.breaker", None)
 
 
+def test_an_error_python_cannot_answer_is_raised_not_fallen_back_from() -> None:
+    import psycopg
+
+    from odoo.exceptions import UserError
+
+    orm_shim = _shims()[1]
+
+    class Rust:
+        in_failed_transaction = False
+
+    class Env:
+        def __init__(self, rust):
+            self.cr = type("Cr", (), {"_cnx": type("Cnx", (), {"_rust": rust})()})()
+
+    def model(failed):
+        rust = Rust()
+        rust.in_failed_transaction = failed
+        return type("M", (), {"_name": "probe.caller_errors", "env": Env(rust)})()
+
+    def raised(m, e):
+        try:
+            orm_shim._record_error(m, e)
+        except type(e) as got:
+            return got is e
+        return False
+
+    before = orm_shim.STATS["fallback_error"]
+    check(
+        "a database error on a failed transaction is the caller's",
+        raised(model(True), psycopg.errors.CheckViolation("row violates a check")),
+        True,
+    )
+    check("a UserError is the caller's", raised(model(False), UserError("no")), True)
+    check("neither is counted as a fallback", orm_shim.STATS["fallback_error"] - before, 0)
+    check(
+        "a database error the kernel's savepoint rolled back still falls back",
+        raised(model(False), psycopg.errors.SyntaxError("kernel SQL")),
+        False,
+    )
+    check("that one is a fallback", orm_shim.STATS["fallback_error"] - before, 1)
+    orm_shim.STATS["errors_by_model"].pop("probe.caller_errors", None)
+    orm_shim.STATS["errors"].pop("probe.caller_errors", None)
+
+
 def test_float8_sums_agree_up_to_summation_order_and_nothing_else() -> None:
     orm_shim = _shims()[1]
 

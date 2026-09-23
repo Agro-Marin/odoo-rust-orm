@@ -821,14 +821,29 @@ def _flush_if_needed(env, model, domain=None, order=None, fields=None) -> bool |
         )
         return True
     except Exception as e:
-        if _flush_error_is_the_callers(e):
+        if _error_is_the_callers(e):
             raise
         STATS["fallback_flush"] += 1
         _logger.info("not routing: the flush the kernel needs raised %s", e)
         return False
 
 
-def _flush_error_is_the_callers(e) -> bool:
+def _python_cannot_answer(model, e) -> bool:
+    import psycopg
+
+    from odoo.exceptions import UserError
+
+    if isinstance(e, UserError):
+        return True
+    if not isinstance(e, psycopg.Error):
+        return False
+    try:
+        return bool(_rust_conn(model.env).in_failed_transaction)
+    except Exception:
+        return True
+
+
+def _error_is_the_callers(e) -> bool:
     import psycopg
 
     from odoo.exceptions import UserError
@@ -1264,6 +1279,8 @@ def _warm_cache(model, records) -> None:
 
 
 def _record_error(model, e) -> None:
+    if _python_cannot_answer(model, e):
+        raise e
     unexpected = not isinstance(e, KernelRefused)
     if isinstance(e, KernelRegistryStale):
         STATS["registry_stale"] = STATS.get("registry_stale", 0) + 1
