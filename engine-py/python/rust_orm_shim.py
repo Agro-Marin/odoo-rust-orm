@@ -1661,11 +1661,24 @@ def _name_search_clean(model):
     return not reason or _refuse(reason)
 
 
+def _signed_as(new, orig):
+    # a patch replaces the method on its class for every registry in the
+    # process, so an override anywhere is read against it: it must show the
+    # original's signature, annotations and defaults included
+    import annotationlib
+    import inspect
+
+    new.__signature__ = inspect.signature(
+        orig, annotation_format=annotationlib.Format.FORWARDREF
+    )
+    return new
+
+
 def _restamp(new, orig):
     for name, value in vars(orig).items():
         if name in STAMPS or name.startswith("_api"):
             setattr(new, name, value)
-    return new
+    return _signed_as(new, orig)
 
 
 _INSTALLED = None
@@ -1840,7 +1853,7 @@ def install():
         domain,
         groupby=(),
         aggregates=(),
-        having=(),
+        having=None,
         offset=0,
         limit=None,
         order=None,
@@ -2193,7 +2206,9 @@ def install():
         from odoo import api as _api
         from odoo.tools.cache_version import versioned as _versioned
 
-        WebBase.web_search_read = _api.model(_api.readonly(_versioned(web_search_read)))
+        WebBase.web_search_read = _signed_as(
+            _api.model(_api.readonly(_versioned(web_search_read))), orig_web_search_read
+        )
 
         orig_web_read = WebBase.web_read
 
@@ -2266,7 +2281,9 @@ def install():
 
         from odoo.tools.cache_version import versioned_envelope as _versioned_envelope
 
-        WebBase.web_read = _api.readonly(_versioned_envelope(web_read))
+        WebBase.web_read = _signed_as(
+            _api.readonly(_versioned_envelope(web_read)), orig_web_read
+        )
         _WEB_METHODS["web_read"] = WebBase.web_read
 
         from odoo.addons.web.models import web_read_group as _wrg_mod
@@ -2572,7 +2589,9 @@ def install():
                 order=order,
             )
 
-        GroupBase.formatted_read_group = _api.model(_api.readonly(formatted_read_group))
+        GroupBase.formatted_read_group = _signed_as(
+            _api.model(_api.readonly(formatted_read_group)), orig_formatted_read_group
+        )
 
     orig_read = _BASE_METHODS["read"]
 

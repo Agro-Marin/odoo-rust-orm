@@ -1959,6 +1959,28 @@ def test_install_is_idempotent_and_keeps_stamps() -> None:
         check("%s keeps api.model" % name, getattr(BaseModel, name)._api_model, True)
         check("%s keeps api.readonly" % name, getattr(BaseModel, name)._readonly, True)
     check("create keeps api.model", BaseModel.create._api_model, True)
+    import annotationlib
+    import inspect
+
+    def signature(method):
+        return inspect.signature(method, annotation_format=annotationlib.Format.FORWARDREF)
+
+    originals = {
+        "search_read": first["orig_search_read"],
+        "search_count": first["orig_search_count"],
+        "_read_group": first["orig_read_group"],
+    }
+    for name in ("create", "write", "unlink", "read", "name_search"):
+        originals[name] = next(
+            vars(cls)[name] for cls in BaseModel.__mro__[1:] if name in vars(cls)
+        )
+    for name, original in originals.items():
+        check(
+            "%s shows the signature it replaces, for every override to be read against"
+            % name,
+            signature(getattr(BaseModel, name)),
+            signature(original),
+        )
     check("name_search keeps api.model", BaseModel.name_search._api_model, True)
     check("name_search keeps api.readonly", BaseModel.name_search._readonly, True)
     from odoo.fields import Domain
