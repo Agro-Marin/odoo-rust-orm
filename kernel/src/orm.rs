@@ -637,7 +637,10 @@ impl<'a> Orm<'a> {
         };
         let t_rules = std::time::Instant::now();
 
-        let ctx = self.ctx(env).for_rules();
+        let mut ctx = self.ctx(env).for_rules();
+        // the rules record their own reads, per model, in the RuleSet; the
+        // request's set is left to what the request itself compiles
+        ctx.touched = Default::default();
         let ruled: std::collections::HashSet<String> =
             env.dynamic.security.rules.keys().cloned().collect();
         let mut rules = match &base {
@@ -660,6 +663,9 @@ impl<'a> Orm<'a> {
             let Some(model) = self.registry.lookup(&model_name) else {
                 continue;
             };
+            if let Ok(mut touched) = ctx.touched.lock() {
+                touched.clear();
+            }
             let built =
                 match security::rules_domain(self.registry, &self.db, &model_name, &user).await {
                     Ok(Some(domain_json)) => match domain::parse(&domain_json)
@@ -688,6 +694,12 @@ impl<'a> Orm<'a> {
                             pending.push(co);
                         }
                     }
+                    let reads = ctx
+                        .touched
+                        .lock()
+                        .map(|touched| touched.iter().cloned().collect())
+                        .unwrap_or_default();
+                    rules.note_reads(model_name.clone(), reads);
                     rules.insert(model_name, node)
                 }
                 Ok(None) => {
@@ -988,6 +1000,9 @@ impl<'a> Orm<'a> {
                     let Some(parent_link) = parent_link else {
                         refuse!("{} has no parent field for {op}", target_model.name);
                     };
+                    // the walk reads the parent link, so a pending write to it
+                    // must reach the database first, as Python flushes it
+                    ctx.touch(&target_model.name, &parent_link);
                     let down = op == "child_of";
                     let key = (
                         target_model.name.clone(),

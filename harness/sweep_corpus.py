@@ -69,7 +69,7 @@ def seed(env):
     if not user.active:
         user.active = True
 
-    Rule = su["ir.rule"]
+    Rule = su["ir.access"]
     IM = su["ir.model"]
     for name, model, dom in (
         (
@@ -88,12 +88,11 @@ def seed(env):
                 {
                     "name": name,
                     "model_id": IM._get_id(model),
-                    "domain_force": dom,
-                    "groups": [(6, 0, [group.id])],
-                    "perm_read": True,
-                    "perm_write": False,
-                    "perm_create": False,
-                    "perm_unlink": False,
+                    "group_id": group.id,
+                    "kind": "guard",
+                    "guard_scope": "members",
+                    "operation": "r",
+                    "domain": dom,
                 }
             )
     Template = su["mail.template"]
@@ -281,19 +280,19 @@ def seed_grouped_user(su, IM, Rule):
     for name, model, group, composition, dom in rules:
         if Rule.search([("name", "=", name)]):
             continue
-        vals = {
-            "name": name,
-            "model_id": IM._get_id(model),
-            "domain_force": dom,
-            "groups": [(6, 0, [group.id])],
-            "perm_read": True,
-            "perm_write": False,
-            "perm_create": False,
-            "perm_unlink": False,
-        }
-        if "composition" in Rule._fields:
-            vals["composition"] = composition
-        Rule.create(vals)
+        # a grant widens what the group reads, OR-ed with its other
+        # permissions; a restriction binds the group's members, AND-ed
+        Rule.create(
+            {
+                "name": name,
+                "model_id": IM._get_id(model),
+                "group_id": group.id,
+                "kind": "permission" if composition == "grant" else "guard",
+                "guard_scope": "members",
+                "operation": "r",
+                "domain": dom,
+            }
+        )
     Users = su["res.users"].with_context(active_test=False)
     user = Users.search([("login", "=", "rustorm_sweep_grouped")])
     if not user:

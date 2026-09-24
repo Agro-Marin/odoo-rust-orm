@@ -573,6 +573,9 @@ impl<'a> Compiler<'a> {
     }
 
     pub fn compile_rules(&self, node: &Node) -> Result<Condition> {
+        for (model, field) in self.rules.reads_of(&self.model.name) {
+            self.ctx.touch(model, field);
+        }
         self.as_sudo().compile(node)
     }
 
@@ -1486,6 +1489,14 @@ impl<'a> Compiler<'a> {
     }
 
     pub fn many2one_hop_join(&self, field: &Field) -> Result<(&'a Model, String, Condition)> {
+        if field.company_dependent {
+            refuse!(
+                "grouping through {}.{} joins a company-dependent many2one, a jsonb \
+                 column keyed by company that Python unwraps with `_field_to_sql`",
+                self.model.name,
+                field.name
+            );
+        }
         if field.ttype != FieldType::Many2one || !field.has_column {
             refuse!(
                 "grouping through {}.{} needs a stored many2one; Python traverses \

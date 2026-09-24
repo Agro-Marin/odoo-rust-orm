@@ -245,6 +245,8 @@ pub struct Model {
 
     pub inherits_rules: bool,
 
+    pub table_inheritance_root: Option<String>,
+
     pub read_path_pure: bool,
 
     pub impure_read_methods: Vec<String>,
@@ -264,6 +266,12 @@ pub struct Model {
     pub display_name_access_pure: bool,
 
     pub check_access_pure: bool,
+
+    /// False when the class adds to its ir.access rows in Python
+    /// (`_access_guard`): the kernel compiles only the rows, so it refuses
+    /// the model wherever its access would be applied. A registry read from
+    /// the database alone cannot see Python and takes the rows as the whole.
+    pub access_guard_pure: bool,
 
     pub active_name: Option<String>,
 
@@ -323,11 +331,66 @@ pub struct Security {
 
     pub user_groups: HashMap<i32, Vec<i32>>,
 
-    pub access: HashMap<String, Vec<Option<i32>>>,
+    /// The groups holding a read permission on the model whose domain is not
+    /// literally FALSE: holding one is what `_access_allowed` asks.
+    pub access: HashMap<String, Vec<i32>>,
+
+    /// Read guards whose domain is literally FALSE: `None` binds everyone,
+    /// `Some(g)` the members of `g`. Bound by one, the model is refused.
+    pub denying_guards: HashMap<String, Vec<Option<i32>>>,
+
+    /// The delegated parents whose read access the model's access needs.
+    pub parents: HashMap<String, Vec<String>>,
 
     pub rules: HashMap<String, Vec<Rule>>,
 
     pub user_companies: HashMap<i32, Vec<i32>>,
+}
+
+/// Which rows beyond its own govern a model's read access: a model under a
+/// table-inheritance root is also bound by the rows of the models owning the
+/// root's table, and a delegating model by its parents' access.
+#[derive(Debug, Default, Clone)]
+pub struct AccessTopology {
+    pub bound_by: HashMap<String, Vec<String>>,
+    pub parents: HashMap<String, Vec<String>>,
+}
+
+impl AccessTopology {
+    pub fn of(
+        models: &HashMap<String, Model>,
+        inherits: &HashMap<String, Vec<(String, String)>>,
+    ) -> Self {
+        let mut bound_by: HashMap<String, Vec<String>> = HashMap::new();
+        for (name, model) in models {
+            let Some(root) = model.table_inheritance_root.as_deref() else {
+                continue;
+            };
+            if model.table == root {
+                continue;
+            }
+            let mut owners: Vec<String> = models
+                .values()
+                .filter(|other| other.table == root && other.name != *name)
+                .map(|other| other.name.clone())
+                .collect();
+            owners.sort();
+            if !owners.is_empty() {
+                bound_by.insert(name.clone(), owners);
+            }
+        }
+        let parents = inherits
+            .iter()
+            .filter(|(child, _)| models.get(*child).is_none_or(|m| m.inherits_rules))
+            .map(|(child, links)| {
+                (
+                    child.clone(),
+                    links.iter().map(|(parent, _)| parent.clone()).collect(),
+                )
+            })
+            .collect();
+        Self { bound_by, parents }
+    }
 }
 
 impl Security {
@@ -612,7 +675,11 @@ impl Registry {
     ) -> Result<std::sync::Arc<Dynamic>> {
         let t0 = std::time::Instant::now();
         let fresh = Dynamic {
-            security: Self::load_security(client).await?,
+            security: Self::load_security(
+                client,
+                &AccessTopology::of(&self.models, &self.inherits),
+            )
+            .await?,
             defaults: Self::load_defaults(client).await?,
             langs: Self::load_langs(client).await?,
             week_start: Self::load_week_starts(client).await?,
@@ -868,6 +935,7 @@ impl Registry {
                     parent_name: None,
                     parent_store: false,
                     inherits_rules: true,
+                    table_inheritance_root: None,
                     active_name: None,
                     display_name_column: Vec::new(),
                     display_name_guard: None,
@@ -880,6 +948,7 @@ impl Registry {
                     read_group_pure: false,
                     display_name_access_pure: false,
                     check_access_pure: false,
+                    access_guard_pure: true,
                     name_search_fields: None,
                     display_name_search_exact: Vec::new(),
                 },
@@ -1094,6 +1163,10 @@ impl Registry {
                     parent_name: em["parent_name"].as_str().map(str::to_string),
                     parent_store: em["parent_store"].as_bool().unwrap_or(false),
                     inherits_rules: em["inherits_rules"].as_bool().unwrap_or(true),
+                    table_inheritance_root: em["table_inheritance_root"]
+                        .as_str()
+                        .filter(|root| !root.is_empty())
+                        .map(str::to_string),
                     active_name: em["active_name"].as_str().map(str::to_string),
                     display_name_column: em["display_name_column"]
                         .as_array()
@@ -1135,6 +1208,7 @@ impl Registry {
                         .as_bool()
                         .unwrap_or(false),
                     check_access_pure: em["check_access_pure"].as_bool().unwrap_or(false),
+                    access_guard_pure: em["access_guard_pure"].as_bool().unwrap_or(false),
                 },
             );
         }
@@ -1282,7 +1356,7 @@ impl Registry {
         let inherits = Self::load_inherits(client).await?;
         let dynamic = Dynamic {
             defaults: Self::load_defaults(client).await?,
-            security: Self::load_security(client).await?,
+            security: Self::load_security(client, &AccessTopology::of(&models, &inherits)).await?,
             signals,
             langs: Vec::new(),
             week_start: Self::load_week_starts(client).await?,
@@ -1450,7 +1524,7 @@ impl Registry {
         Ok(defaults)
     }
 
-    pub async fn load_security(client: &Client) -> Result<Security> {
+    pub async fn load_security(client: &Client, topology: &AccessTopology) -> Result<Security> {
         let t0 = std::time::Instant::now();
         let mut security = Security::default();
         for row in client
@@ -1473,76 +1547,102 @@ impl Registry {
                 .or_default()
                 .push(row.get(1));
         }
+        let mut rows = 0usize;
         for row in client
             .query(
-                "SELECT m.model, a.group_id FROM ir_model_access a
-                 JOIN ir_model m ON a.model_id = m.id
-                 WHERE a.active AND a.perm_read",
+                "SELECT a.id, m.model, a.group_id, a.kind = 'guard',
+                        a.guard_scope = 'members', a.domain
+                   FROM ir_access a
+                   JOIN ir_model m ON a.model_id = m.id
+                  WHERE a.active AND a.for_read
+                  ORDER BY a.id",
                 &[],
             )
             .await?
         {
-            security
-                .access
-                .entry(row.get(0))
-                .or_default()
-                .push(row.get(1));
-        }
-        let mut rule_groups: HashMap<i32, Vec<i32>> = HashMap::new();
-        for row in client
-            .query("SELECT rule_group_id, group_id FROM rule_group_rel", &[])
-            .await?
-        {
-            rule_groups.entry(row.get(0)).or_default().push(row.get(1));
-        }
-        let has_composition = client
-            .query_opt(
-                "SELECT 1 FROM pg_attribute
-                 WHERE attrelid = 'ir_rule'::regclass
-                   AND attname = 'composition' AND NOT attisdropped",
-                &[],
-            )
-            .await?
-            .is_some();
-        let rules_sql = if has_composition {
-            "SELECT r.id, m.model, r.domain_force, \
-                    COALESCE(r.composition = 'restrict', FALSE) \
-             FROM ir_rule r JOIN ir_model m ON r.model_id = m.id \
-             WHERE r.active AND r.perm_read ORDER BY r.id"
-        } else {
-            "SELECT r.id, m.model, r.domain_force, FALSE \
-             FROM ir_rule r JOIN ir_model m ON r.model_id = m.id \
-             WHERE r.active AND r.perm_read ORDER BY r.id"
-        };
-        for row in client.query(rules_sql, &[]).await? {
-            let rid: i32 = row.get(0);
+            rows += 1;
+            let aid: i32 = row.get(0);
             let model: String = row.get(1);
+            let group: i32 = row.get(2);
+            let guard: bool = row.get(3);
+            let members_only: bool = row.get(4);
             let domain_force = row
-                .get::<_, Option<String>>(2)
+                .get::<_, Option<String>>(5)
                 .filter(|d| !d.trim().is_empty());
+            let never = domain_force.as_deref().is_some_and(is_literally_false);
+            if guard {
+                if never {
+                    security
+                        .denying_guards
+                        .entry(model.clone())
+                        .or_default()
+                        .push(members_only.then_some(group));
+                }
+            } else if !never {
+                security
+                    .access
+                    .entry(model.clone())
+                    .or_default()
+                    .push(group);
+            }
             let parsed = domain_force.as_deref().map(|src| {
-                crate::security::parse_py(src).inspect(|_| {
-                    tracing::trace!(
-                        target: "odoo_kernel::rules",
-                        rule = rid, model = %model, groups = rule_groups.get(&rid).map_or(0, Vec::len),
-                        "parsed a record rule's domain_force"
-                    );
-                }).map_err(|e| {
-                    tracing::warn!(
-                        target: "odoo_kernel::rules",
-                        rule = rid, model = %model, reason = %format!("{e:#}"),
-                        "record rule domain cannot be parsed; its model is refused"
-                    );
-                    format!("{e:#}")
-                })
+                crate::security::parse_py(src)
+                    .inspect(|_| {
+                        tracing::trace!(
+                            target: "odoo_kernel::rules",
+                            access = aid, model = %model, guard, members_only,
+                            "parsed an access row's domain"
+                        );
+                    })
+                    .map_err(|e| {
+                        tracing::warn!(
+                            target: "odoo_kernel::rules",
+                            access = aid, model = %model, reason = %format!("{e:#}"),
+                            "access domain cannot be parsed; its model is refused"
+                        );
+                        format!("{e:#}")
+                    })
             });
+            // a permission is a group rule the principal's permissions OR; a
+            // guard binding everyone is a global rule; a guard binding the
+            // members of its group is a group rule ANDed for those members
             security.rules.entry(model).or_default().push(Rule {
-                groups: rule_groups.get(&rid).cloned().unwrap_or_default(),
-                restrict: row.get(3),
+                groups: if guard && !members_only {
+                    Vec::new()
+                } else {
+                    vec![group]
+                },
+                restrict: guard,
                 domain_force,
                 parsed,
             });
         }
+        for (model, owners) in &topology.bound_by {
+            for owner in owners {
+                if let Some(granted) = security.access.get(owner).cloned() {
+                    security
+                        .access
+                        .entry(model.clone())
+                        .or_default()
+                        .extend(granted);
+                }
+                if let Some(denied) = security.denying_guards.get(owner).cloned() {
+                    security
+                        .denying_guards
+                        .entry(model.clone())
+                        .or_default()
+                        .extend(denied);
+                }
+                if let Some(rules) = security.rules.get(owner).cloned() {
+                    security
+                        .rules
+                        .entry(model.clone())
+                        .or_default()
+                        .extend(rules);
+                }
+            }
+        }
+        security.parents = topology.parents.clone();
 
         for row in client
             .query(
@@ -1571,12 +1671,51 @@ impl Registry {
             rules = security.rules.values().map(Vec::len).sum::<usize>(),
             unparsable,
             access_models = security.access.len(),
+            access_rows = rows,
+            denying_guards = security.denying_guards.values().map(Vec::len).sum::<usize>(),
+            bound_models = topology.bound_by.len(),
+            delegating_models = security.parents.len(),
             group_implications = security.implied.len(),
             users_with_groups = security.user_groups.len(),
             users_with_companies = security.user_companies.len(),
             ms = t0.elapsed().as_secs_f64() * 1000.0,
-            "loaded ir.rule, ir.model.access and the group/company memberships"
+            "loaded ir.access and the group/company memberships"
         );
         Ok(security)
+    }
+}
+
+/// `[(0, '=', 1)]` and its spellings: the domain the ir.access conversion
+/// gives a row that grants nothing, which `Domain` reads as FALSE.
+fn is_literally_false(domain: &str) -> bool {
+    let compact: String = domain
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '\'' && *c != '"')
+        .collect();
+    matches!(compact.as_str(), "[(0,=,1)]" | "[[0,=,1]]" | "((0,=,1),)")
+}
+
+#[cfg(test)]
+mod access_row_tests {
+    use super::is_literally_false;
+
+    #[test]
+    fn the_conversions_nothing_domain_is_recognised_in_its_spellings() {
+        for domain in [
+            "[(0, '=', 1)]",
+            "[(0,'=',1)]",
+            "[[0, \"=\", 1]]",
+            " [ ( 0 , '=' , 1 ) ] ",
+        ] {
+            assert!(is_literally_false(domain), "{domain}");
+        }
+        for domain in [
+            "[(1, '=', 1)]",
+            "[('id', '=', 0)]",
+            "[]",
+            "[(0, '=', 1), ('a', '=', 1)]",
+        ] {
+            assert!(!is_literally_false(domain), "{domain}");
+        }
     }
 }

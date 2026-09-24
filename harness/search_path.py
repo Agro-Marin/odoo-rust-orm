@@ -271,12 +271,14 @@ if not user:
     )
 else:
     partner_model = env["ir.model"].sudo()._get("res.partner")  # noqa: F821
-    env["ir.rule"].sudo().create(  # noqa: F821
+    env["ir.access"].sudo().create(  # noqa: F821
         {
             "name": "search_path: hides every partner, written in-transaction",
             "model_id": partner_model.id,
-            "domain_force": "[('id', '=', 0)]",
-            "perm_read": True,
+            "group_id": env.ref("base.group_everyone").id,  # noqa: F821
+            "kind": "guard",
+            "operation": "r",
+            "domain": "[('id', '=', 0)]",
         }
     )
     partners = env(user=user.id)["res.partner"]  # noqa: F821
@@ -288,17 +290,17 @@ else:
     python_ids = partners._search([]).get_result_ids()
     port.RustBackend.NATIVE = ORIGINAL
     print(
-        "SEARCH after an in-transaction ir.rule: native %d ids, python %d ids, reasons %r"
+        "SEARCH after an in-transaction ir.access: native %d ids, python %d ids, reasons %r"
         % (len(armed_ids), len(python_ids), reasons)
     )
     if list(armed_ids) != list(python_ids):
         failures.append(
-            "after an ir.rule written in this transaction the port answered %d ids "
+            "after an ir.access row written in this transaction the port answered %d ids "
             "where python answers %d" % (len(armed_ids), len(python_ids))
         )
     if not reasons.get("this transaction wrote a security model"):
         failures.append(
-            "the port did not delegate after an in-transaction ir.rule: %r" % (reasons,)
+            "the port did not delegate after an in-transaction ir.access row: %r" % (reasons,)
         )
     env.cr.rollback()  # noqa: F821
 

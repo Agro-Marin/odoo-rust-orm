@@ -195,6 +195,10 @@ pub struct UserCtx {
 #[derive(Debug, Default, Clone)]
 pub struct RuleSet {
     domains: std::collections::HashMap<String, crate::domain::Node>,
+    /// The columns a model's rules read while they were resolved (a
+    /// hierarchy's parent link): the cached domain holds ids only, so each
+    /// request applying it must still flush them, as Python does.
+    reads: std::collections::HashMap<String, Vec<(String, String)>>,
     unevaluated: std::collections::HashMap<String, String>,
 
     ruled: std::collections::HashSet<String>,
@@ -238,6 +242,16 @@ impl RuleSet {
 
     pub fn get(&self, model: &str) -> Option<&crate::domain::Node> {
         self.domains.get(model)
+    }
+
+    pub fn note_reads(&mut self, model: String, reads: Vec<(String, String)>) {
+        if !reads.is_empty() {
+            self.reads.insert(model, reads);
+        }
+    }
+
+    pub fn reads_of(&self, model: &str) -> &[(String, String)] {
+        self.reads.get(model).map_or(&[], Vec::as_slice)
     }
 
     pub fn is_unevaluated(&self, model: &str) -> bool {
@@ -672,6 +686,12 @@ async fn rules_domain_inner(
     if depth > 16 {
         refuse!("_inherits chain too deep at {model}");
     }
+    if registry.get(model).is_ok_and(|m| !m.access_guard_pure) {
+        refuse!(
+            "{model} adds an access guard in Python (_access_guard); the kernel \
+             compiles only its ir.access rows"
+        );
+    }
     let dynamic = registry.dynamic();
 
     let mut inherited: Vec<Json> = Vec::new();
@@ -686,7 +706,10 @@ async fn rules_domain_inner(
             .and_then(|m| m.fields.get(via.as_str()));
         match field {
             Some(f) if f.has_column => {}
-            Some(_) => continue,
+            Some(_) => refuse!(
+                "_inherits field {model}.{via} has no column: Python binds the parent's \
+                 access through its search, which the kernel does not compile"
+            ),
             None => refuse!("_inherits field {model}.{via} is not in the registry"),
         }
         if let Some(dom) =
@@ -726,43 +749,34 @@ async fn rules_domain_inner(
             global_domains.push(dom);
         }
     }
-    if !any_applied {
-        tracing::trace!(
-            target: "odoo_kernel::rules",
-            %model, uid = user.uid, rules = rules.len(),
-            "no rule applies to this identity's groups"
-        );
-        return Ok(if inherited.is_empty() {
-            None
-        } else {
-            Some(Json::Array(inherited))
-        });
-    }
     tracing::debug!(
         target: "odoo_kernel::rules",
         %model,
         uid = user.uid,
         depth,
         global = global_domains.len(),
-        group = group_domains.len(),
+        permissions = group_domains.len(),
         skipped,
+        applied = any_applied,
         inherited = inherited.len(),
-        "combining the record rules that apply"
+        "combining the access rows that bind this identity"
     );
 
+    // ir.access: the OR of the permissions the principal holds, which is
+    // FALSE when it holds none, AND every guard binding it, AND each parent
     let mut combined: Vec<Json> = inherited;
     for d in global_domains {
         combined.extend(d.as_array().cloned().unwrap_or_default());
     }
-    if !group_domains.is_empty() {
-        combined.extend(
-            or_domains(group_domains)
-                .as_array()
-                .cloned()
-                .unwrap_or_default(),
-        );
-    }
-    Ok(Some(Json::Array(combined)))
+    combined.extend(
+        or_domains(group_domains)
+            .as_array()
+            .cloned()
+            .unwrap_or_default(),
+    );
+    // TRUE is no restriction: a parent that admits everything adds no `any`
+    // subquery, as Python appends a parent's domain only when it is not TRUE
+    Ok((!combined.is_empty()).then_some(Json::Array(combined)))
 }
 
 pub fn check_read_access(
@@ -771,27 +785,94 @@ pub fn check_read_access(
     uid: i32,
     groups: &std::collections::HashSet<i32>,
 ) -> Result<()> {
-    let Some(rows) = dynamic.security.access.get(model) else {
-        deny_access!("access denied: no ir.model.access read entry for {model}");
-    };
-    if rows
-        .iter()
-        .any(|g| g.is_none_or(|gid| groups.contains(&gid)))
-    {
-        tracing::trace!(
-            target: "odoo_kernel::access",
-            %model, uid, entries = rows.len(), "ir.model.access grants read"
-        );
-        Ok(())
-    } else {
-        deny_access!("access denied on {model} for uid {uid}")
+    check_read_access_inner(&dynamic.security, model, uid, groups, 0)
+}
+
+fn check_read_access_inner(
+    security: &crate::registry::Security,
+    model: &str,
+    uid: i32,
+    groups: &std::collections::HashSet<i32>,
+    depth: usize,
+) -> Result<()> {
+    if depth > 16 {
+        refuse!("_inherits chain too deep at {model}");
     }
+    let Some(granted) = security.access.get(model) else {
+        deny_access!("access denied: no ir.access read permission on {model}");
+    };
+    if !granted.iter().any(|gid| groups.contains(gid)) {
+        deny_access!("access denied on {model} for uid {uid}: no read permission held");
+    }
+    if let Some(guards) = security.denying_guards.get(model)
+        && guards
+            .iter()
+            .any(|g| g.is_none_or(|gid| groups.contains(&gid)))
+    {
+        deny_access!("access denied on {model} for uid {uid}: a guard binding it admits nothing");
+    }
+    for parent in security.parents.get(model).into_iter().flatten() {
+        check_read_access_inner(security, parent, uid, groups, depth + 1)?;
+    }
+    tracing::trace!(
+        target: "odoo_kernel::access",
+        %model, uid, permissions = granted.len(), "ir.access grants read"
+    );
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
 
     use super::*;
+
+    fn access_security() -> crate::registry::Security {
+        let mut security = crate::registry::Security::default();
+        security.access.insert("x.child".into(), vec![1]);
+        security.access.insert("x.parent".into(), vec![2]);
+        security.access.insert("x.guarded".into(), vec![1]);
+        security
+            .denying_guards
+            .insert("x.guarded".into(), vec![Some(3)]);
+        security
+            .parents
+            .insert("x.child".into(), vec!["x.parent".into()]);
+        security
+    }
+
+    fn held(groups: &[i32]) -> std::collections::HashSet<i32> {
+        groups.iter().copied().collect()
+    }
+
+    #[test]
+    fn read_access_needs_a_held_permission() {
+        let security = access_security();
+        assert!(check_read_access_inner(&security, "x.unknown", 1, &held(&[1, 2]), 0).is_err());
+        assert!(check_read_access_inner(&security, "x.parent", 1, &held(&[1]), 0).is_err());
+        assert!(check_read_access_inner(&security, "x.parent", 1, &held(&[2]), 0).is_ok());
+    }
+
+    #[test]
+    fn a_delegating_model_needs_its_parents_read_access_too() {
+        let security = access_security();
+        assert!(
+            check_read_access_inner(&security, "x.child", 1, &held(&[1]), 0).is_err(),
+            "Python's _access_domain is FALSE when a delegated parent's is"
+        );
+        assert!(check_read_access_inner(&security, "x.child", 1, &held(&[1, 2]), 0).is_ok());
+    }
+
+    #[test]
+    fn a_guard_admitting_nothing_denies_only_whom_it_binds() {
+        let security = access_security();
+        assert!(check_read_access_inner(&security, "x.guarded", 1, &held(&[1]), 0).is_ok());
+        assert!(check_read_access_inner(&security, "x.guarded", 1, &held(&[1, 3]), 0).is_err());
+        let mut everyone = access_security();
+        everyone
+            .denying_guards
+            .insert("x.guarded".into(), vec![None]);
+        assert!(check_read_access_inner(&everyone, "x.guarded", 1, &held(&[1]), 0).is_err());
+    }
 
     fn dom(v: &str) -> Json {
         serde_json::from_str(v).unwrap()

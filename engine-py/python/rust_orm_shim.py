@@ -473,12 +473,12 @@ _READ_PATH_NEEDS = {
 
 
 def _clean_model(model, method=None):
-    needs = _READ_PATH_NEEDS.get(method) or (
-        "_search",
-        "read",
-        "search_read",
-        "_read_group",
-        "search_count",
+    needs = (
+        *(
+            _READ_PATH_NEEDS.get(method)
+            or ("_search", "read", "search_read", "_read_group", "search_count")
+        ),
+        "_access_guard",
     )
     cls = type(model.sudo())
     methods = tuple(getattr(cls, name) for name in needs)
@@ -619,6 +619,20 @@ def _rules_read_through_x2many(model, fields):
     )
 
 
+def _unaccent_overridden(registry) -> bool:
+    # the kernel folds accents when the database has unaccent, as the probe
+    # decides; a registry whose unaccent was swapped (assertQueries sets it to
+    # the identity) asks for SQL the kernel does not emit
+    from odoo.orm.runtime import _registry_capabilities as capabilities
+
+    probed = (
+        capabilities._unaccent
+        if getattr(registry, "unaccent_status", None)
+        else capabilities._identity
+    )
+    return getattr(registry, "unaccent", probed) is not probed
+
+
 def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: ARG001  order and domain are the routed call shape, kept for the reasons log
     if not _policy_allows(model._name):
         return False
@@ -647,6 +661,8 @@ def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: AR
     ctx = model.env.context
     if ctx.get("prefetch_langs") or ctx.get("edit_translations"):
         return _refuse("translation context")
+    if _unaccent_overridden(model.env.registry):
+        return _refuse("registry.unaccent is not the one its capability probe set")
     for fname in fields or ():
         if method == "_read_group":
             # a groupby spec carries its granularity: `date_deadline:month`
@@ -1699,6 +1715,7 @@ def install():
         "_search_display_name",
         "name_search",
         "_check_access",
+        "_access_guard",
         "search_fetch",
         "fetch",
         *_FETCH_HOOKS,
@@ -2040,14 +2057,6 @@ def install():
         orig_web_search_read = WebBase.web_search_read
         from odoo.tools.cache_version import _canonical_digest
 
-        def _stamp_envelope(records) -> None:
-            try:
-                from odoo.http import request
-            except ModuleNotFoundError:
-                return
-            if request:
-                request._response_version = _canonical_digest(records)
-
         def web_search_read(
             self,
             domain,
@@ -2129,8 +2138,6 @@ def install():
                     result["__version"] = _canonical_digest(result)
                     if MODE != "shadow" and not _verify_this_one():
                         _warm_cache(self, result["records"])
-                        if result["records"]:
-                            _stamp_envelope(result["records"])
                         return result
                 except Exception as e:
                     _record_error(self, e)

@@ -481,6 +481,14 @@ def _security_written(env):
     return None
 
 
+def _unaccent_overridden(env):
+    import rust_orm_shim
+
+    if rust_orm_shim._unaccent_overridden(env.registry):
+        return "registry.unaccent is not the one its capability probe set"
+    return None
+
+
 _CREATED = weakref.WeakKeyDictionary()
 
 
@@ -634,7 +642,7 @@ def _search_native(model, domain, offset, limit, order, check_access):
     if not check_access and not env.su:
         _delegated("search", "bypass_access without superuser")
         return None
-    why = _security_written(env)
+    why = _security_written(env) or _unaccent_overridden(env)
     if why:
         _delegated("search", why)
         return None

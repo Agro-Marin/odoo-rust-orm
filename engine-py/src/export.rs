@@ -138,6 +138,7 @@ def export_registry(reg):
         )
         display_name_access_pure = pure("_get_display_name_visible_ids")
         check_access_pure = pure("_check_access")
+        access_guard_pure = pure("_access_guard")
         dn_default = getattr(cls, "_compute_display_name", None) is getattr(
             base, "_compute_display_name", None
         )
@@ -199,6 +200,7 @@ def export_registry(reg):
             "read_group_pure": bool(read_group_pure),
             "display_name_access_pure": bool(display_name_access_pure),
             "check_access_pure": bool(check_access_pure),
+            "access_guard_pure": bool(access_guard_pure),
             "display_name_default": bool(dn_default),
             "table": _s(m._table),
             "order": _s(m._order),
@@ -209,6 +211,9 @@ def export_registry(reg):
             # (res.company: the tenant's row is the tenant's, the party's rules
             # are the party's), and then the rule walk must not climb
             "inherits_rules": bool(getattr(m, "_inherits_rules", True)),
+            # a model with its own table under a table-inheritance root is
+            # bound by the ir.access rows of the models owning the root's table
+            "table_inheritance_root": _s(getattr(m, "_table_inheritance_root", None)),
             "active_name": _s(getattr(m, "_active_name", None)),
             "display_name_column": (
                 list(col) if isinstance(col := getattr(m, "_display_name_column", None), tuple)

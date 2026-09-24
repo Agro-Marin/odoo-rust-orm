@@ -54,7 +54,7 @@ def rebuild():
 
 
 with env_for() as e:
-    e["ir.rule"].search([("name", "=", "Rust ORM snapshot contract")]).unlink()
+    e["ir.access"].search([("name", "=", "Rust ORM snapshot contract")]).unlink()
     user = e["res.users"].search([("login", "=", "rustorm_runtime_contract")])
     if not user:
         user = (
@@ -72,13 +72,16 @@ with env_for() as e:
     country = e.ref("base.be")
     cid, currency = country.id, country.currency_id.id
     assert currency
-    rule = e["ir.rule"].search([("name", "=", "Rust ORM runtime hidden currency")])
+    rule = e["ir.access"].search([("name", "=", "Rust ORM runtime hidden currency")])
     if not rule:
-        rule = e["ir.rule"].create(
+        rule = e["ir.access"].create(
             {
                 "name": "Rust ORM runtime hidden currency",
                 "model_id": e["ir.model"]._get_id("res.currency"),
-                "domain_force": repr([("id", "!=", currency)]),
+                "group_id": e.ref("base.group_everyone").id,
+                "kind": "guard",
+                "operation": "crud",
+                "domain": repr([("id", "!=", currency)]),
             }
         )
     field = e["ir.model.fields"].search(
@@ -103,7 +106,7 @@ rebuild()
 def _release_fixture() -> None:
     with reg.cursor() as cr:
         env_ = odoo.api.Environment(cr, 1, {})
-        env_["ir.rule"].browse(rule_id).exists().unlink()
+        env_["ir.access"].browse(rule_id).exists().unlink()
         field_ = env_["ir.model.fields"].browse(fid).exists()
         if field_:
             field_.write({"groups": [(5, 0, 0)]})
@@ -349,7 +352,7 @@ def change_in_other_process(code):
 old_reg = reg
 with old_reg.cursor() as old_cr:
     old_env = odoo.api.Environment(old_cr, uid, {})
-    old_cr.execute("SELECT count(*) FROM ir_rule")
+    old_cr.execute("SELECT count(*) FROM ir_access")
     old_cr.fetchone()
     change_in_other_process(
         f"env['ir.model.fields'].browse({fid}).write({{'groups': [(5, 0, 0)]}})"
@@ -395,11 +398,14 @@ print(
 
 shim.MODE = "off"
 with env_for() as e:
-    r = e["ir.rule"].create(
+    r = e["ir.access"].create(
         {
             "name": "Rust ORM snapshot contract",
             "model_id": e["ir.model"]._get_id("res.country"),
-            "domain_force": '[(1, "=", 1)]',
+            "group_id": e.ref("base.group_everyone").id,
+            "kind": "guard",
+            "operation": "crud",
+            "domain": '[(1, "=", 1)]',
         }
     )
     snapshot_rule_id = r.id
@@ -424,7 +430,7 @@ with env_for(uid) as old:
     assert initial > 1
     assert shim.KERNEL.search_where(old.cr._cnx._rust, where_request, offline=False)
     change_in_other_process(
-        f"env['ir.rule'].browse({snapshot_rule_id}).write({{'domain_force': {repr([('id', '=', cid)])!r}}})"
+        f"env['ir.access'].browse({snapshot_rule_id}).write({{'domain': {repr([('id', '=', cid)])!r}}})"
     )
     with env_for(uid) as fresh:
         assert json.loads(shim.KERNEL.dispatch(fresh.cr._cnx._rust, count_request)) == 1
@@ -438,7 +444,7 @@ with env_for(uid) as old:
         ):
             shim.KERNEL.search_where(old.cr._cnx._rust, where_request, offline=offline)
 with env_for() as e:
-    e["ir.rule"].browse(snapshot_rule_id).unlink()
+    e["ir.access"].browse(snapshot_rule_id).unlink()
     e.cr.commit()
 reg.signal_changes()
 print(
@@ -886,7 +892,7 @@ print(
 )
 
 with env_for() as e:
-    e["ir.rule"].browse(rule_id).unlink()
+    e["ir.access"].browse(rule_id).unlink()
     e["ir.model.fields"].browse(fid).write({"groups": [(5, 0, 0)]})
     e.cr.commit()
 reg.signal_changes()

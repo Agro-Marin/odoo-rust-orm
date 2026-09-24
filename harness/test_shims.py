@@ -1484,7 +1484,7 @@ def test_a_write_touching_nothing_the_kernel_reads_is_harmless() -> None:
             return {"group_ids", "active", "company_id"}
 
     class Rule:
-        _name = "ir.rule"
+        _name = "ir.access"
 
     check(
         "a lang's date format is not read by the kernel",
@@ -1496,7 +1496,7 @@ def test_a_write_touching_nothing_the_kernel_reads_is_harmless() -> None:
     check("archiving it is", harmless(Lang, {"active": False}), False)
     check("a user's signature is not", harmless(Users, {"signature": "x"}), True)
     check("a user's groups are", harmless(Users, {"group_ids": []}), False)
-    check("a rule is read whole", harmless(Rule, {"name": "x"}), False)
+    check("an access row is read whole", harmless(Rule, {"name": "x"}), False)
 
     class Company:
         _name = "res.company"
@@ -1964,7 +1964,7 @@ def test_install_is_idempotent_and_keeps_stamps() -> None:
     from odoo.fields import Domain
 
     class _Rules:
-        def _get_domain_accessible_records(self, *_args):
+        def _access_domain(self, *_args):
             return Domain.TRUE
 
     class _Env:

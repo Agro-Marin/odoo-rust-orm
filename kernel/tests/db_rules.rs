@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 
-use odoo_kernel::registry::Registry;
+use odoo_kernel::registry::{AccessTopology, Registry};
 use tokio_postgres::Client;
 
 async fn connect(schema: &str) -> Client {
@@ -27,95 +28,103 @@ async fn drop_schema(client: &Client, schema: &str) {
         .await;
 }
 
-async fn mini_security_schema(client: &Client, with_composition: bool) {
-    let composition_col = if with_composition {
-        ", composition varchar DEFAULT 'grant'"
-    } else {
-        ""
-    };
+async fn mini_access_schema(client: &Client) {
     client
-        .batch_execute(&format!(
+        .batch_execute(
             "CREATE TABLE ir_model (id int PRIMARY KEY, model varchar);
-             CREATE TABLE ir_rule (id int PRIMARY KEY, model_id int, domain_force text,
-                                   active bool, perm_read bool{composition_col});
-             CREATE TABLE rule_group_rel (rule_group_id int, group_id int);
+             CREATE TABLE ir_access (id int PRIMARY KEY, model_id int, group_id int,
+                                     kind varchar, guard_scope varchar, domain varchar,
+                                     active bool, for_read bool);
              CREATE TABLE res_groups_implied_rel (gid int, hid int);
              CREATE TABLE res_groups_users_rel (uid int, gid int);
-             CREATE TABLE ir_model_access (model_id int, group_id int, active bool, perm_read bool);
              CREATE TABLE res_company (id int PRIMARY KEY, active bool);
              CREATE TABLE res_company_users_rel (user_id int, cid int);
-             INSERT INTO ir_model VALUES (1, 'x.thing');
-             INSERT INTO ir_rule (id, model_id, domain_force, active, perm_read) VALUES
-               (10, 1, '[(''a'', ''='', 1)]', true, true),
-               (11, 1, '[(''b'', ''='', 2)]', true, true),
-               (12, 1, '[(''c'', ''='', 3)]', true, true),
-               (13, 1, '[(''d'', ''='', 4)]', false, true);
-             INSERT INTO rule_group_rel VALUES (10, 7), (11, 7);"
-        ))
+             INSERT INTO ir_model VALUES (1, 'x.thing'), (2, 'x.root'), (3, 'x.never');
+             INSERT INTO ir_access VALUES
+               (10, 1, 7, 'permission', 'everyone', '[(''a'', ''='', 1)]', true, true),
+               (11, 1, 8, 'guard', 'members', '[(''b'', ''='', 2)]', true, true),
+               (12, 1, 9, 'guard', 'everyone', '[(''c'', ''='', 3)]', true, true),
+               (13, 1, 7, 'permission', 'everyone', '[(''d'', ''='', 4)]', false, true),
+               (14, 1, 7, 'permission', 'everyone', '[(''e'', ''='', 5)]', true, false),
+               (15, 1, 6, 'permission', 'everyone', '[(0, ''='', 1)]', true, true),
+               (20, 2, 5, 'permission', 'everyone', NULL, true, true),
+               (21, 2, 9, 'guard', 'everyone', '[(0, ''='', 1)]', true, true),
+               (30, 3, 5, 'permission', 'everyone', '[(0, ''='', 1)]', true, true);",
+        )
         .await
         .expect("the mini schema");
-    if with_composition {
-        client
-            .batch_execute("UPDATE ir_rule SET composition = 'restrict' WHERE id = 11")
-            .await
-            .expect("mark one rule restricting");
-    }
 }
 
-fn shape(rules: &[odoo_kernel::registry::Rule]) -> Vec<(Vec<i32>, bool, bool)> {
+fn shape(rules: &[odoo_kernel::registry::Rule]) -> Vec<(Vec<i32>, bool)> {
     rules
         .iter()
-        .map(|r| {
-            (
-                r.groups.clone(),
-                r.restrict,
-                !r.groups.is_empty() && !r.restrict,
-            )
-        })
+        .map(|r| (r.groups.clone(), r.restrict))
         .collect()
 }
 
 #[tokio::test]
 #[ignore = "needs RUSTORM_TEST_DSN"]
-async fn a_restricting_rule_is_read_from_the_forks_column() {
-    let schema = "rustorm_t_composition";
+async fn each_read_row_becomes_the_rule_its_kind_and_scope_make_it() {
+    let schema = "rustorm_t_access_rows";
     let client = connect(schema).await;
-    mini_security_schema(&client, true).await;
+    mini_access_schema(&client).await;
 
-    let security = Registry::load_security(&client).await.expect("loads");
-    let rules = &security.rules["x.thing"];
-    assert_eq!(rules.len(), 3, "the inactive rule is not loaded: {rules:?}");
+    let security = Registry::load_security(&client, &AccessTopology::default())
+        .await
+        .expect("loads");
     assert_eq!(
-        shape(rules),
+        shape(&security.rules["x.thing"]),
         vec![
-            (vec![7], false, true),
-            (vec![7], true, false),
-            (vec![], false, false),
+            (vec![7], false),
+            (vec![8], true),
+            (vec![], true),
+            (vec![6], false),
         ],
-        "loaded in id order, classified as the fork classifies them"
+        "a permission ORs for its group, a members guard ANDs for its group, an \
+         everyone guard ANDs for all; the inactive row and the row that does not \
+         read are not loaded"
     );
     drop_schema(&client, schema).await;
 }
 
 #[tokio::test]
 #[ignore = "needs RUSTORM_TEST_DSN"]
-async fn without_the_column_every_group_rule_grants() {
-    let schema = "rustorm_t_no_composition";
+async fn a_permission_that_admits_nothing_grants_no_access_and_such_a_guard_denies() {
+    let schema = "rustorm_t_access_false";
     let client = connect(schema).await;
-    mini_security_schema(&client, false).await;
+    mini_access_schema(&client).await;
 
-    let security = Registry::load_security(&client)
+    let security = Registry::load_security(&client, &AccessTopology::default())
         .await
-        .expect("stock Odoo loads too");
-    let rules = &security.rules["x.thing"];
-    assert_eq!(rules.len(), 3);
+        .expect("loads");
+    assert_eq!(security.access["x.thing"], vec![7]);
     assert!(
-        rules.iter().all(|r| !r.restrict),
-        "no column, no restriction: {rules:?}"
+        !security.access.contains_key("x.never"),
+        "its only permission is [(0, '=', 1)]: {:?}",
+        security.access.get("x.never")
     );
-    assert_eq!(
-        shape(rules).into_iter().map(|s| s.2).collect::<Vec<_>>(),
-        vec![true, true, false]
-    );
+    assert_eq!(security.denying_guards["x.root"], vec![None]);
+    assert!(!security.denying_guards.contains_key("x.thing"));
+    drop_schema(&client, schema).await;
+}
+
+#[tokio::test]
+#[ignore = "needs RUSTORM_TEST_DSN"]
+async fn a_model_under_a_table_root_is_bound_by_the_roots_rows_too() {
+    let schema = "rustorm_t_access_root";
+    let client = connect(schema).await;
+    mini_access_schema(&client).await;
+
+    let topology = AccessTopology {
+        bound_by: HashMap::from([("x.thing".to_string(), vec!["x.root".to_string()])]),
+        parents: HashMap::from([("x.thing".to_string(), vec!["x.root".to_string()])]),
+    };
+    let security = Registry::load_security(&client, &topology)
+        .await
+        .expect("loads");
+    assert_eq!(security.access["x.thing"], vec![7, 5]);
+    assert_eq!(security.denying_guards["x.thing"], vec![None]);
+    assert_eq!(security.rules["x.thing"].len(), 6);
+    assert_eq!(security.parents["x.thing"], vec!["x.root".to_string()]);
     drop_schema(&client, schema).await;
 }

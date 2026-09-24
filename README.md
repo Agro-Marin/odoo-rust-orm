@@ -27,7 +27,7 @@ refusal list is the replacement backlog.
 
 - **Registry bootstrap from the database itself**: models, fields, `_order`,
   relational metadata, related-field paths, `ir.default` fallbacks, security
-  data (groups, `ir.model.access`, `ir.rule`) — all from `ir_model*` tables
+  data (groups, `ir.access`) — all from `ir_model*` tables
   cross-checked against `information_schema`. 305 models / ~8k fields +
   security in ~26 ms (Python registry: ~750 ms).
 - **Domain → SQL compiler** replicating `odoo/orm/fields/_field_sql.py` and
@@ -69,10 +69,17 @@ refusal list is the replacement backlog.
     with `ir.default` fallbacks) in reads, filters and ordering
   - translated fields via `->> lang` (context lang validated vs `res_lang`,
     `COALESCE` fallback to en_US)
-- **Security**: `ir.model.access` read checks and **record rules**: a small
-  Python-expression evaluator for `domain_force` (literals, lists, dotted
-  `user.…` chains resolved through stored/related m2o hops, `company_ids`),
-  Odoo's combination semantics (AND globals, OR matching group rules),
+- **Security**: `ir.access` read rows, as `_access_domain("read")` combines
+  them: the OR of the read permissions the principal's groups hold (FALSE
+  when it holds none), AND every guard binding it (all principals, or the
+  members of the guard's group), AND each delegated parent's access, with a
+  table-inheritance root's rows binding the models under it. The model-level
+  check denies where Python's `_access_allowed` would: no permission held
+  whose domain is not `[(0, '=', 1)]`, a guard of that domain binding the
+  principal, or a denied parent. A class that adds to its rows in Python
+  (`_access_guard`) is refused wherever its access would apply. A small
+  Python-expression evaluator reads the domains (literals, lists, dotted
+  `user.…` chains resolved through stored/related m2o hops, `company_ids`);
   comodel rules injected into any-subqueries and x2many reads like
   `_search` does. Resolved rule ASTs cached per (uid, company, companies),
   and dropped when Odoo's `orm_signaling_*` watermark moves. A rule the
@@ -446,7 +453,7 @@ rest of the battery does it now too.
 | replay | the web tours' own traffic (captured by `rust_engine_capture` during that stage; `RUSTORM_REPLAY` names another file) fed back through the shim in shadow mode: routed share and divergences per (model, method); SKIP only when the tours did not run, FAIL when nothing was compared or an unexpected native/shim error occurred; rolled-back tour identities are reported separately and are not counted as replayed |
 | runtime contracts | real native connections check cache fidelity, SQL-failure recovery and breaker classification, stale exports, and the registry reload hook; required even under `--quick` |
 | every user | every user of the database, archived and other companies' included, reads every table-backed model through each routed method, routed and not: many2ones and x2manys, counts, names, groups |
-| orm test modules | with `RUSTORM_ORM_TEST_DB` set, Odoo's test_orm, test_read_group, test_access_rights, test_search_panel and test_inherits run with no engine and with routing on; a test failing only under routing fails the stage |
+| orm test modules | with `RUSTORM_ORM_TEST_DB` set, Odoo's test_orm, test_read_group, test_access_rights, test_search_panel, test_inherits and test_ir_access run with no engine and with routing on; a test failing only under routing fails the stage |
 | web tours (shadow) | the mail, web and base tours run by `odoo-bin` carrying `rust_engine` in shadow mode against the database: FAIL on a failed tour or a live divergence; reports the routed share and the gate count; SKIP under `--quick` or without `mail` installed (`RUSTORM_TOUR_TAGS` picks another set) |
 | soak | sustained load against `serve` behind a per-run token: the shadow corpus's baseline (`expected.json`) re-asked at every identity it names, plus self-consistency probes at the seeded `other` identity; RSS growth after a warm-up bounded (`RUSTORM_SOAK_RSS_GROWTH`, default 20 %), still healthy after. `--uids` is refused against a server that pins its identity, because the uids would be silently ignored |
 

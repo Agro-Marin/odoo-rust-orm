@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ODOO="${RUSTORM_ODOO_ROOT:-${RUSTORM_ODOO:-$(cd "$ROOT/../odoo" && pwd)}}"
 PY="${RUSTORM_PYTHON:-$(cd "$ROOT/.." && pwd)/p314o19m/bin/python}"
 CONF="${RUSTORM_ODOO_CONF:-$(cd "$ROOT/.." && pwd)/p314o19m.conf}"
-TAGS="${RUSTORM_ORM_TEST_TAGS:-/test_orm,/test_read_group,/test_access_rights,/test_search_panel,/test_inherits}"
+TAGS="${RUSTORM_ORM_TEST_TAGS:-/test_orm,/test_read_group,/test_access_rights,/test_search_panel,/test_inherits,/test_ir_access}"
 DB=""
 while [ $# -gt 0 ]; do
   case "$1" in
