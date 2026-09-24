@@ -459,6 +459,18 @@ else
   stage "every user" SKIP "needs libengine_py.so"
 fi
 
+if [ -f "$PYMOD/engine_py.so" ]; then
+  PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/grant_scopes.py" > "$OUT/grant_scopes.log" 2>&1; rc=$?
+  if [ "$rc" = 0 ]; then
+    stage "grant scopes" OK "$(grep -a '^GRANT SCOPES compared' "$OUT/grant_scopes.log" | cut -c14-40)"
+  elif timed_out "$rc"; then stage "grant scopes" FAIL "$expired"
+  else
+    stage "grant scopes" FAIL "$(grep -aE '^GRANT SCOPES (FAILED|MISMATCHES)' "$OUT/grant_scopes.log" | head -2 | tr '\n' ' ' | cut -c1-90)"
+  fi
+else
+  stage "grant scopes" SKIP "needs libengine_py.so"
+fi
+
 if [ -z "${RUSTORM_ORM_TEST_DB:-}" ]; then
   stage "orm test modules" SKIP "set RUSTORM_ORM_TEST_DB to a database with test_orm, test_read_group, test_access_rights, test_search_panel and test_inherits installed"
 elif [ ! -f "$ROOT/target/release/libengine_py.so" ]; then

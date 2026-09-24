@@ -55,6 +55,8 @@ struct RuleKey {
     uid: i32,
     company_id: i32,
     company_ids: Vec<i32>,
+    groups: Vec<i32>,
+    scopes: security::GroupScopes,
 
     signals: crate::registry::Signals,
 }
@@ -170,6 +172,14 @@ pub struct Request {
 
     #[serde(default)]
     pub allowed_company_ids: Option<Vec<i32>>,
+
+    /// Python's group state for the principal (`_get_group_scopes`): each
+    /// held group, with the companies a grant limits it to or `null`. It is
+    /// what the live grants, their dates, the companies in use and the
+    /// environment's privileges make of the memberships; without it the
+    /// kernel reads the memberships, and refuses a principal they misstate.
+    #[serde(default)]
+    pub principal_groups: Option<std::collections::BTreeMap<i32, Option<Vec<i32>>>>,
 
     #[serde(default)]
     pub groupby_labels: Option<bool>,
@@ -292,6 +302,7 @@ pub struct Env {
     pub dynamic: Arc<crate::registry::Dynamic>,
 
     pub groups: Arc<std::collections::HashSet<i32>>,
+    pub scopes: Arc<security::GroupScopes>,
 
     pub sql_nonce: Option<String>,
 
@@ -492,6 +503,32 @@ impl<'a> Orm<'a> {
             }
         };
 
+        let (groups, scopes) = match &req.principal_groups {
+            Some(held) => {
+                let scopes: security::GroupScopes = held
+                    .iter()
+                    .filter_map(|(group, companies)| {
+                        let mut companies = companies.clone()?;
+                        companies.sort_unstable();
+                        Some((*group, companies))
+                    })
+                    .collect();
+                if !scopes.is_empty() && !self.registry.anchors_known {
+                    refuse!(
+                        "uid {uid} holds groups limited to some companies, and this \
+                         registry does not know the field that anchors each model to \
+                         its company"
+                    );
+                }
+                (Arc::new(held.keys().copied().collect()), Arc::new(scopes))
+            }
+            None if !req.su && dynamic.security.bounded_users.contains(&uid) => refuse!(
+                "uid {uid} holds a grant limited to some companies or dated, which its \
+                 memberships do not state; its groups are Python's to give"
+            ),
+            None => (groups, Arc::new(security::GroupScopes::new())),
+        };
+
         let (company_id, company_ids) = match req.allowed_company_ids.as_deref() {
             Some([]) | None => (default_company_id, user_company_ids),
             Some(allowed) => {
@@ -551,6 +588,7 @@ impl<'a> Orm<'a> {
             comparand_tz,
             week_start,
             groups,
+            scopes,
             dynamic,
             sql_nonce: req.sql_nonce.clone(),
             order_fragments: Arc::new(req.order_fragments.clone()),
@@ -598,10 +636,14 @@ impl<'a> Orm<'a> {
             "models the request can reach; each one's rules must be compiled"
         );
         let security_signals = self.registry.security_signals(&env.dynamic.signals);
+        let mut groups: Vec<i32> = env.groups.iter().copied().collect();
+        groups.sort_unstable();
         let key = RuleKey {
             uid: env.uid,
             company_id: env.company_id,
             company_ids: env.company_ids.clone(),
+            groups,
+            scopes: (*env.scopes).clone(),
             signals: security_signals.clone(),
         };
         let base = self.caches.rule_cache.lock().await.get(&key).cloned();
@@ -634,6 +676,7 @@ impl<'a> Orm<'a> {
             company_id: env.company_id,
             company_ids: env.company_ids.clone(),
             groups: env.groups.clone(),
+            scopes: env.scopes.clone(),
         };
         let t_rules = std::time::Instant::now();
 
@@ -849,8 +892,13 @@ impl<'a> Orm<'a> {
         let empty = RuleSet::default();
         let (rules, su) = scope.unwrap_or((&empty, true));
         if !su {
-            if let Some((uid, groups)) = &ctx.access {
-                security::check_read_access(&ctx.dynamic, &target.name, *uid, groups)?;
+            if let Some(crate::sqlgen::Access {
+                uid,
+                groups,
+                scopes,
+            }) = &ctx.access
+            {
+                security::check_read_access(&ctx.dynamic, &target.name, *uid, groups, scopes)?;
             }
             rules.ensure_evaluated(&target.name)?;
         }
@@ -1335,7 +1383,13 @@ impl<'a> Orm<'a> {
         );
 
         if !env.su {
-            security::check_read_access(&env.dynamic, &req.model, env.uid, &env.groups)?;
+            security::check_read_access(
+                &env.dynamic,
+                &req.model,
+                env.uid,
+                &env.groups,
+                &env.scopes,
+            )?;
         }
         let model = self.registry.get(&req.model)?;
         if let Some(over) = model.overridden_for(&req.method) {
@@ -1501,7 +1555,11 @@ impl<'a> Orm<'a> {
         if env.su {
             ctx
         } else {
-            ctx.with_access(env.uid, env.groups.clone())
+            ctx.with_access(crate::sqlgen::Access {
+                uid: env.uid,
+                groups: env.groups.clone(),
+                scopes: env.scopes.clone(),
+            })
         }
     }
 
@@ -1611,6 +1669,8 @@ mod tests {
             uid: 2,
             company_id: 1,
             company_ids: vec![1],
+            groups: Vec::new(),
+            scopes: Default::default(),
             signals: signals.clone(),
         }
     }

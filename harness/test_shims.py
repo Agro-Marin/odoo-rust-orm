@@ -1967,13 +1967,23 @@ def test_install_is_idempotent_and_keeps_stamps() -> None:
         def _access_domain(self, *_args):
             return Domain.TRUE
 
+    class _User:
+        def _get_group_scopes(self):
+            return {1: None, 5: frozenset({3, 1})}
+
     class _Env:
         uid, su, context = 2, False, {}
         _lang = "en_US"
+        user = _User()
 
         class registry:
             registry_sequence = 7
             ormcache_lrus = {}
+
+            class access_policy:
+                @staticmethod
+                def access_signature(_env):
+                    return (2, (), (None,), None)
 
         def __getitem__(self, model_name):
             return _Rules()
@@ -1992,6 +2002,11 @@ def test_install_is_idempotent_and_keeps_stamps() -> None:
         "read() forwards the env's active_test for x2many corecords",
         req["x2many_active_test"],
         False,
+    )
+    check(
+        "the request carries Python's group state, scopes sorted",
+        req["principal_groups"],
+        {"1": None, "5": [1, 3]},
     )
     req = json.loads(
         orm_shim._request(
@@ -3136,6 +3151,9 @@ def test_search_delegates_once_the_transaction_wrote_security() -> None:
     class _Env:
         su = True
         cr = _Cursor()
+
+        class registry:
+            pass
 
     class _Model:
         env = _Env()

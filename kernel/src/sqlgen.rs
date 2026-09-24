@@ -27,6 +27,15 @@ fn subquery(select: sea_query::SelectStatement) -> Expr {
     Expr::SubQuery(None, Box::new(select.into()))
 }
 
+/// Whose access a non-sudo compile checks: the principal, the groups it
+/// holds, and the companies the grant-limited ones are held in.
+#[derive(Clone)]
+pub struct Access {
+    pub uid: i32,
+    pub groups: std::sync::Arc<std::collections::HashSet<i32>>,
+    pub scopes: std::sync::Arc<crate::security::GroupScopes>,
+}
+
 #[derive(Clone)]
 pub struct ExprCtx<'a> {
     pub registry: &'a Registry,
@@ -35,7 +44,7 @@ pub struct ExprCtx<'a> {
     pub lang: &'a str,
     pub company_id: i32,
 
-    pub access: Option<(i32, std::sync::Arc<std::collections::HashSet<i32>>)>,
+    pub access: Option<Access>,
 
     pub active_test: bool,
 
@@ -86,12 +95,8 @@ impl<'a> ExprCtx<'a> {
         self
     }
 
-    pub fn with_access(
-        mut self,
-        uid: i32,
-        groups: std::sync::Arc<std::collections::HashSet<i32>>,
-    ) -> Self {
-        self.access = Some((uid, groups));
+    pub fn with_access(mut self, access: Access) -> Self {
+        self.access = Some(access);
         self
     }
 
@@ -212,7 +217,7 @@ impl<'a> ExprCtx<'a> {
     }
 
     pub fn check_path_readable(&self, model: &Model, raw_path: &[String]) -> Result<()> {
-        let Some((uid, groups)) = &self.access else {
+        let Some(Access { uid, groups, .. }) = &self.access else {
             return Ok(());
         };
         let mut m = model;
@@ -1599,8 +1604,13 @@ impl<'a> Compiler<'a> {
             );
         }
 
-        if let Some((uid, groups)) = &self.ctx.access {
-            crate::security::check_read_access(&self.ctx.dynamic, &co.name, *uid, groups)?;
+        if let Some(Access {
+            uid,
+            groups,
+            scopes,
+        }) = &self.ctx.access
+        {
+            crate::security::check_read_access(&self.ctx.dynamic, &co.name, *uid, groups, scopes)?;
         }
         self.rules.ensure_evaluated(&co.name)?;
 
@@ -2546,7 +2556,7 @@ fn order_terms(
             .get(fname)
             .ok_or_else(|| refusal!("unknown order field {}.{fname}", model.name))?;
 
-        if let Some((uid, groups)) = &ctx.access
+        if let Some(Access { uid, groups, .. }) = &ctx.access
             && !ctx.registry.field_readable(field, groups)
         {
             tracing::debug!(

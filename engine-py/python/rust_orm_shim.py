@@ -985,14 +985,28 @@ _RULES_NEED_PYTHON = {}
 
 
 def _rules_key(env, name):
+    # the access domain's own cache key: the principal's group state, the
+    # companies in use and its privileges decide it, not the uid alone
     lru = env.registry.ormcache_lrus.get("default")
     return (
         id(env.registry),
         lru.generation if lru is not None else None,
-        env.uid,
-        tuple(env.context.get("allowed_company_ids") or ()),
+        env.registry.access_policy.access_signature(env),
         name,
     )
+
+
+def _principal_groups(env):
+    # what the live grants, their dates, the companies in use and the
+    # environment's privileges make of the memberships; the kernel's own copy
+    # of the memberships cannot state a grant limited to some companies
+    user = env.user
+    if not hasattr(type(user), "_get_group_scopes"):
+        return None
+    return {
+        group_id: sorted(companies) if companies is not None else None
+        for group_id, companies in user._get_group_scopes().items()
+    }
 
 
 def _rules_need_python(env, name):
@@ -1168,6 +1182,13 @@ def _request(model, method, **kw):
         kw["order"], fragments = _order_fragments(model, kw["order"])
         if fragments:
             kw["order_fragments"] = fragments
+    if not env.su:
+        try:
+            req["principal_groups"] = _principal_groups(env)
+        except Exception as exc:
+            raise KernelRefused(
+                "computing the principal's group state raised %s" % type(exc).__name__
+            ) from exc
     nonce = secrets.token_hex(16)
     encode = _wire_encoder(nonce)
     if resolved := _resolved_rules(model, kw, encode):

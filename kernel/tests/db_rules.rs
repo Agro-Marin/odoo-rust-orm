@@ -118,6 +118,7 @@ async fn a_model_under_a_table_root_is_bound_by_the_roots_rows_too() {
     let topology = AccessTopology {
         bound_by: HashMap::from([("x.thing".to_string(), vec!["x.root".to_string()])]),
         parents: HashMap::from([("x.thing".to_string(), vec!["x.root".to_string()])]),
+        anchors: HashMap::new(),
     };
     let security = Registry::load_security(&client, &topology)
         .await

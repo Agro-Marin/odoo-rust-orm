@@ -298,6 +298,7 @@ async fn main() -> Result<()> {
                 su,
                 lang,
                 allowed_company_ids: (!company.is_empty()).then_some(company),
+                principal_groups: None,
                 groupby_labels: None,
                 raw_many2one: Vec::new(),
                 unredacted_many2one: Vec::new(),

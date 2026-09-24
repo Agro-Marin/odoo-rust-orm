@@ -499,8 +499,14 @@ impl<'a> Orm<'a> {
             )
         };
         if !env.su
-            && security::check_read_access(&env.dynamic, comodel_name, env.uid, &env.groups)
-                .is_err()
+            && security::check_read_access(
+                &env.dynamic,
+                comodel_name,
+                env.uid,
+                &env.groups,
+                &env.scopes,
+            )
+            .is_err()
         {
             if !comodel.display_name_access_pure {
                 return Err(widened());
@@ -594,7 +600,13 @@ impl<'a> Orm<'a> {
         }
         let ctx = self.ctx(env);
         if !env.su {
-            security::check_read_access(&env.dynamic, &comodel.name, env.uid, &env.groups)?;
+            security::check_read_access(
+                &env.dynamic,
+                &comodel.name,
+                env.uid,
+                &env.groups,
+                &env.scopes,
+            )?;
             rules.ensure_evaluated(&comodel.name)?;
         }
 

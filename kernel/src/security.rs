@@ -184,12 +184,17 @@ fn parse_atom(c: &[char], p: &mut usize) -> Result<PyExpr> {
     }
 }
 
+/// The companies each group is held in, for the groups a grant limits to
+/// some companies; a held group absent from it is held in every company.
+pub type GroupScopes = std::collections::BTreeMap<i32, Vec<i32>>;
+
 pub struct UserCtx {
     pub uid: i32,
     pub company_id: i32,
     pub company_ids: Vec<i32>,
 
     pub groups: std::sync::Arc<std::collections::HashSet<i32>>,
+    pub scopes: std::sync::Arc<GroupScopes>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -351,6 +356,11 @@ async fn resolve_name(
             "user" => ("res.users".into(), vec![user.uid], &chain[1..]),
             "company_id" => return Ok(json!(user.company_id)),
             "company_ids" => return Ok(json!(user.company_ids)),
+            "group_ids" if chain.len() == 1 => {
+                let mut held: Vec<i32> = user.groups.iter().copied().collect();
+                held.sort_unstable();
+                return Ok(json!(held));
+            }
             other => refuse!("unknown name {other:?} in rule expression"),
         };
 
@@ -408,11 +418,7 @@ async fn resolve_name(
             let mut groups: Vec<i32> = if attr == "all_group_ids" {
                 let mut all: std::collections::HashSet<i32> = std::collections::HashSet::new();
                 for uid in &current_ids {
-                    if *uid == user.uid {
-                        all.extend(user.groups.iter().copied());
-                    } else {
-                        all.extend(dynamic.security.groups_of(*uid));
-                    }
+                    all.extend(dynamic.security.groups_of(*uid));
                 }
                 all.into_iter().collect()
             } else {
@@ -627,6 +633,45 @@ pub fn or_leaves(leaves: Vec<Json>) -> Vec<Json> {
     out
 }
 
+/// The companies the rule's group is held in, `None` when it is held in
+/// every company (by a grant not limited, or through a group that is not).
+fn held_scope(rule_groups: &[i32], user: &UserCtx) -> Option<Vec<i32>> {
+    let mut companies: Vec<i32> = Vec::new();
+    for group in rule_groups.iter().filter(|g| user.groups.contains(g)) {
+        companies.extend(user.scopes.get(group)?.iter().copied());
+    }
+    companies.sort_unstable();
+    companies.dedup();
+    Some(companies)
+}
+
+/// `ir.access._scoped`: a permission held in some companies reaches their
+/// records and the shared ones; a guard of the members binds them there only.
+fn scoped(domain: Json, anchor: &str, companies: &[i32], guard: bool) -> Json {
+    let within: Vec<Json> = if anchor == "id" {
+        vec![json!(["id", "in", companies])]
+    } else {
+        vec![
+            json!("|"),
+            json!([anchor, "in", companies]),
+            json!([anchor, "=", false]),
+        ]
+    };
+    if guard {
+        let mut outside = vec![json!("!")];
+        outside.extend(within);
+        return or_domains(vec![domain, Json::Array(outside)]);
+    }
+    let items = domain.as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        return Json::Array(within);
+    }
+    let mut out = vec![json!("&")];
+    out.extend(normalize_domain(items));
+    out.extend(within);
+    Json::Array(out)
+}
+
 fn or_domains(domains: Vec<Json>) -> Json {
     let mut terms: Vec<Vec<Json>> = Vec::with_capacity(domains.len());
     for d in domains {
@@ -727,6 +772,7 @@ async fn rules_domain_inner(
         });
     };
     let user_groups = &user.groups;
+    let anchor = dynamic.security.anchors.get(model);
     let mut global_domains: Vec<Json> = Vec::new();
     let mut group_domains: Vec<Json> = Vec::new();
     let mut any_applied = false;
@@ -738,11 +784,16 @@ async fn rules_domain_inner(
             continue;
         }
         any_applied = true;
-        let dom = match &rule.parsed {
+        let mut dom = match &rule.parsed {
             Some(Ok(parsed)) => eval_py(parsed, registry, db, user).await?,
             Some(Err(why)) => refuse!("rule on {model} does not parse: {why}"),
             None => json!([]),
         };
+        if is_group
+            && let (Some(anchor), Some(companies)) = (anchor, held_scope(&rule.groups, user))
+        {
+            dom = scoped(dom, anchor, &companies, rule.restrict);
+        }
         if is_group && !rule.restrict {
             group_domains.push(dom);
         } else {
@@ -784,8 +835,9 @@ pub fn check_read_access(
     model: &str,
     uid: i32,
     groups: &std::collections::HashSet<i32>,
+    scopes: &GroupScopes,
 ) -> Result<()> {
-    check_read_access_inner(&dynamic.security, model, uid, groups, 0)
+    check_read_access_inner(&dynamic.security, model, uid, groups, scopes, 0)
 }
 
 fn check_read_access_inner(
@@ -793,6 +845,7 @@ fn check_read_access_inner(
     model: &str,
     uid: i32,
     groups: &std::collections::HashSet<i32>,
+    scopes: &GroupScopes,
     depth: usize,
 ) -> Result<()> {
     if depth > 16 {
@@ -804,15 +857,16 @@ fn check_read_access_inner(
     if !granted.iter().any(|gid| groups.contains(gid)) {
         deny_access!("access denied on {model} for uid {uid}: no read permission held");
     }
+    let anchored = security.anchors.contains_key(model);
     if let Some(guards) = security.denying_guards.get(model)
-        && guards
-            .iter()
-            .any(|g| g.is_none_or(|gid| groups.contains(&gid)))
+        && guards.iter().any(|g| {
+            g.is_none_or(|gid| groups.contains(&gid) && !(anchored && scopes.contains_key(&gid)))
+        })
     {
         deny_access!("access denied on {model} for uid {uid}: a guard binding it admits nothing");
     }
     for parent in security.parents.get(model).into_iter().flatten() {
-        check_read_access_inner(security, parent, uid, groups, depth + 1)?;
+        check_read_access_inner(security, parent, uid, groups, scopes, depth + 1)?;
     }
     tracing::trace!(
         target: "odoo_kernel::access",
@@ -847,31 +901,181 @@ mod tests {
     #[test]
     fn read_access_needs_a_held_permission() {
         let security = access_security();
-        assert!(check_read_access_inner(&security, "x.unknown", 1, &held(&[1, 2]), 0).is_err());
-        assert!(check_read_access_inner(&security, "x.parent", 1, &held(&[1]), 0).is_err());
-        assert!(check_read_access_inner(&security, "x.parent", 1, &held(&[2]), 0).is_ok());
+        assert!(
+            check_read_access_inner(
+                &security,
+                "x.unknown",
+                1,
+                &held(&[1, 2]),
+                &GroupScopes::new(),
+                0
+            )
+            .is_err()
+        );
+        assert!(
+            check_read_access_inner(
+                &security,
+                "x.parent",
+                1,
+                &held(&[1]),
+                &GroupScopes::new(),
+                0
+            )
+            .is_err()
+        );
+        assert!(
+            check_read_access_inner(
+                &security,
+                "x.parent",
+                1,
+                &held(&[2]),
+                &GroupScopes::new(),
+                0
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn a_delegating_model_needs_its_parents_read_access_too() {
         let security = access_security();
         assert!(
-            check_read_access_inner(&security, "x.child", 1, &held(&[1]), 0).is_err(),
+            check_read_access_inner(&security, "x.child", 1, &held(&[1]), &GroupScopes::new(), 0)
+                .is_err(),
             "Python's _access_domain is FALSE when a delegated parent's is"
         );
-        assert!(check_read_access_inner(&security, "x.child", 1, &held(&[1, 2]), 0).is_ok());
+        assert!(
+            check_read_access_inner(
+                &security,
+                "x.child",
+                1,
+                &held(&[1, 2]),
+                &GroupScopes::new(),
+                0
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn a_guard_admitting_nothing_denies_only_whom_it_binds() {
         let security = access_security();
-        assert!(check_read_access_inner(&security, "x.guarded", 1, &held(&[1]), 0).is_ok());
-        assert!(check_read_access_inner(&security, "x.guarded", 1, &held(&[1, 3]), 0).is_err());
+        assert!(
+            check_read_access_inner(
+                &security,
+                "x.guarded",
+                1,
+                &held(&[1]),
+                &GroupScopes::new(),
+                0
+            )
+            .is_ok()
+        );
+        assert!(
+            check_read_access_inner(
+                &security,
+                "x.guarded",
+                1,
+                &held(&[1, 3]),
+                &GroupScopes::new(),
+                0
+            )
+            .is_err()
+        );
         let mut everyone = access_security();
         everyone
             .denying_guards
             .insert("x.guarded".into(), vec![None]);
-        assert!(check_read_access_inner(&everyone, "x.guarded", 1, &held(&[1]), 0).is_err());
+        assert!(
+            check_read_access_inner(
+                &everyone,
+                "x.guarded",
+                1,
+                &held(&[1]),
+                &GroupScopes::new(),
+                0
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_members_guard_held_in_some_companies_denies_only_there() {
+        // FALSE | ~within is ~within: the model stays readable outside the
+        // companies the guard's group is held in, unless nothing anchors it
+        let mut security = access_security();
+        let scoped: GroupScopes = [(3, vec![7])].into_iter().collect();
+        assert!(
+            check_read_access_inner(&security, "x.guarded", 1, &held(&[1, 3]), &scoped, 0).is_err()
+        );
+        security
+            .anchors
+            .insert("x.guarded".into(), "company_id".into());
+        assert!(
+            check_read_access_inner(&security, "x.guarded", 1, &held(&[1, 3]), &scoped, 0).is_ok()
+        );
+        assert!(
+            check_read_access_inner(
+                &security,
+                "x.guarded",
+                1,
+                &held(&[1, 3]),
+                &GroupScopes::new(),
+                0
+            )
+            .is_err()
+        );
+    }
+
+    fn principal(groups: &[i32], scopes: &[(i32, &[i32])]) -> UserCtx {
+        UserCtx {
+            uid: 5,
+            company_id: 1,
+            company_ids: vec![1],
+            groups: std::sync::Arc::new(held(groups)),
+            scopes: std::sync::Arc::new(scopes.iter().map(|(g, c)| (*g, c.to_vec())).collect()),
+        }
+    }
+
+    #[test]
+    fn a_rule_takes_the_scope_of_its_held_group() {
+        let user = principal(&[1, 2], &[(2, &[4, 3])]);
+        assert_eq!(held_scope(&[1], &user), None);
+        assert_eq!(held_scope(&[2], &user), Some(vec![3, 4]));
+        assert_eq!(
+            held_scope(&[1, 2], &user),
+            None,
+            "held unlimited through one of them"
+        );
+    }
+
+    #[test]
+    fn a_scoped_permission_reaches_its_companies_and_the_shared_records() {
+        assert_eq!(
+            scoped(dom(r#"[["a","=",1]]"#), "company_id", &[3], false),
+            dom(r#"["&",["a","=",1],"|",["company_id","in",[3]],["company_id","=",false]]"#)
+        );
+        assert_eq!(
+            scoped(dom("[]"), "company_ids", &[3, 4], false),
+            dom(r#"["|",["company_ids","in",[3,4]],["company_ids","=",false]]"#)
+        );
+        assert_eq!(
+            scoped(dom(r#"[["a","=",1],["b","=",2]]"#), "id", &[3], false),
+            dom(r#"["&","&",["a","=",1],["b","=",2],["id","in",[3]]]"#)
+        );
+    }
+
+    #[test]
+    fn a_scoped_members_guard_binds_inside_its_companies_only() {
+        assert_eq!(
+            scoped(dom(r#"[["a","=",1]]"#), "company_id", &[3], true),
+            dom(r#"["|",["a","=",1],"!","|",["company_id","in",[3]],["company_id","=",false]]"#)
+        );
+        assert_eq!(
+            scoped(dom("[]"), "company_id", &[3], true),
+            dom("[]"),
+            "a guard admitting everything stays TRUE"
+        );
     }
 
     fn dom(v: &str) -> Json {

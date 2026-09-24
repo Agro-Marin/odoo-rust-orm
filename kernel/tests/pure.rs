@@ -105,6 +105,7 @@ fn model(name: &str, order: &str, fields: Vec<Field>) -> Model {
         display_name_access_pure: true,
         check_access_pure: true,
         access_guard_pure: true,
+        access_company_anchor: None,
         name_search_fields: Some(vec!["name".into()]),
         display_name_search_exact: Vec::new(),
         impure_read_methods: Vec::new(),
@@ -279,8 +280,11 @@ fn related(name: &str, path: &str, ttype: FieldType) -> Field {
 }
 
 fn user_ctx(reg: &Registry) -> ExprCtx<'_> {
-    ExprCtx::new(reg, "en_US", 1)
-        .with_access(2, std::sync::Arc::new(std::collections::HashSet::new()))
+    ExprCtx::new(reg, "en_US", 1).with_access(odoo_kernel::sqlgen::Access {
+        uid: 2,
+        groups: Default::default(),
+        scopes: Default::default(),
+    })
 }
 
 fn partner_with_related_country_name() -> Registry {
@@ -1374,8 +1378,11 @@ fn a_rule_domain_is_compiled_as_superuser_so_the_comodels_own_rules_do_not_apply
 fn a_rule_domain_does_not_need_read_access_on_the_comodel_it_traverses() {
     let reg = base_registry();
     let rules = RuleSet::default();
-    let ctx = ExprCtx::new(&reg, "en_US", 1)
-        .with_access(9, std::sync::Arc::new(std::collections::HashSet::new()));
+    let ctx = ExprCtx::new(&reg, "en_US", 1).with_access(odoo_kernel::sqlgen::Access {
+        uid: 9,
+        groups: Default::default(),
+        scopes: Default::default(),
+    });
     let m = reg.get("res.partner").unwrap();
     let c = Compiler::root(&ctx, m, &rules, false);
     let node = domain::parse(&json!([["country_id.name", "=", "BE"]])).unwrap();
@@ -1787,8 +1794,11 @@ fn an_x2many_membership_test_by_id_or_by_absence_runs_as_superuser() {
         !absent.contains("secret"),
         "and tests absence under sudo() too: {absent}"
     );
-    let ctx = ExprCtx::new(&reg, "en_US", 1)
-        .with_access(9, std::sync::Arc::new(std::collections::HashSet::new()));
+    let ctx = ExprCtx::new(&reg, "en_US", 1).with_access(odoo_kernel::sqlgen::Access {
+        uid: 9,
+        groups: Default::default(),
+        scopes: Default::default(),
+    });
     let m = reg.get("res.partner").unwrap();
     let c = Compiler::root(&ctx, m, &rules, false);
     assert!(
@@ -2014,8 +2024,11 @@ fn restricted_registry() -> Registry {
 }
 
 fn compile_as_user(reg: &Registry, dom: serde_json::Value) -> anyhow::Result<String> {
-    let ctx = ExprCtx::new(reg, "en_US", 1)
-        .with_access(9, std::sync::Arc::new(std::collections::HashSet::new()));
+    let ctx = ExprCtx::new(reg, "en_US", 1).with_access(odoo_kernel::sqlgen::Access {
+        uid: 9,
+        groups: Default::default(),
+        scopes: Default::default(),
+    });
     let m = reg.get("res.partner").unwrap();
     let rules = RuleSet::default();
     let c = Compiler::root(&ctx, m, &rules, false);
@@ -2057,8 +2070,11 @@ fn the_debug_group_is_never_held_because_the_kernel_sees_no_session() {
 #[test]
 fn an_order_term_the_user_may_not_read_is_dropped_as_odoo_does() {
     let reg = restricted_registry();
-    let ctx = ExprCtx::new(&reg, "en_US", 1)
-        .with_access(9, std::sync::Arc::new(std::collections::HashSet::new()));
+    let ctx = ExprCtx::new(&reg, "en_US", 1).with_access(odoo_kernel::sqlgen::Access {
+        uid: 9,
+        groups: Default::default(),
+        scopes: Default::default(),
+    });
     let m = reg.get("res.partner").unwrap();
     let items = parse_order(
         &ctx,
@@ -3256,6 +3272,7 @@ fn a_request_naming_no_groupby_is_answered_not_refused() {
         su: false,
         lang: None,
         allowed_company_ids: None,
+        principal_groups: None,
         groupby_labels: None,
         raw_many2one: Vec::new(),
         unredacted_many2one: Vec::new(),

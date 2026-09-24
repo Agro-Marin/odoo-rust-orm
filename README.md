@@ -77,12 +77,24 @@ refusal list is the replacement backlog.
   check denies where Python's `_access_allowed` would: no permission held
   whose domain is not `[(0, '=', 1)]`, a guard of that domain binding the
   principal, or a denied parent. A class that adds to its rows in Python
-  (`_access_guard`) is refused wherever its access would apply. A small
+  (`_access_guard`) is refused wherever its access would apply. The groups
+  the principal holds are Python's group state (`_get_group_scopes`), sent
+  with every request as `principal_groups`: live grants and their dates, the
+  companies in use and the environment's privileges already applied. A row
+  whose group a grant limits to some companies is narrowed as
+  `ir.access._scoped` narrows it, through the model's exported
+  `_access_company_anchor`: a permission to those companies' records and the
+  shared ones, a members guard to binding there only. A request without that
+  state (the standalone server) reads the memberships, and is refused for a
+  user holding a grant limited to some companies or dated, which the
+  memberships misstate. A small
   Python-expression evaluator reads the domains (literals, lists, dotted
-  `user.…` chains resolved through stored/related m2o hops, `company_ids`);
+  `user.…` chains resolved through stored/related m2o hops, `company_ids`,
+  `group_ids`);
   comodel rules injected into any-subqueries and x2many reads like
-  `_search` does. Resolved rule ASTs cached per (uid, company, companies),
-  and dropped when Odoo's `orm_signaling_*` watermark moves. A rule the
+  `_search` does. Resolved rule ASTs cached per (uid, company, companies,
+  held groups and their companies), and dropped when Odoo's
+  `orm_signaling_*` watermark moves. A rule the
   evaluator cannot compile makes its model **refused**, never served
   unrestricted — see Known gaps. A field's `groups=` spec is evaluated exactly
   as `res.users.has_groups` does (a `!` token denies, `.` denies everyone, and

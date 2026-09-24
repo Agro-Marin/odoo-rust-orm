@@ -273,6 +273,12 @@ pub struct Model {
     /// the database alone cannot see Python and takes the rows as the whole.
     pub access_guard_pure: bool,
 
+    /// The field a grant limited to some companies compiles against
+    /// (`_access_company_anchor`): `id` for res.company, else a company
+    /// many2one/many2many; `None` for a model whose records belong to no
+    /// company, which takes such a grant's rows whole.
+    pub access_company_anchor: Option<String>,
+
     pub active_name: Option<String>,
 
     pub display_name_column: Vec<String>,
@@ -345,6 +351,15 @@ pub struct Security {
     pub rules: HashMap<String, Vec<Rule>>,
 
     pub user_companies: HashMap<i32, Vec<i32>>,
+
+    /// Each model's `_access_company_anchor`, for the models that have one.
+    pub anchors: HashMap<String, String>,
+
+    /// The users holding a live or scheduled grant that is limited to some
+    /// companies or dated. `res_groups_users_rel` projects their grants
+    /// without the limit, so their groups are only Python's to give: a
+    /// request for one of them that does not carry them is refused.
+    pub bounded_users: std::collections::HashSet<i32>,
 }
 
 /// Which rows beyond its own govern a model's read access: a model under a
@@ -354,6 +369,7 @@ pub struct Security {
 pub struct AccessTopology {
     pub bound_by: HashMap<String, Vec<String>>,
     pub parents: HashMap<String, Vec<String>>,
+    pub anchors: HashMap<String, String>,
 }
 
 impl AccessTopology {
@@ -389,7 +405,20 @@ impl AccessTopology {
                 )
             })
             .collect();
-        Self { bound_by, parents }
+        let anchors = models
+            .iter()
+            .filter_map(|(name, model)| {
+                model
+                    .access_company_anchor
+                    .clone()
+                    .map(|anchor| (name.clone(), anchor))
+            })
+            .collect();
+        Self {
+            bound_by,
+            parents,
+            anchors,
+        }
     }
 }
 
@@ -495,6 +524,11 @@ pub struct Registry {
 
     pub source: Source,
 
+    /// Whether each model's `access_company_anchor` is Python's answer: false
+    /// for a registry read from the database alone or an export that predates
+    /// the key, where "no anchor" would take a limited grant's rows whole.
+    pub anchors_known: bool,
+
     signal_tables: Vec<String>,
 
     inherits: HashMap<String, Vec<(String, String)>>,
@@ -548,6 +582,7 @@ impl Registry {
             has_unaccent,
             has_trigram: false,
             source,
+            anchors_known: false,
             signal_tables: Vec::new(),
             inherits: HashMap::new(),
             group_ids: HashMap::new(),
@@ -949,6 +984,7 @@ impl Registry {
                     display_name_access_pure: false,
                     check_access_pure: false,
                     access_guard_pure: true,
+                    access_company_anchor: None,
                     name_search_fields: None,
                     display_name_search_exact: Vec::new(),
                 },
@@ -1066,6 +1102,9 @@ impl Registry {
             .ok_or_else(|| refusal!("export missing models"))?;
         let mut skipped_tableless = 0usize;
         let mut hooked_total = 0usize;
+        let anchors_known = export_models
+            .values()
+            .all(|em| em.get("access_company_anchor").is_some());
         for (name, em) in export_models {
             let table = em["table"].as_str().unwrap_or_default().to_string();
             let Some(cols) = schema.get(&table) else {
@@ -1209,6 +1248,10 @@ impl Registry {
                         .unwrap_or(false),
                     check_access_pure: em["check_access_pure"].as_bool().unwrap_or(false),
                     access_guard_pure: em["access_guard_pure"].as_bool().unwrap_or(false),
+                    access_company_anchor: em["access_company_anchor"]
+                        .as_str()
+                        .filter(|anchor| !anchor.is_empty())
+                        .map(str::to_string),
                 },
             );
         }
@@ -1224,6 +1267,7 @@ impl Registry {
         );
         Self::check_export_covers_db(client, &models).await?;
         let mut registry = Self::finalize(client, models, Source::Export).await?;
+        registry.anchors_known = anchors_known;
         {
             let dynamic = registry.dynamic();
             let current = registry
@@ -1643,6 +1687,25 @@ impl Registry {
             }
         }
         security.parents = topology.parents.clone();
+        security.anchors = topology.anchors.clone();
+
+        let has_grants: bool = client
+            .query_one("SELECT to_regclass('res_users_grant') IS NOT NULL", &[])
+            .await?
+            .get(0);
+        if has_grants {
+            for row in client
+                .query(
+                    "SELECT DISTINCT user_id FROM res_users_grant
+                      WHERE state IN ('scheduled', 'active')
+                        AND (scoped OR date_from IS NOT NULL OR date_to IS NOT NULL)",
+                    &[],
+                )
+                .await?
+            {
+                security.bounded_users.insert(row.get(0));
+            }
+        }
 
         for row in client
             .query(
@@ -1678,6 +1741,8 @@ impl Registry {
             group_implications = security.implied.len(),
             users_with_groups = security.user_groups.len(),
             users_with_companies = security.user_companies.len(),
+            anchored_models = security.anchors.len(),
+            bounded_users = security.bounded_users.len(),
             ms = t0.elapsed().as_secs_f64() * 1000.0,
             "loaded ir.access and the group/company memberships"
         );

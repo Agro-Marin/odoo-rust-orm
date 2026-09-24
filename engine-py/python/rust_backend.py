@@ -662,25 +662,31 @@ def _search_native(model, domain, offset, limit, order, check_access):
         _delegated("search", "the domain carries %s" % exc)
         return None
 
+    import rust_orm_shim
+
     context = env.context
-    request = json.dumps(
-        {
-            "model": model._name,
-            "method": "search",
-            "registry_sequence": env.registry.registry_sequence,
-            "uid": env.uid,
-            "su": bool(env.su),
-            "lang": context.get("lang") or None,
-            "allowed_company_ids": context.get("allowed_company_ids") or None,
-            "active_test": bool(context.get("active_test", True)),
-            "tz": context.get("tz") or None,
-            "root_active_test": False,
-            "trusted_domain": True,
-        }
-    )
+    envelope = {
+        "model": model._name,
+        "method": "search",
+        "registry_sequence": env.registry.registry_sequence,
+        "uid": env.uid,
+        "su": bool(env.su),
+        "lang": context.get("lang") or None,
+        "allowed_company_ids": context.get("allowed_company_ids") or None,
+        "active_test": bool(context.get("active_test", True)),
+        "tz": context.get("tz") or None,
+        "root_active_test": False,
+        "trusted_domain": True,
+    }
+    if not env.su:
+        try:
+            envelope["principal_groups"] = rust_orm_shim._principal_groups(env)
+        except Exception as exc:
+            _delegated("search", "the group state raised %s" % type(exc).__name__)
+            return None
+    request = json.dumps(envelope)
     request = request[:-1] + ', "domain": ' + domain_json + "}"
     try:
-        import rust_orm_shim
 
         conn = rust_orm_shim._rust_conn(env)
         answer = kernel.search_where(conn, request, offline=True)

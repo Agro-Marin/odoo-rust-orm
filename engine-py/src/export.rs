@@ -201,6 +201,8 @@ def export_registry(reg):
             "display_name_access_pure": bool(display_name_access_pure),
             "check_access_pure": bool(check_access_pure),
             "access_guard_pure": bool(access_guard_pure),
+            # the field a grant limited to some companies compiles against
+            "access_company_anchor": _s(m._access_company_anchor()),
             "display_name_default": bool(dn_default),
             "table": _s(m._table),
             "order": _s(m._order),
