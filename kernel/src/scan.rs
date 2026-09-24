@@ -1021,7 +1021,11 @@ impl<'a> Orm<'a> {
                     .ok()
                     .and_then(|c| self.registry.get(c).ok())
                     .is_some_and(|c| c.order.trim() != "id");
-            if traverse_many2one && gb.granularity.is_none() && comodel_ordered && gb.alias != model.table {
+            if traverse_many2one
+                && gb.granularity.is_none()
+                && comodel_ordered
+                && gb.alias != model.table
+            {
                 refuse!(
                     "ordering the path groupby {spec} through its comodel's _order; \
                      the kernel orders a path by its ordinal only"
@@ -1233,6 +1237,92 @@ impl<'a> Orm<'a> {
     }
 }
 
+fn having_condition<F, K>(having: &Json, aggregate_of: &F) -> Result<Option<Expr>>
+where
+    F: Fn(&str) -> Result<(Expr, K)>,
+{
+    let items = match having {
+        Json::Null => return Ok(None),
+        Json::Array(items) if items.is_empty() => return Ok(None),
+        Json::Array(items) => items,
+        other => refuse!("having must be a list, not {other}"),
+    };
+    let mut stack: Vec<Expr> = Vec::new();
+    for item in items.iter().rev() {
+        match item {
+            Json::String(op) if op == "!" => {
+                let a = stack
+                    .pop()
+                    .ok_or_else(|| refusal!("malformed having {having}"))?;
+                stack.push(a.not());
+            }
+            Json::String(op) if op == "&" || op == "|" => {
+                let a = stack
+                    .pop()
+                    .ok_or_else(|| refusal!("malformed having {having}"))?;
+                let b = stack
+                    .pop()
+                    .ok_or_else(|| refusal!("malformed having {having}"))?;
+                stack.push(if op == "&" { a.and(b) } else { a.or(b) });
+            }
+            Json::Array(triple) if triple.len() == 3 => {
+                let spec = triple[0]
+                    .as_str()
+                    .ok_or_else(|| refusal!("having spec must be a string: {}", triple[0]))?;
+                let operator = triple[1]
+                    .as_str()
+                    .ok_or_else(|| refusal!("having operator must be a string: {}", triple[1]))?;
+                let (left, _kind) = aggregate_of(spec)?;
+                let right = &triple[2];
+                let expr = match operator {
+                    "in" | "not in" => {
+                        let values: Vec<sea_query::Value> = match right {
+                            Json::Array(values) => {
+                                values.iter().map(having_value).collect::<Result<_>>()?
+                            }
+                            scalar => vec![having_value(scalar)?],
+                        };
+                        if values.is_empty() {
+                            Expr::cust(if operator == "in" { "FALSE" } else { "TRUE" })
+                        } else if operator == "in" {
+                            left.is_in(values)
+                        } else {
+                            left.is_not_in(values)
+                        }
+                    }
+                    "=" => left.eq(having_value(right)?),
+                    "!=" => left.ne(having_value(right)?),
+                    "<" => left.lt(having_value(right)?),
+                    ">" => left.gt(having_value(right)?),
+                    "<=" => left.lte(having_value(right)?),
+                    ">=" => left.gte(having_value(right)?),
+                    other => refuse!("unsupported having comparator {other}"),
+                };
+                stack.push(expr);
+            }
+            other => refuse!("malformed having clause {other}"),
+        }
+    }
+    while stack.len() > 1 {
+        let a = stack.pop().expect("len > 1");
+        let b = stack.pop().expect("len > 1");
+        stack.push(a.and(b));
+    }
+    Ok(stack.pop())
+}
+
+fn having_value(value: &Json) -> Result<sea_query::Value> {
+    Ok(match value {
+        Json::Number(n) if n.is_i64() => sea_query::Value::from(n.as_i64().expect("i64")),
+        Json::Number(n) => {
+            sea_query::Value::from(n.as_f64().ok_or_else(|| refusal!("bad number {n}"))?)
+        }
+        Json::Bool(b) => sea_query::Value::from(*b),
+        Json::String(s) => sea_query::Value::from(s.clone()),
+        other => refuse!("unsupported having value {other}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{display_name_cell, having_condition, records_to_json};
@@ -1252,7 +1342,9 @@ mod tests {
         };
         Ok(having_condition(&having, &aggregate_of)?.map(|expr| {
             let mut select = Query::select();
-            select.expr(Expr::cust("1")).from(sea_query::Alias::new("t"));
+            select
+                .expr(Expr::cust("1"))
+                .from(sea_query::Alias::new("t"));
             select.add_group_by([Expr::cust("1")]);
             select.and_having(expr);
             select.to_string(PostgresQueryBuilder)
@@ -1279,7 +1371,11 @@ mod tests {
             sql.contains("COUNT* = 1 OR SUM\"t\".\"value\"::float8 IN 12, 99.5"),
             "{sql}"
         );
-        let sql = flat(having_sql(json!(["!", ["value:sum", "<", 9]])).unwrap().unwrap());
+        let sql = flat(
+            having_sql(json!(["!", ["value:sum", "<", 9]]))
+                .unwrap()
+                .unwrap(),
+        );
         assert!(sql.contains("NOT SUM\"t\".\"value\"::float8 < 9"), "{sql}");
         // two bare triples AND together, as python's stack does
         let sql = flat(
@@ -1289,7 +1385,11 @@ mod tests {
         );
         assert!(sql.contains("COUNT* < 3 AND"), "{sql}");
         assert!(sql.contains("::float8 >= 4"), "{sql}");
-        let sql = flat(having_sql(json!([["__count", "not in", []]])).unwrap().unwrap());
+        let sql = flat(
+            having_sql(json!([["__count", "not in", []]]))
+                .unwrap()
+                .unwrap(),
+        );
         assert!(sql.ends_with("HAVING TRUE"), "{sql}");
         let sql = flat(having_sql(json!([["__count", "in", []]])).unwrap().unwrap());
         assert!(sql.ends_with("HAVING FALSE"), "{sql}");
@@ -1364,83 +1464,4 @@ mod tests {
     fn more_cells_than_names_is_an_error_not_a_panic() {
         assert!(records_to_json(&["id"], &[vec![json!(1), json!(2)]]).is_err());
     }
-}
-
-fn having_condition<F, K>(having: &Json, aggregate_of: &F) -> Result<Option<Expr>>
-where
-    F: Fn(&str) -> Result<(Expr, K)>,
-{
-    let items = match having {
-        Json::Null => return Ok(None),
-        Json::Array(items) if items.is_empty() => return Ok(None),
-        Json::Array(items) => items,
-        other => refuse!("having must be a list, not {other}"),
-    };
-    let mut stack: Vec<Expr> = Vec::new();
-    for item in items.iter().rev() {
-        match item {
-            Json::String(op) if op == "!" => {
-                let a = stack.pop().ok_or_else(|| refusal!("malformed having {having}"))?;
-                stack.push(a.not());
-            }
-            Json::String(op) if op == "&" || op == "|" => {
-                let a = stack.pop().ok_or_else(|| refusal!("malformed having {having}"))?;
-                let b = stack.pop().ok_or_else(|| refusal!("malformed having {having}"))?;
-                stack.push(if op == "&" { a.and(b) } else { a.or(b) });
-            }
-            Json::Array(triple) if triple.len() == 3 => {
-                let spec = triple[0]
-                    .as_str()
-                    .ok_or_else(|| refusal!("having spec must be a string: {}", triple[0]))?;
-                let operator = triple[1]
-                    .as_str()
-                    .ok_or_else(|| refusal!("having operator must be a string: {}", triple[1]))?;
-                let (left, _kind) = aggregate_of(spec)?;
-                let right = &triple[2];
-                let expr = match operator {
-                    "in" | "not in" => {
-                        let values: Vec<sea_query::Value> = match right {
-                            Json::Array(values) => values
-                                .iter()
-                                .map(having_value)
-                                .collect::<Result<_>>()?,
-                            scalar => vec![having_value(scalar)?],
-                        };
-                        if values.is_empty() {
-                            Expr::cust(if operator == "in" { "FALSE" } else { "TRUE" })
-                        } else if operator == "in" {
-                            left.is_in(values)
-                        } else {
-                            left.is_not_in(values)
-                        }
-                    }
-                    "=" => left.eq(having_value(right)?),
-                    "!=" => left.ne(having_value(right)?),
-                    "<" => left.lt(having_value(right)?),
-                    ">" => left.gt(having_value(right)?),
-                    "<=" => left.lte(having_value(right)?),
-                    ">=" => left.gte(having_value(right)?),
-                    other => refuse!("unsupported having comparator {other}"),
-                };
-                stack.push(expr);
-            }
-            other => refuse!("malformed having clause {other}"),
-        }
-    }
-    while stack.len() > 1 {
-        let a = stack.pop().expect("len > 1");
-        let b = stack.pop().expect("len > 1");
-        stack.push(a.and(b));
-    }
-    Ok(stack.pop())
-}
-
-fn having_value(value: &Json) -> Result<sea_query::Value> {
-    Ok(match value {
-        Json::Number(n) if n.is_i64() => sea_query::Value::from(n.as_i64().expect("i64")),
-        Json::Number(n) => sea_query::Value::from(n.as_f64().ok_or_else(|| refusal!("bad number {n}"))?),
-        Json::Bool(b) => sea_query::Value::from(*b),
-        Json::String(s) => sea_query::Value::from(s.clone()),
-        other => refuse!("unsupported having value {other}"),
-    })
 }

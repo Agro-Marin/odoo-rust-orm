@@ -1180,15 +1180,15 @@ impl Registry {
                 );
             }
             for hooked in em["hooked_fields"].as_array().into_iter().flatten() {
-                if let Some(fname) = hooked.as_str() {
-                    if fields.remove(fname).is_some() {
-                        hooked_total += 1;
-                        tracing::trace!(
-                            target: "odoo_kernel::registry",
-                            model = %name, field = %fname,
-                            "dropped a field Python hooks; naming it will refuse"
-                        );
-                    }
+                if let Some(fname) = hooked.as_str()
+                    && fields.remove(fname).is_some()
+                {
+                    hooked_total += 1;
+                    tracing::trace!(
+                        target: "odoo_kernel::registry",
+                        model = %name, field = %fname,
+                        "dropped a field Python hooks; naming it will refuse"
+                    );
                 }
             }
             models.insert(

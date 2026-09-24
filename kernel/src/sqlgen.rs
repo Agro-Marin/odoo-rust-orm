@@ -1514,8 +1514,7 @@ impl<'a> Compiler<'a> {
         let coalias = format!("{}__{}", self.alias, field.name);
         let sub = self.sub_compiler(co, coalias.clone());
         let mut on = Cond::all().add(
-            col(&self.alias, &field.name)
-                .equals((Alias::new(coalias.as_str()), Alias::new("id"))),
+            col(&self.alias, &field.name).equals((Alias::new(coalias.as_str()), Alias::new("id"))),
         );
         if let Some(rules) = sub.comodel_rules(co, Some(false))? {
             let cond = sub.compile_rules(rules)?;

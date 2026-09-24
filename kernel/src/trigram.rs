@@ -1,4 +1,3 @@
-
 fn json_escape(s: &str) -> String {
     let quoted = serde_json::Value::String(s.to_string()).to_string();
     quoted[1..quoted.len() - 1].to_string()

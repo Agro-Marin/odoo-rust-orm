@@ -1,4 +1,3 @@
-
 use anyhow::Result;
 
 use crate::db::ident;
@@ -89,10 +88,7 @@ pub fn update_rows_sql(
                 .map(|f| ident(&f.name))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let row = format!(
-                "({})",
-                vec!["%s"; fields.len() + 1].join(", ")
-            );
+            let row = format!("({})", vec!["%s"; fields.len() + 1].join(", "));
             let values = vec![row; row_count].join(", ");
             Ok(format!(
                 " UPDATE {table}

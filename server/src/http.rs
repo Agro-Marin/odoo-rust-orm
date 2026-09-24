@@ -205,14 +205,9 @@ impl Drop for TxGuard<'_> {
 }
 
 enum Auth {
-    Token {
-        secret: String,
-        allow_su: bool,
-    },
+    Token { secret: String, allow_su: bool },
 
-    Pinned {
-        uid: i32,
-    },
+    Pinned { uid: i32 },
 }
 
 impl Auth {

@@ -371,10 +371,10 @@ fn conv_bool(v: &Bound<'_, PyAny>) -> PyResult<bool> {
             match s.trim().to_ascii_lowercase().as_str() {
                 "t" | "true" | "yes" | "y" | "on" | "1" => Ok(true),
                 "f" | "false" | "no" | "n" | "off" | "0" => Ok(false),
-                _ => Err(PyErr::from(e)),
+                _ => Err(e),
             }
         }
-        Err(e) => Err(PyErr::from(e)),
+        Err(e) => Err(e),
     }
 }
 
@@ -546,10 +546,9 @@ fn py_to_sql(
                 });
             }
             if let tokio_postgres::types::Kind::Array(elem) = ty.kind() {
-                let nested = v
-                    .try_iter()?
-                    .filter_map(Result::ok)
-                    .any(|item| item.is_instance_of::<PyList>() || item.is_instance_of::<PyTuple>());
+                let nested = v.try_iter()?.filter_map(Result::ok).any(|item| {
+                    item.is_instance_of::<PyList>() || item.is_instance_of::<PyTuple>()
+                });
                 if nested {
                     return Ok(Box::new(TextParam(Some(py_seq_to_array_literal(v)?))));
                 }
@@ -1419,10 +1418,10 @@ impl RustConn {
         if unreadable {
             self.writes_untracked.store(true, Ordering::SeqCst);
         }
-        if !tables.is_empty() {
-            if let Ok(mut set) = self.written.lock() {
-                set.extend(tables);
-            }
+        if !tables.is_empty()
+            && let Ok(mut set) = self.written.lock()
+        {
+            set.extend(tables);
         }
     }
 
@@ -1718,11 +1717,11 @@ fn leading_keyword(sql: &str) -> String {
             i += 1;
             continue;
         }
-        if let Some(end) = skip_opaque(bytes, i) {
-            if matches!(bytes[i], b'-' | b'/') {
-                i = end;
-                continue;
-            }
+        if let Some(end) = skip_opaque(bytes, i)
+            && matches!(bytes[i], b'-' | b'/')
+        {
+            i = end;
+            continue;
         }
         break;
     }
@@ -2284,8 +2283,7 @@ impl RustConn {
 mod tests {
     use super::{
         has_bare_keyword, has_multiple_statements, leading_keyword, numeric_binary_to_text,
-        returns_rows,
-        translate_placeholders,
+        returns_rows, translate_placeholders,
     };
 
     fn numeric(ndigits: &[u16], weight: i16, sign: u16, dscale: u16) -> Vec<u8> {
@@ -2402,7 +2400,8 @@ mod tests {
         assert_eq!((t, u), (vec!["res_partner".to_string()], false));
         let (t, u) = write_targets("WITH x AS (SELECT 1) INSERT INTO t (a) SELECT 1 FROM x");
         assert_eq!((t, u), (vec!["t".to_string()], false));
-        let (t, u) = write_targets("INSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET a = 2");
+        let (t, u) =
+            write_targets("INSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET a = 2");
         assert_eq!((t, u), (vec!["t".to_string()], false));
         let (_, u) = write_targets("TRUNCATE (a)");
         assert!(u);
@@ -2583,7 +2582,9 @@ struct MultiArray<T> {
     values: Vec<Option<T>>,
 }
 
-impl<'a, T: tokio_postgres::types::FromSql<'a>> tokio_postgres::types::FromSql<'a> for MultiArray<T> {
+impl<'a, T: tokio_postgres::types::FromSql<'a>> tokio_postgres::types::FromSql<'a>
+    for MultiArray<T>
+{
     fn from_sql(
         ty: &Type,
         raw: &'a [u8],
@@ -2720,8 +2721,7 @@ impl RustCopy {
             .ok_or_else(|| rerr("COPY already finished"))?;
         use futures_util::SinkExt;
         let rt = &self.rt;
-        py.detach(|| rt.block_on(sink.send(chunk)))
-            .map_err(db_err)
+        py.detach(|| rt.block_on(sink.send(chunk))).map_err(db_err)
     }
 }
 

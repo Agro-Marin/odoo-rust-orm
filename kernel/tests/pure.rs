@@ -3357,7 +3357,6 @@ fn ordering_by_a_company_dependent_many2one_reads_it_out_of_its_jsonb() {
     );
 }
 
-
 fn write_registry() -> Registry {
     let contract = contract();
     let mut fields = vec![field("id", FieldType::Integer)];
@@ -3516,7 +3515,6 @@ fn a_group_with_one_refused_column_refuses_whole() {
         .is_err()
     );
 }
-
 
 #[test]
 fn placeholders_become_percent_s_in_text_order_one_parameter_each() {
