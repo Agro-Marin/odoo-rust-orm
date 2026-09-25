@@ -34,22 +34,22 @@ async fn mini_access_schema(client: &Client) {
             "CREATE TABLE ir_model (id int PRIMARY KEY, model varchar);
              CREATE TABLE ir_access (id int PRIMARY KEY, model_id int, group_id int,
                                      kind varchar, guard_scope varchar, domain varchar,
-                                     active bool, for_read bool);
+                                     active bool, operation varchar);
              CREATE TABLE res_groups_implied_rel (gid int, hid int);
              CREATE TABLE res_groups_users_rel (uid int, gid int);
              CREATE TABLE res_company (id int PRIMARY KEY, active bool);
              CREATE TABLE res_company_users_rel (user_id int, cid int);
              INSERT INTO ir_model VALUES (1, 'x.thing'), (2, 'x.root'), (3, 'x.never');
              INSERT INTO ir_access VALUES
-               (10, 1, 7, 'permission', 'everyone', '[(''a'', ''='', 1)]', true, true),
-               (11, 1, 8, 'guard', 'members', '[(''b'', ''='', 2)]', true, true),
-               (12, 1, 9, 'guard', 'everyone', '[(''c'', ''='', 3)]', true, true),
-               (13, 1, 7, 'permission', 'everyone', '[(''d'', ''='', 4)]', false, true),
-               (14, 1, 7, 'permission', 'everyone', '[(''e'', ''='', 5)]', true, false),
-               (15, 1, 6, 'permission', 'everyone', '[(0, ''='', 1)]', true, true),
-               (20, 2, 5, 'permission', 'everyone', NULL, true, true),
-               (21, 2, 9, 'guard', 'everyone', '[(0, ''='', 1)]', true, true),
-               (30, 3, 5, 'permission', 'everyone', '[(0, ''='', 1)]', true, true);",
+               (10, 1, 7, 'permission', 'everyone', '[(''a'', ''='', 1)]', true, 'crud'),
+               (11, 1, 8, 'guard', 'members', '[(''b'', ''='', 2)]', true, 'crud'),
+               (12, 1, 9, 'guard', 'everyone', '[(''c'', ''='', 3)]', true, 'crud'),
+               (13, 1, 7, 'permission', 'everyone', '[(''d'', ''='', 4)]', false, 'crud'),
+               (14, 1, 7, 'permission', 'everyone', '[(''e'', ''='', 5)]', true, 'cud'),
+               (15, 1, 6, 'permission', 'everyone', '[(0, ''='', 1)]', true, 'crud'),
+               (20, 2, 5, 'permission', 'everyone', NULL, true, 'crud'),
+               (21, 2, 9, 'guard', 'everyone', '[(0, ''='', 1)]', true, 'crud'),
+               (30, 3, 5, 'permission', 'everyone', '[(0, ''='', 1)]', true, 'crud');",
         )
         .await
         .expect("the mini schema");
