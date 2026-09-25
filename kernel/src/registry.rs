@@ -1598,7 +1598,7 @@ impl Registry {
                         a.guard_scope = 'members', a.domain
                    FROM ir_access a
                    JOIN ir_model m ON a.model_id = m.id
-                  WHERE a.active AND a.for_read
+                  WHERE a.active AND a.operation LIKE '%r%'
                   ORDER BY a.id",
                 &[],
             )
