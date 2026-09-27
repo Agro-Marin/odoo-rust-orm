@@ -756,17 +756,18 @@ impl<'a> Compiler<'a> {
             };
             Ok(Json::String(utc.format("%Y-%m-%d %H:%M:%S").to_string()))
         };
-        let next = |d: NaiveDate| -> Result<NaiveDate> {
-            d.succ_opt()
-                .ok_or_else(|| refusal!("no day after {d} for {fname} {op}"))
-        };
+        // Python's datetime ends at year 9999: the day after 9999-12-31 is its
+        // OverflowError, answered below as fields/temporal.py answers it
+        let next = |d: NaiveDate| d.succ_opt().filter(|n| n.year() <= 9999);
         if matches!(op, ">" | "<" | ">=" | "<=") {
             let Some(day) = bare_date(v) else {
                 return Ok(None);
             };
-            return Ok(Some(match op {
-                ">" => leaf(fname, ">=", start_of(next(day)?)?),
-                "<=" => leaf(fname, "<", start_of(next(day)?)?),
+            return Ok(Some(match (op, next(day)) {
+                (">", Some(after)) => leaf(fname, ">=", start_of(after)?),
+                (">", None) => Node::False,
+                ("<=", Some(after)) => leaf(fname, "<", start_of(after)?),
+                ("<=", None) => leaf(fname, "!=", Json::Bool(false)),
                 _ => leaf(fname, op, start_of(day)?),
             }));
         }
@@ -774,10 +775,13 @@ impl<'a> Compiler<'a> {
         let mut exact: Vec<Json> = Vec::new();
         for x in values {
             match bare_date(x) {
-                Some(day) => days.push(Node::And(vec![
-                    leaf(fname, ">=", start_of(day)?),
-                    leaf(fname, "<", start_of(next(day)?)?),
-                ])),
+                Some(day) => days.push(match next(day) {
+                    Some(after) => Node::And(vec![
+                        leaf(fname, ">=", start_of(day)?),
+                        leaf(fname, "<", start_of(after)?),
+                    ]),
+                    None => leaf(fname, ">=", start_of(day)?),
+                }),
                 None => exact.push(x.clone()),
             }
         }

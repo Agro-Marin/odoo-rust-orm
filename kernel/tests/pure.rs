@@ -2321,6 +2321,21 @@ fn a_bare_date_against_a_datetime_names_the_whole_utc_day() {
 }
 
 #[test]
+fn the_last_representable_day_has_no_day_after_it_as_in_python() {
+    let reg = datetime_registry();
+    let le = count_sql(&reg, json!([["create_date", "<=", "9999-12-31"]]));
+    assert!(le.contains("IS NOT NULL"), "{le}");
+    assert!(!le.contains("10000"), "{le}");
+    let gt = count_sql(&reg, json!([["create_date", ">", "9999-12-31"]]));
+    assert!(!gt.contains("create_date") && !gt.contains("10000"), "{gt}");
+    let eq = count_sql(&reg, json!([["create_date", "=", "9999-12-31"]]));
+    assert!(
+        eq.contains(r#""create_date" >= '9999-12-31 00:00:00"#) && !eq.contains("10000"),
+        "{eq}"
+    );
+}
+
+#[test]
 fn a_bare_date_in_another_timezone_names_that_zones_day_in_utc() {
     let reg = datetime_registry();
     let compile_in = |tz: &str, dom: serde_json::Value| {
