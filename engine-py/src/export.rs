@@ -78,6 +78,7 @@ def export_registry(reg):
                 "translate_whole": getattr(f, "translate", False) is True,
                 "column_cast": (f.column_type[1] if getattr(f, "column_type", None) else None),
                 "store": bool(f.store),
+                "size": getattr(f, "size", None) if f.type == "char" else None,
                 "relation": _s(getattr(f, "comodel_name", None)),
                 "related": _s(related),
                 "company_dependent": bool(getattr(f, "company_dependent", False)),

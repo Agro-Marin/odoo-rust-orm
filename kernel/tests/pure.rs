@@ -26,6 +26,7 @@ fn field(name: &str, ttype: FieldType) -> Field {
             _ => "varchar".into(),
         },
         not_null: false,
+        size: None,
         translated: false,
         translate_whole: false,
         column_cast: Some(
@@ -2318,6 +2319,23 @@ fn a_bare_date_against_a_datetime_names_the_whole_utc_day() {
     );
     let exact = count_sql(&reg, json!([["create_date", "=", "2026-09-10 12:00:00"]]));
     assert!(exact.contains(r#"IN ('2026-09-10 12:00:00"#), "{exact}");
+}
+
+#[test]
+fn a_char_comparand_is_cut_to_the_fields_size_as_python_caches_it() {
+    let mut reg = base_registry();
+    let partner = reg.models.get_mut("res.partner").unwrap();
+    let mut f = field("code", FieldType::Char);
+    f.size = Some(2);
+    partner.fields.insert("code".into(), f);
+    let eq = count_sql(&reg, json!([["code", "=", "USA"]]));
+    assert!(eq.contains("'US'") && !eq.contains("USA"), "{eq}");
+    let many = count_sql(&reg, json!([["code", "in", ["USA", "MEX"]]]));
+    assert!(many.contains("'US'") && many.contains("'ME'"), "{many}");
+    let lt = count_sql(&reg, json!([["code", "<", "USA"]]));
+    assert!(lt.contains("'US'") && !lt.contains("USA"), "{lt}");
+    let like = count_sql(&reg, json!([["code", "ilike", "USA"]]));
+    assert!(like.contains("USA"), "a pattern is not a comparand: {like}");
 }
 
 #[test]

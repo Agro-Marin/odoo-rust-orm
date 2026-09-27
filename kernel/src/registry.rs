@@ -75,6 +75,15 @@ impl FieldType {
 pub const DEBUG_GROUP: &str = "base.group_no_one";
 
 #[derive(Debug, Clone)]
+pub struct Column {
+    pub udt: String,
+    pub not_null: bool,
+    pub max_length: Option<usize>,
+}
+
+pub type Schema = HashMap<String, HashMap<String, Column>>;
+
+#[derive(Debug, Clone)]
 pub struct Field {
     pub name: String,
     pub ttype: FieldType,
@@ -94,6 +103,8 @@ pub struct Field {
 
     pub pg_type: String,
     pub not_null: bool,
+
+    pub size: Option<usize>,
 
     pub translated: bool,
 
@@ -897,14 +908,13 @@ impl Registry {
             .collect()
     }
 
-    pub async fn load_schema(
-        client: &Client,
-    ) -> Result<HashMap<String, HashMap<String, (String, bool)>>> {
+    pub async fn load_schema(client: &Client) -> Result<Schema> {
         let t0 = std::time::Instant::now();
-        let mut schema: HashMap<String, HashMap<String, (String, bool)>> = HashMap::new();
+        let mut schema: Schema = HashMap::new();
         for row in client
             .query(
-                "SELECT table_name, column_name, udt_name, is_nullable
+                "SELECT table_name, column_name, udt_name, is_nullable,
+                        character_maximum_length
                  FROM information_schema.columns
                  WHERE table_schema = current_schema",
                 &[],
@@ -915,10 +925,15 @@ impl Registry {
             let col: String = row.get(1);
             let udt: String = row.get(2);
             let nullable: String = row.get(3);
-            schema
-                .entry(table)
-                .or_default()
-                .insert(col, (udt, nullable == "NO"));
+            let max_length: Option<i32> = row.get(4);
+            schema.entry(table).or_default().insert(
+                col,
+                Column {
+                    udt,
+                    not_null: nullable == "NO",
+                    max_length: max_length.and_then(|n| usize::try_from(n).ok()),
+                },
+            );
         }
         tracing::debug!(
             target: "odoo_kernel::registry",
@@ -1015,7 +1030,9 @@ impl Registry {
             } else {
                 None
             };
-            let (pg_type, not_null) = col_info.map(|(t, n)| (t.clone(), *n)).unwrap_or_default();
+            let (pg_type, not_null, size) = col_info
+                .map(|c| (c.udt.clone(), c.not_null, c.max_length))
+                .unwrap_or_default();
             let translated = ttype.is_text() && pg_type == "jsonb" && !company_dependent;
             let falsy = ttype.falsy_json_for_type(&name);
             model.fields.insert(
@@ -1033,6 +1050,7 @@ impl Registry {
                     stored: store,
                     pg_type,
                     not_null,
+                    size: if ttype == FieldType::Char { size } else { None },
                     translated,
                     translate_whole: false,
                     column_cast: None,
@@ -1122,8 +1140,10 @@ impl Registry {
                 let store = ef["store"].as_bool().unwrap_or(false);
                 let company_dependent = ef["company_dependent"].as_bool().unwrap_or(false);
                 let col_info = if store { cols.get(fname) } else { None };
-                let (pg_type, not_null) =
-                    col_info.map(|(t, n)| (t.clone(), *n)).unwrap_or_default();
+                let (pg_type, not_null) = col_info
+                    .map(|c| (c.udt.clone(), c.not_null))
+                    .unwrap_or_default();
+                let size = ef["size"].as_u64().and_then(|n| usize::try_from(n).ok());
                 let translated = ttype.is_text() && pg_type == "jsonb" && !company_dependent;
                 let related = ef["related"].as_str().map(str::to_string);
                 fields.insert(
@@ -1141,6 +1161,7 @@ impl Registry {
                         stored: store,
                         pg_type,
                         not_null,
+                        size,
                         translated,
                         translate_whole: ef["translate_whole"].as_bool().unwrap_or(false),
                         column_cast: ef["column_cast"].as_str().map(str::to_string),

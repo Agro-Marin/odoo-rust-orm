@@ -411,8 +411,8 @@ fn to_value(f: &Field, v: &Json) -> Result<Value> {
         FieldType::Float | FieldType::Monetary => Value::from(v.as_f64().ok_or_else(err)?),
         FieldType::Boolean => Value::from(v.as_bool().ok_or_else(err)?),
         FieldType::Char | FieldType::Text | FieldType::Html | FieldType::Selection => match v {
-            Json::String(s) => Value::from(s.clone()),
-            Json::Number(n) => Value::from(n.to_string()),
+            Json::String(s) => Value::from(truncated_to_size(f, s)),
+            Json::Number(n) => Value::from(truncated_to_size(f, &n.to_string())),
             _ => return Err(err()),
         },
         FieldType::Date => {
@@ -430,6 +430,15 @@ fn to_value(f: &Field, v: &Json) -> Result<Value> {
         }
         _ => return Err(err()),
     })
+}
+
+// Char.convert_to_cache cuts a comparand to the field's size, so `code = 'USA'`
+// on a size-2 code matches 'US'
+fn truncated_to_size(f: &Field, s: &str) -> String {
+    match f.size {
+        Some(size) => s.chars().take(size).collect(),
+        None => s.to_string(),
+    }
 }
 
 const IN_TO_ANY_THRESHOLD: usize = 100;
@@ -2245,7 +2254,8 @@ impl<'a> Compiler<'a> {
             FieldType::Char | FieldType::Text | FieldType::Selection
         );
         let comparand = match value {
-            Json::Number(n) if textual => Json::String(n.to_string()),
+            Json::Number(n) if textual => Json::String(truncated_to_size(field, &n.to_string())),
+            Json::String(s) if textual => Json::String(truncated_to_size(field, s)),
             other => other.clone(),
         };
         let accept_null = field.falsy_json().is_some_and(|falsy| {
