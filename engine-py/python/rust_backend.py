@@ -245,6 +245,10 @@ class RustBackend:
         _delegated("ancestors", "not implemented natively")
         return self._delegate.ancestors(*args, **kwargs)
 
+    def descendant_edges(self, *args, **kwargs):
+        _delegated("descendant_edges", "not implemented natively")
+        return self._delegate.descendant_edges(*args, **kwargs)
+
     def read_grouping_sets_rows(self, *args, **kwargs):
         _delegated("read_grouping_sets_rows", "not implemented natively")
         return self._delegate.read_grouping_sets_rows(*args, **kwargs)
