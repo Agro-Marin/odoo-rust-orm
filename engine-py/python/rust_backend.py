@@ -24,6 +24,7 @@ PROTOCOL_METHODS = (
     "as_query",
     "ancestors",
     "descendants",
+    "descendant_edges",
     "read_group_rows",
     "get_existing_ids",
     "lock_for_update",

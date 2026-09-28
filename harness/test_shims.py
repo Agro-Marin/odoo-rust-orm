@@ -2703,6 +2703,7 @@ def test_an_unarmed_port_is_its_delegate() -> None:
         "set_parent_paths": (("model", [1]), {}),
         "move_parent_paths": (("model", [1], "1/"), {}),
         "ancestors": (("model", "parent_id", [1]), {}),
+        "descendant_edges": (("model", "parent_id", [1]), {}),
         "records_with_parent_changed": (("model", {1: [2]}), {}),
         "timezone_names": (("env",), {}),
         "count_m2m_groups": (("records", "rel", "c1", "c2", "query"), {}),
