@@ -1,17 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const ENGINE_INPUTS: [(&str, &str); 7] = [
-    ("Cargo.toml", ""),
-    ("Cargo.lock", ""),
-    ("kernel/Cargo.toml", ""),
-    ("kernel/src", ".rs"),
-    ("engine-py/Cargo.toml", ""),
-    ("engine-py/src", ".rs"),
-    ("engine-py/python", ".py"),
-];
+const WORKSPACE_INPUTS: [&str; 2] = ["Cargo.toml", "Cargo.lock"];
+const LINKED_CRATES: [&str; 2] = ["kernel", "engine-py"];
+const CRATE_INPUTS: [&str; 2] = ["Cargo.toml", "build.rs"];
 
-fn collect(dir: &Path, suffix: &str, out: &mut Vec<PathBuf>) {
+fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -21,8 +15,8 @@ fn collect(dir: &Path, suffix: &str, out: &mut Vec<PathBuf>) {
             if path.file_name().is_some_and(|name| name == "bin") {
                 continue;
             }
-            collect(&path, suffix, out);
-        } else if path.to_string_lossy().ends_with(suffix) {
+            collect_rust_sources(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
             out.push(path);
         }
     }
@@ -45,19 +39,19 @@ fn main() {
         .parent()
         .expect("engine-py sits in the workspace root");
 
-    let mut files = Vec::new();
-    for (input, suffix) in ENGINE_INPUTS {
-        let path = root.join(input);
-        if suffix.is_empty() {
-            if path.is_file() {
-                files.push(path);
-            }
-        } else {
-            collect(&path, suffix, &mut files);
-        }
+    let mut files: Vec<PathBuf> = WORKSPACE_INPUTS
+        .iter()
+        .map(|name| root.join(name))
+        .collect();
+    for krate in LINKED_CRATES {
+        let dir = root.join(krate);
+        files.extend(CRATE_INPUTS.iter().map(|name| dir.join(name)));
+        collect_rust_sources(&dir.join("src"), &mut files);
+        println!("cargo:rerun-if-changed={}", dir.join("src").display());
     }
     let mut inputs: Vec<(String, PathBuf)> = files
         .into_iter()
+        .filter(|path| path.is_file())
         .map(|path| {
             let rel = path
                 .strip_prefix(root)

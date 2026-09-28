@@ -10,6 +10,7 @@ import unittest
 HERE = pathlib.Path(pathlib.Path(__file__).resolve()).parent
 ROOT = pathlib.Path(HERE).parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(ROOT / "engine-py/python"))
 
 try:
     import engine_py
@@ -3101,25 +3102,30 @@ def test_the_extension_under_test_was_built_from_this_checkout() -> None:
     check("the addon arms this build", addon.stale_extension(engine_py), None)
 
 
-def test_a_stale_extension_is_refused() -> None:
+def _checkout_copy(addon, dest: pathlib.Path, *, reverse: bool = False) -> None:
     import shutil
+
+    files = addon.source_inputs(pathlib.Path(ROOT))
+    files += sorted((pathlib.Path(ROOT) / "engine-py/python").glob("*.py"))
+    files += sorted((pathlib.Path(ROOT) / "kernel/tests").glob("*.rs"))
+    files.append(pathlib.Path(ROOT) / "README.md")
+    for source in sorted(files, reverse=reverse):
+        target = dest / source.relative_to(ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(source, target)
+
+
+def _appended(path: pathlib.Path, text: str) -> None:
+    path.write_text(path.read_text(encoding="utf-8") + text, encoding="utf-8")
+
+
+def test_a_stale_extension_is_refused() -> None:
     import tempfile
 
     addon = _addon()
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
-        for name, _suffix in addon.SOURCE_INPUTS:
-            source = pathlib.Path(ROOT) / name
-            if source.is_dir():
-                shutil.copytree(
-                    source, root / name, ignore=shutil.ignore_patterns("__pycache__")
-                )
-            elif source.is_file():
-                (root / name).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy(source, root / name)
-        shutil.copy(
-            pathlib.Path(ROOT) / "engine-py/build.rs", root / "engine-py/build.rs"
-        )
+        _checkout_copy(addon, root)
 
         class _Built:
             __file__ = "engine_py.so"
@@ -3144,23 +3150,134 @@ def test_a_stale_extension_is_refused() -> None:
                 addon.stale_extension(engine, root) is not None,
                 True,
             )
-        shim = root / "engine-py/python/rust_orm_shim.py"
-        shim.write_text(shim.read_text() + "\n")
-        check(
-            "an edit to an embedded Python module refuses the build",
-            "was built from" in (addon.stale_extension(_Built, root) or ""),
-            True,
-        )
         os.environ[addon.SKIP_FRESHNESS_ENV] = "1"
         try:
-            check("the bypass arms it", addon.stale_extension(_Built, root), None)
+            check("the bypass arms it", addon.stale_extension(_Unstamped, root), None)
         finally:
             del os.environ[addon.SKIP_FRESHNESS_ENV]
         (root / "engine-py/build.rs").unlink()
         check(
-            "an addon deployed without its checkout compares nothing",
-            addon.stale_extension(_Unstamped, root),
-            None,
+            "an addon deployed without its checkout has no Python half to load",
+            "not an odoo-rust-orm checkout"
+            in (addon.stale_extension(_Built, root) or ""),
+            True,
+        )
+
+
+def test_only_what_is_compiled_into_the_extension_stales_it() -> None:
+    import tempfile
+
+    addon = _addon()
+    for label, rel, uncompiled in (
+        ("the ORM shim", "engine-py/python/rust_orm_shim.py", True),
+        ("the backend port", "engine-py/python/rust_backend.py", True),
+        ("the README", "README.md", True),
+        ("a kernel integration test", "kernel/tests/pure.rs", True),
+        ("an engine-py binary", "engine-py/src/bin/probe_audit.rs", True),
+        ("a kernel source", "kernel/src/sqlgen.rs", False),
+        ("an engine-py source", "engine-py/src/lib.rs", False),
+        ("the engine-py build script", "engine-py/build.rs", False),
+        ("the kernel manifest", "kernel/Cargo.toml", False),
+        ("the lock file", "Cargo.lock", False),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            _checkout_copy(addon, root)
+            if not (root / rel).exists():
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text("")
+
+            class _Built:
+                __file__ = "engine_py.so"
+                __source_crc__ = addon.source_crc(root)
+                __profile__ = "release"
+
+            _appended(root / rel, "\n")
+            stale = addon.stale_extension(_Built, root)
+            check(
+                "an edit to %s %s the build"
+                % (label, "keeps" if uncompiled else "stales"),
+                stale is None,
+                uncompiled,
+            )
+
+
+def test_the_source_stamp_is_path_and_order_independent() -> None:
+    import tempfile
+
+    addon = _addon()
+    with (
+        tempfile.TemporaryDirectory() as first,
+        tempfile.TemporaryDirectory(prefix="elsewhere-") as second,
+    ):
+        _checkout_copy(addon, pathlib.Path(first))
+        _checkout_copy(addon, pathlib.Path(second) / "deeper", reverse=True)
+        check(
+            "two copies written in opposite orders at different paths stamp alike",
+            addon.source_crc(pathlib.Path(second) / "deeper"),
+            addon.source_crc(pathlib.Path(first)),
+        )
+        check(
+            "the copy stamps as the checkout does",
+            addon.source_crc(pathlib.Path(first)),
+            addon.source_crc(pathlib.Path(ROOT)),
+        )
+
+
+def test_the_stamp_covers_every_crate_the_extension_links() -> None:
+    import tomllib
+
+    addon = _addon()
+    root = pathlib.Path(ROOT)
+    workspace = tomllib.loads((root / "Cargo.toml").read_text())
+    members = {m: root / m for m in workspace["workspace"]["members"]}
+    by_dir = {path.resolve(): name for name, path in members.items()}
+    linked, pending = set(), ["engine-py"]
+    while pending:
+        crate = pending.pop()
+        if crate in linked:
+            continue
+        linked.add(crate)
+        manifest = tomllib.loads((members[crate] / "Cargo.toml").read_text())
+        pending.extend(
+            by_dir[(members[crate] / dep["path"]).resolve()]
+            for dep in manifest.get("dependencies", {}).values()
+            if isinstance(dep, dict) and "path" in dep
+        )
+    check("the stamped crates", sorted(addon.LINKED_CRATES), sorted(linked))
+
+
+def test_the_extension_includes_no_file_the_stamp_misses() -> None:
+    import re
+
+    addon = _addon()
+    root = pathlib.Path(ROOT)
+    stamped = {p.resolve() for p in addon.source_inputs(root)}
+    included = [
+        ((source.parent / target).resolve(), source.relative_to(root).as_posix())
+        for source in addon.source_inputs(root)
+        if source.suffix == ".rs"
+        for target in re.findall(
+            r'include_(?:str|bytes)!\(\s*"([^"]+)"', source.read_text()
+        )
+    ]
+    check(
+        "files compiled in by include_str!/include_bytes! outside the stamp",
+        [(src, str(t)) for t, src in included if t not in stamped],
+        [],
+    )
+
+
+def test_the_python_half_loads_from_this_checkout() -> None:
+    if engine_py is None:
+        raise unittest.SkipTest("engine_py is not importable (%s)" % IMPORT_ERROR)
+    _odoo()
+    python = (pathlib.Path(ROOT) / "engine-py/python").resolve()
+    for module in (*_shims(), engine_py.install_backend()):
+        check(
+            "%s is read from %s" % (module.__name__, python),
+            pathlib.Path(module.__file__).resolve().parent,
+            python,
         )
 
 
@@ -3402,10 +3519,6 @@ def test_db_shim_kill_switch_follows_active() -> None:
                 sys.modules[name] = mod
 
 
-if __name__ == "__main__":
-    sys.exit(main())
-
-
 def test_a_reference_search_on_an_unwritten_table_is_empty_by_construction() -> None:
     backend = _backend()
     _odoo()
@@ -3582,3 +3695,7 @@ def test_the_security_taint_is_keyed_by_the_transactions_own_cursor() -> None:
         True,
     )
     rust_orm_shim.DIRTY_CRS.discard(shared)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

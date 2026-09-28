@@ -23,7 +23,9 @@ def workspace():
 
 
 def engine_python_dir():
-    return os.path.join(root_dir(), "engine-py", "python")
+    return _var("RUSTORM_ENGINE_PYTHON") or os.path.join(
+        root_dir(), "engine-py", "python"
+    )
 
 
 def pg_host():

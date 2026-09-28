@@ -41,8 +41,14 @@ def test_dsn_mirrors_config_rs(monkeypatch) -> None:
 
 def test_harness_dir_derives_from_the_file(monkeypatch) -> None:
     monkeypatch.delenv("RUSTORM_HARNESS", raising=False)
+    monkeypatch.delenv("RUSTORM_ENGINE_PYTHON", raising=False)
     assert _env.harness_dir() == HERE
     assert pathlib.Path(os.path.join(_env.engine_python_dir(), "wire.py")).exists()
+
+
+def test_engine_python_dir_mirrors_config_rs(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("RUSTORM_ENGINE_PYTHON", str(tmp_path))
+    assert _env.engine_python_dir() == str(tmp_path)
 
 
 def test_out_path_is_per_process(monkeypatch) -> None:

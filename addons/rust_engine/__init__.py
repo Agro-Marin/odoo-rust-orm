@@ -3,6 +3,7 @@ import logging
 import math
 import os
 import pathlib
+import sys
 import threading
 import time
 import zlib
@@ -145,59 +146,72 @@ def _connection_specs(db_name):
 DEFAULT_TICK = 60
 
 CHECKOUT = pathlib.Path(__file__).resolve().parents[2]
-SOURCE_INPUTS = (
-    ("Cargo.toml", ""),
-    ("Cargo.lock", ""),
-    ("kernel/Cargo.toml", ""),
-    ("kernel/src", ".rs"),
-    ("engine-py/Cargo.toml", ""),
-    ("engine-py/src", ".rs"),
-    ("engine-py/python", ".py"),
-)
+ENGINE_PYTHON = "engine-py/python"
+WORKSPACE_INPUTS = ("Cargo.toml", "Cargo.lock")
+LINKED_CRATES = ("kernel", "engine-py")
+CRATE_INPUTS = ("Cargo.toml", "build.rs")
 SKIP_FRESHNESS_ENV = "RUSTORM_SKIP_FRESHNESS_CHECK"
 
 
+def source_inputs(root: pathlib.Path) -> list[pathlib.Path]:
+    files = [root / name for name in WORKSPACE_INPUTS]
+    for crate in LINKED_CRATES:
+        files += [root / crate / name for name in CRATE_INPUTS]
+        src = root / crate / "src"
+        files += [
+            p for p in src.rglob("*.rs") if "bin" not in p.relative_to(src).parts[:-1]
+        ]
+    return [p for p in files if p.is_file()]
+
+
 def source_crc(root: pathlib.Path) -> str:
-    files = []
-    for name, suffix in SOURCE_INPUTS:
-        path = root / name
-        if not suffix:
-            files += [path] if path.is_file() else []
-        elif path.is_dir():
-            files += [
-                p
-                for p in path.rglob("*" + suffix)
-                if p.is_file() and "bin" not in p.relative_to(path).parts[:-1]
-            ]
     blob = b"".join(
         rel.encode() + b"\0" + path.read_bytes() + b"\0"
-        for rel, path in sorted((p.relative_to(root).as_posix(), p) for p in files)
+        for rel, path in sorted(
+            (p.relative_to(root).as_posix(), p) for p in source_inputs(root)
+        )
     )
     return f"{zlib.crc32(blob):08x}"
 
 
 def stale_extension(engine_py, root: pathlib.Path = CHECKOUT) -> str | None:
+    if os.environ.get(SKIP_FRESHNESS_ENV):
+        return None
+    where = getattr(engine_py, "__file__", "?")
     if (
-        os.environ.get(SKIP_FRESHNESS_ENV)
+        not (root / ENGINE_PYTHON).is_dir()
         or not (root / "engine-py/build.rs").is_file()
     ):
-        return None
+        return (
+            f"the engine_py at {where} needs its Python half from {root / ENGINE_PYTHON}, "
+            f"and {root} is not an odoo-rust-orm checkout"
+        )
     built = getattr(engine_py, "__source_crc__", None)
     current = source_crc(root)
-    where = getattr(engine_py, "__file__", "?")
     rebuild = (
         f"run {root}/harness/install_engine.sh, which builds it and installs it "
         f"into this interpreter, or set {SKIP_FRESHNESS_ENV}=1"
     )
     if built != current:
         was = (
-            "predates the source stamp" if built is None else f"was built from {built}"
+            "predates the source stamp"
+            if built is None
+            else f"was compiled from Rust sources with crc {built}"
         )
-        return f"the engine_py at {where} {was}, but {root} is {current}; {rebuild}"
+        return (
+            f"the engine_py at {where} {was}, but the Rust sources under {root} "
+            f"are crc {current}; {rebuild}"
+        )
     profile = getattr(engine_py, "__profile__", None)
     if profile != "release":
         return f"the engine_py at {where} is a {profile} build; {rebuild}"
     return None
+
+
+def _use_checkout_python(root: pathlib.Path = CHECKOUT) -> None:
+    path = str(root / ENGINE_PYTHON)
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
 
 TRACE_LEVEL = 5
@@ -577,6 +591,7 @@ def start() -> None:
             )
             return
 
+        _use_checkout_python()
         db_shim, orm_shim = engine_py.install_shims()
         _STATE.update(
             db=db_name,

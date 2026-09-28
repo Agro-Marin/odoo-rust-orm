@@ -5,6 +5,7 @@ pub mod kernel;
 pub mod logbridge;
 
 use pyo3::prelude::*;
+use pyo3::exceptions::PyModuleNotFoundError;
 use pyo3::types::PyModule;
 
 #[pyo3::pymodule]
@@ -38,61 +39,55 @@ fn export_registry(py: Python<'_>, registry: Py<PyAny>) -> PyResult<String> {
     export::export_registry(py, &registry)
 }
 
-const SHIM_SOURCES: [(&str, &str); 4] = [
-    ("wire", include_str!("../python/wire.py")),
-    ("purity", include_str!("../python/purity.py")),
-    ("rust_db_shim", include_str!("../python/rust_db_shim.py")),
-    ("rust_orm_shim", include_str!("../python/rust_orm_shim.py")),
-];
-
-const BACKEND_SOURCE: (&str, &str) = ("rust_backend", include_str!("../python/rust_backend.py"));
-
-fn register<'py>(py: Python<'py>, name: &str, src: &str) -> PyResult<Bound<'py, PyModule>> {
-    let modules = py.import("sys")?.getattr("modules")?;
-    if let Some(existing) = modules
-        .get_item(name)
-        .ok()
-        .and_then(|m| m.cast_into::<PyModule>().ok())
-    {
-        return Ok(existing);
+fn register<'py>(py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyModule>> {
+    match py.import(name) {
+        Err(err) if is_missing(py, &err, name) => {
+            let dir = odoo_kernel::config::engine_python_dir();
+            let path = py.import("sys")?.getattr("path")?;
+            let entry = dir.display().to_string();
+            if !path.contains(&entry)? {
+                path.call_method1("append", (&entry,))?;
+            }
+            py.import(name).map_err(|err| {
+                if is_missing(py, &err, name) {
+                    PyModuleNotFoundError::new_err(format!(
+                        "{name} is engine_py's Python half, loaded from a checkout's \
+                         engine-py/python rather than compiled into the extension; it is \
+                         neither on sys.path nor in {entry} (RUSTORM_ENGINE_PYTHON)"
+                    ))
+                } else {
+                    err
+                }
+            })
+        }
+        imported => imported,
     }
-    let module = PyModule::from_code(
-        py,
-        &std::ffi::CString::new(src)?,
-        &std::ffi::CString::new(format!("{name}.py"))?,
-        &std::ffi::CString::new(name)?,
-    )?;
-    modules.set_item(name, &module)?;
-    Ok(module)
+}
+
+fn is_missing(py: Python<'_>, err: &PyErr, name: &str) -> bool {
+    err.is_instance_of::<PyModuleNotFoundError>(py)
+        && err
+            .value(py)
+            .getattr("name")
+            .and_then(|n| n.extract::<String>())
+            .is_ok_and(|n| n == name)
 }
 
 pub fn register_purity(py: Python<'_>) -> PyResult<()> {
-    let (name, src) = SHIM_SOURCES[1];
-    register(py, name, src).map(|_| ())
+    register(py, "purity").map(|_| ())
 }
 
 pub fn install_backend_py<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyModule>> {
     errors::register(py)?;
-    let (wire_name, wire_src) = SHIM_SOURCES[0];
-    register(py, wire_name, wire_src)?;
-    register_purity(py)?;
-    let (name, src) = BACKEND_SOURCE;
-    register(py, name, src)
+    register(py, "rust_backend")
 }
 
 pub fn install_shims_py<'py>(
     py: Python<'py>,
 ) -> PyResult<(Bound<'py, PyModule>, Bound<'py, PyModule>)> {
     errors::register(py)?;
-    let mut out: Vec<Bound<'py, PyModule>> = Vec::new();
-    for (name, src) in SHIM_SOURCES {
-        let module = register(py, name, src)?;
-        if name != "wire" && name != "purity" {
-            out.push(module);
-        }
-    }
-    let orm = out.pop().expect("two shim modules");
-    let db = out.pop().expect("two shim modules");
+    let db = register(py, "rust_db_shim")?;
+    let orm = register(py, "rust_orm_shim")?;
     Ok((db, orm))
 }
 

@@ -182,6 +182,15 @@ pub fn harness_dir() -> PathBuf {
     resolved("harness_dir", dir, given.is_some())
 }
 
+pub fn engine_python_dir() -> PathBuf {
+    let given = var("RUSTORM_ENGINE_PYTHON");
+    let dir = match &given {
+        Some(p) => p.into(),
+        None => workspace().join("odoo-rust-orm/engine-py/python"),
+    };
+    resolved("engine_python_dir", dir, given.is_some())
+}
+
 pub fn venv_site() -> PathBuf {
     if let Some(p) = var("RUSTORM_VENV_SITE") {
         return resolved("venv_site", p.into(), true);
@@ -277,6 +286,27 @@ mod tests {
             "venv_site() = {} has no psycopg; the embedding bins import it",
             site.display()
         );
+    }
+
+    #[test]
+    fn engine_python_dir_holds_the_python_half() {
+        if !workspace_present() {
+            return;
+        }
+        let dir = engine_python_dir();
+        for module in [
+            "wire",
+            "purity",
+            "rust_db_shim",
+            "rust_orm_shim",
+            "rust_backend",
+        ] {
+            assert!(
+                dir.join(format!("{module}.py")).is_file(),
+                "engine_python_dir() = {} has no {module}.py",
+                dir.display()
+            );
+        }
     }
 
     #[test]

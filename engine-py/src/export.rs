@@ -269,18 +269,6 @@ pub fn prepare_python(py: Python<'_>, config: &str) -> PyResult<()> {
     Ok(())
 }
 
-pub fn install_wire_module(py: Python<'_>) -> PyResult<()> {
-    let src = include_str!("../python/wire.py");
-    let m = pyo3::types::PyModule::from_code(
-        py,
-        &std::ffi::CString::new(src).unwrap(),
-        c"wire.py",
-        c"wire",
-    )?;
-    py.import("sys")?.getattr("modules")?.set_item("wire", m)?;
-    Ok(())
-}
-
 pub fn boot_registry(py: Python<'_>, config: &str, db: &str) -> PyResult<Py<PyAny>> {
     let t0 = std::time::Instant::now();
     tracing::info!(

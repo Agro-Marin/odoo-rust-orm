@@ -909,8 +909,9 @@ Nothing is pinned to one machine or one database. Every path derives from
 `RUSTORM_WORKSPACE` (default `/home/marin/Odoo`) and each value has its own
 override: `RUSTORM_DB`, `RUSTORM_DSN`, `RUSTORM_PGHOST`, `RUSTORM_PGUSER`,
 `RUSTORM_ODOO_ROOT`, `RUSTORM_ODOO_CONF`, `RUSTORM_VENV`, `RUSTORM_VENV_SITE`,
-`RUSTORM_HARNESS`. See `kernel/src/config.rs`; `harness/_env.py` mirrors the
-DSN and harness-directory rules for the Python side. `RUSTORM_VERIFY_OUT`
+`RUSTORM_HARNESS`, `RUSTORM_ENGINE_PYTHON`. See `kernel/src/config.rs`;
+`harness/_env.py` mirrors the DSN, harness-directory and engine-python rules
+for the Python side. `RUSTORM_VERIFY_OUT`
 is where every harness artifact goes, `RUSTORM_STAGE_TIMEOUT` bounds each
 battery stage, and `RUSTORM_EXPORT_CMD` lets `serve` regenerate a stale
 export. The `pythonX.Y` path component
@@ -1265,7 +1266,8 @@ rust_engine_breaker = 3            ; Python serves a model after N kernel errors
 ```
 
 `engine_py.so` has to be importable -- `PYTHONPATH`, or installed into the
-server's environment.
+server's environment -- and the addon reads the extension's Python half from
+its own checkout's `engine-py/python`.
 
 `off` is off for **both** layers. The mode always governed routing; it did not
 govern the connection layer, and `db_shim.install()` at `post_load` rebound the
@@ -2937,36 +2939,69 @@ pays the refused dispatch on top of Python's call, 3 to 16 percent.
 
 The same bench, run from a shell that imported the venv's `engine_py`, read
 routed `web_read_group` at 4.48x again: the defect fixed two sections above.
-The shims are compiled into the extension with `include_str!`, so a build that
-predates a change to them imports cleanly and serves the old code. The venv's
+The shims were compiled into the extension with `include_str!`, so a build that
+predated a change to them imported cleanly and served the old code. The venv's
 copy was a day older than the prefetch fix, and the workspace conf arms routing
 with it.
 
-`engine-py/build.rs` now checksums the sources the extension is built from --
-the workspace manifest and lock, `kernel/src`, `engine-py/src` and the
-embedded Python modules -- into `engine_py.__source_crc__`, with the cargo
-profile in `__profile__`. At startup `rust_engine` computes the same checksum
-over its own checkout and, on a mismatch, an unstamped build or a debug build,
-logs why at ERROR and leaves the server entirely on Python. This is the check
-the fork applies to `odoo_rust`, and for the same reason: an absent extension
-is slow, a stale one is wrong. An addon deployed without its checkout has
-nothing to compare with and arms as before; `RUSTORM_SKIP_FRESHNESS_CHECK=1`
-bypasses it.
+`engine-py/build.rs` checksums the sources the extension is compiled from
+into `engine_py.__source_crc__`, with the cargo profile in `__profile__`. At
+startup `rust_engine` computes the same checksum over its own checkout and, on
+a mismatch, an unstamped build or a debug build, logs why at ERROR and leaves
+the server entirely on Python. This is the check the fork applies to
+`odoo_rust`, and for the same reason: an absent extension is slow, a stale one
+is wrong. `RUSTORM_SKIP_FRESHNESS_CHECK=1` bypasses it.
 
 ```
 venv engine_py.so    refusing to arm for rustorm_o31: ... predates the source stamp
 target/release       rust_engine armed for rustorm_o31 in mode 'on'
 ```
 
-Two shim tests pin it. One requires the extension under test to carry the
-checkout's checksum, so the battery's first stage fails by name when
-`target/release` is older than the tree. The other copies the inputs, edits an
-embedded module and requires the build to be refused.
+### The Python half is read from the checkout, so only Rust stales the build
+
+The stamp first covered the shims as well, because they were compiled in, and
+so every commit touching only `engine-py/python` refused the venv's build: 8
+of the 17 commits from 2026-09-19 to 2026-09-27 that moved the checksum
+touched nothing else, and each left every server on the workspace conf logging the
+ERROR and serving from Python until someone reran `install_engine.sh`. Taking
+the shims out of the stamp while they stayed compiled in would have made the
+check lie -- a build would arm and serve the shims it was built with.
+
+So the shims are no longer compiled in. `install_shims`, `install_backend` and
+the registry export import `wire`, `purity`, `rust_db_shim`, `rust_orm_shim`
+and `rust_backend` by name; `rust_engine` puts its own checkout's
+`engine-py/python` on `sys.path` first, so a server runs the shims of the tree
+its build was checked against, and a caller that put nothing there gets
+`RUSTORM_ENGINE_PYTHON`, else `<workspace>/odoo-rust-orm/engine-py/python`
+(`kernel/src/config.rs::engine_python_dir`, mirrored by `harness/_env.py`).
+The stamp covers exactly what reaches the `.so`: the workspace `Cargo.toml` and
+`Cargo.lock`, and for each crate engine-py links -- `kernel` and `engine-py` --
+its `Cargo.toml`, `build.rs` and `src/**/*.rs` outside `src/bin`, keyed by
+path relative to the checkout and sorted, so two checkouts of one commit stamp
+alike wherever they sit. An addon deployed without its checkout has no Python
+half and is refused by name.
+
+```
+                                  before        after
+edit engine-py/python/*.py        refused       arms, serves the edit
+edit README / kernel/tests        arms          arms
+edit kernel/src, engine-py/src,   refused       refused
+  either build.rs or Cargo.toml
+```
+
+Shim tests pin it: the extension under test carries the checkout's checksum,
+so the battery's first stage fails by name when `target/release` is older than
+the tree; each kind of edit above stales the build or not as the table says;
+two copies written in opposite orders at different paths stamp alike; the
+stamped crates are engine-py's path-dependency closure read from the
+manifests; no `include_str!`/`include_bytes!` in a stamped source names a file
+outside the stamp; and the loaded shims' `__file__` is this checkout's.
 
 `harness/install_engine.sh` builds the extension and installs it into the
 workspace venv by rename, so a running server keeps the file it mapped, then
-asks the addon's own check whether the installed build is fresh. Every change
-to the engine's sources needs it, or servers on the venv serve from Python.
+asks the addon's own check whether the installed build is fresh and prints the
+stamp. A change to the Rust sources needs it, or servers on the venv serve
+from Python; a change to the shims needs only a server restart.
 
 ## Routed `web_search_read` redacted many2one targets `web_read` keeps
 
