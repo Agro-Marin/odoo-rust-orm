@@ -1616,7 +1616,7 @@ impl Registry {
         for row in client
             .query(
                 "SELECT a.id, m.model, a.group_id, a.kind = 'guard',
-                        a.guard_scope = 'members', a.domain
+                        a.guard_scope = 'members', a.domain, a.reach
                    FROM ir_access a
                    JOIN ir_model m ON a.model_id = m.id
                   WHERE a.active AND a.operation LIKE '%r%'
@@ -1631,9 +1631,19 @@ impl Registry {
             let group: i32 = row.get(2);
             let guard: bool = row.get(3);
             let members_only: bool = row.get(4);
-            let domain_force = row
-                .get::<_, Option<String>>(5)
-                .filter(|d| !d.trim().is_empty());
+            let reach: Option<String> = row.get(6);
+            let (domain_force, compiled_in_python) =
+                match reach_domain(reach.as_deref(), row.get::<_, Option<String>>(5)) {
+                    Ok(domain) => (domain, None),
+                    Err(why) => (None, Some(why)),
+                };
+            if let Some(why) = &compiled_in_python {
+                tracing::debug!(
+                    target: "odoo_kernel::rules",
+                    access = aid, model = %model, reach = ?reach, reason = %why,
+                    "access row reaches through Python; its model is refused where it binds"
+                );
+            }
             let never = domain_force.as_deref().is_some_and(is_literally_false);
             if guard {
                 if never {
@@ -1650,23 +1660,25 @@ impl Registry {
                     .or_default()
                     .push(group);
             }
-            let parsed = domain_force.as_deref().map(|src| {
-                crate::security::parse_py(src)
-                    .inspect(|_| {
-                        tracing::trace!(
-                            target: "odoo_kernel::rules",
-                            access = aid, model = %model, guard, members_only,
-                            "parsed an access row's domain"
-                        );
-                    })
-                    .map_err(|e| {
-                        tracing::warn!(
-                            target: "odoo_kernel::rules",
-                            access = aid, model = %model, reason = %format!("{e:#}"),
-                            "access domain cannot be parsed; its model is refused"
-                        );
-                        format!("{e:#}")
-                    })
+            let parsed = compiled_in_python.map(Err).or_else(|| {
+                domain_force.as_deref().map(|src| {
+                    crate::security::parse_py(src)
+                        .inspect(|_| {
+                            tracing::trace!(
+                                target: "odoo_kernel::rules",
+                                access = aid, model = %model, guard, members_only,
+                                "parsed an access row's domain"
+                            );
+                        })
+                        .map_err(|e| {
+                            tracing::warn!(
+                                target: "odoo_kernel::rules",
+                                access = aid, model = %model, reason = %format!("{e:#}"),
+                                "access domain cannot be parsed; its model is refused"
+                            );
+                            format!("{e:#}")
+                        })
+                })
             });
             // a permission is a group rule the principal's permissions OR; a
             // guard binding everyone is a global rule; a guard binding the
@@ -1773,6 +1785,25 @@ impl Registry {
 
 /// `[(0, '=', 1)]` and its spellings: the domain the ir.access conversion
 /// gives a row that grants nothing, which `Domain` reads as FALSE.
+const NOTHING: &str = "[(0, '=', 1)]";
+
+/// An access row's domain as the kernel can apply it, from its `reach` and
+/// its `domain` (`ir.access._row_domains`): no reach or `all` is the domain
+/// alone, `none` is nothing whatever the domain says, and any other reach
+/// (an anchor, a predicate) is compiled per principal in Python, so the
+/// kernel refuses the row instead of reading it as unrestricted.
+fn reach_domain(
+    reach: Option<&str>,
+    domain: Option<String>,
+) -> std::result::Result<Option<String>, String> {
+    let domain = domain.filter(|d| !d.trim().is_empty());
+    match reach.unwrap_or("") {
+        "" | "all" => Ok(domain),
+        "none" => Ok(Some(NOTHING.to_owned())),
+        other => Err(format!("reach {other} is compiled per principal in Python")),
+    }
+}
+
 fn is_literally_false(domain: &str) -> bool {
     let compact: String = domain
         .chars()
@@ -1783,7 +1814,52 @@ fn is_literally_false(domain: &str) -> bool {
 
 #[cfg(test)]
 mod access_row_tests {
-    use super::is_literally_false;
+    use super::{NOTHING, is_literally_false, reach_domain};
+
+    #[test]
+    fn a_row_without_reach_or_reaching_all_is_its_domain() {
+        for reach in [None, Some(""), Some("all")] {
+            assert_eq!(reach_domain(reach, None), Ok(None), "{reach:?}");
+            assert_eq!(
+                reach_domain(reach, Some("  ".into())),
+                Ok(None),
+                "{reach:?}"
+            );
+            assert_eq!(
+                reach_domain(reach, Some("[('a', '=', 1)]".into())),
+                Ok(Some("[('a', '=', 1)]".into())),
+                "{reach:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_reaching_none_admits_nothing_whatever_its_domain() {
+        for domain in [None, Some("[('a', '=', 1)]".into())] {
+            let got = reach_domain(Some("none"), domain).unwrap();
+            assert_eq!(got.as_deref(), Some(NOTHING));
+            assert!(is_literally_false(NOTHING));
+        }
+    }
+
+    #[test]
+    fn a_row_reaching_through_an_anchor_or_a_predicate_is_refused() {
+        for reach in [
+            "own",
+            "team",
+            "unit",
+            "unit_tree",
+            "company",
+            "partner",
+            "predicate",
+        ] {
+            assert!(reach_domain(Some(reach), None).is_err(), "{reach}");
+            assert!(
+                reach_domain(Some(reach), Some("[('a', '=', 1)]".into())).is_err(),
+                "{reach}"
+            );
+        }
+    }
 
     #[test]
     fn the_conversions_nothing_domain_is_recognised_in_its_spellings() {

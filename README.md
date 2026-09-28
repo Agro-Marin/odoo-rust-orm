@@ -77,7 +77,12 @@ refusal list is the replacement backlog.
   check denies where Python's `_access_allowed` would: no permission held
   whose domain is not `[(0, '=', 1)]`, a guard of that domain binding the
   principal, or a denied parent. A class that adds to its rows in Python
-  (`_access_guard`) is refused wherever its access would apply. The groups
+  (`_access_guard`) is refused wherever its access would apply. A row's
+  `reach` is read as `ir.access._row_domains` reads it: none or `all` is the
+  row's domain alone, `none` is `[(0, '=', 1)]` whatever the domain says, and
+  a reach through an anchor or a named predicate (own, team, unit, company,
+  partner, predicate), which Python compiles per principal, refuses the model
+  wherever the row binds instead of being read as unrestricted. The groups
   the principal holds are Python's group state (`_get_group_scopes`), sent
   with every request as `principal_groups`: live grants and their dates, the
   companies in use and the environment's privileges already applied. A row
