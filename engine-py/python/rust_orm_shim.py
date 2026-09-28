@@ -1422,6 +1422,19 @@ def _web_field_in_python(model, f, name, spec):
     return None
 
 
+def _web_screened_plan(model, specification):
+    screened = model._screen_fields_spec(specification)
+    if screened != specification:
+        _call_logger.debug(
+            "%s.web_search_read: planning the specification web screened: %s",
+            model._name,
+            screened,
+        )
+    if not screened:
+        return screened, _no_plan("empty specification once screened")
+    return screened, _web_spec_plan(model, screened)
+
+
 def _web_spec_plan(model, specification):
     fields, many2ones, python_spec = [], [], {}
     for name, spec in specification.items():
@@ -2106,7 +2119,7 @@ def install():
             elif not specification:
                 _refuse("empty specification")
             else:
-                plan = _web_spec_plan(self, specification)
+                specification, plan = _web_screened_plan(self, specification)
             if plan and _gate(
                 self,
                 plan[0],

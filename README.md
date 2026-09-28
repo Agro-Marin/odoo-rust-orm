@@ -862,7 +862,9 @@ harness/parity.sh --db <db> --password <admin pw> [--port N] [--models N]
 ```
 
 It generates one set of RPC-shaped calls per model (`parity_corpus.py`:
-`search_read`, `search_count`, two `web_search_read` shapes, `web_read_group`,
+`search_read`, `search_count`, three `web_search_read` shapes -- the third
+naming a key no model has, top-level and under the many2one, so web's screening
+runs on both legs -- `web_read_group`,
 `name_search`, `web_read` over frozen ids), boots the server with routing
 **off**, records every response BODY, boots it again with routing **on**, and
 diffs the recordings byte for byte. `workers = 0`, so a leg's behaviour is one
@@ -1341,8 +1343,7 @@ what the shim routes.
 The translation refuses -- and Python answers -- every shape it cannot express
 exactly: a many2one asking for any sub-field beyond `display_name` or carrying
 a `context`; an x2many asking for sub-fields, `order`, `limit` or `context`; a
-`reference` or `properties` field with any spec at all; a field the model does
-not have (Odoo drops those silently, the route declines instead); and a model
+`reference` or `properties` field with any spec at all; and a model
 that overrides any of web's own read hooks (`web_read`, `_web_read`,
 `_format_web_search_read_results`, `_screen_fields_spec`, the two resolvers),
 because a kernel answer would skip the override. The `length` rule is Odoo's
@@ -1350,6 +1351,19 @@ verbatim: a page shorter than the limit is its own length, a full page needs a
 count capped at `count_limit`, `force_search_count` in the context always
 counts, and a count limit already reached by the page is the length. The count
 is the kernel's `search_count` with the same limit.
+
+A key the model does not have is not the route's to decide. Before planning,
+the route hands the specification to web's own `_screen_fields_spec` -- the
+same call Python's `web_search_read` opens with, so web stays the one place
+that screens -- which drops an unknown key at the top level or nested under a
+relational field's `fields` and logs one WARNING naming them all
+`(stale client view?)`; the route plans what survives. Until 2026-09-28 it
+screened nothing: a top-level unknown key refused the call, and Python
+screened it, but a nested one rode the many2one into the Python half, where
+`read()` skipped it under `odoo.models`' `Invalid field(s)` warning instead of
+web's -- `web` `TestWebSearchRead.test_stale_sub_specification_key_is_screened`
+saw no warning. `web_read` is not screened, on either path: Python's does not
+screen, so an unknown key there still refuses the route and reaches `read()`.
 
 What the route does NOT settle is the one policy the fork itself leaves open
 (the workspace's known-defects entry on `web_read`'s many2one degradation): for
@@ -3610,7 +3624,8 @@ kernel reads -- stored and related fields, many2ones labelled or raw, x2many ids
 with sub-fields or a context, an x2many with a sub-specification goes to
 Python. The kernel runs the search with its half; web's own `web_read` answers
 the other half on exactly the records the kernel returned, and the two merge by
-id in the specification's order. Only an unknown field or a malformed spec
+id in the specification's order. Only an unknown field (web screens those out
+of a `web_search_read` first, see §`web_search_read`) or a malformed spec
 still refuses the call.
 
 The Python half is web's own method, so its access check, computes and

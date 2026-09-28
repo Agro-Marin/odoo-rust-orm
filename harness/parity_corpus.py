@@ -84,6 +84,14 @@ def cases_for(model):
                 "order": order,
             },
         )
+        stale = dict(spec, rustorm_stale_zz={})
+        for name in m2o:
+            stale[name] = {"fields": {"display_name": {}, "rustorm_stale_zz": {}}}
+        add(
+            "web_search_read",
+            [],
+            {"domain": [], "specification": stale, "limit": 20, "order": order},
+        )
     if m2o:
         add(
             "web_read_group",

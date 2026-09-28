@@ -489,7 +489,9 @@ def test_an_error_python_cannot_answer_is_raised_not_fallen_back_from() -> None:
         True,
     )
     check("a UserError is the caller's", raised(model(False), UserError("no")), True)
-    check("neither is counted as a fallback", orm_shim.STATS["fallback_error"] - before, 0)
+    check(
+        "neither is counted as a fallback", orm_shim.STATS["fallback_error"] - before, 0
+    )
     check(
         "a database error the kernel's savepoint rolled back still falls back",
         raised(model(False), psycopg.errors.SyntaxError("kernel SQL")),
@@ -1255,6 +1257,71 @@ def test_web_spec_plan() -> None:
     check("forget_gates empties the verdicts", dict(orm_shim._GATE_CACHE), {})
 
 
+def test_web_search_read_plans_what_web_screened() -> None:
+    orm_shim = _shims()[1]
+    _odoo()
+    from odoo.addons.web.models import web_onchange
+
+    class Partner:
+        _name = "probe.partner"
+        _screen_fields_spec = web_onchange.Base._screen_fields_spec
+        _fields = {
+            "display_name": F("char", store=False),
+            "name": F("char"),
+            "parent_id": F("many2one", comodel_name="probe.partner"),
+        }
+
+        def sudo(self):
+            return self
+
+    partner = Partner()
+    Partner.env = {"probe.partner": partner}
+    screened_plan = orm_shim._web_screened_plan
+    case = unittest.TestCase()
+    stale = {
+        "name": {},
+        "stale_zz": {},
+        "parent_id": {"fields": {"display_name": {}, "stale_sub_zz": {}}},
+    }
+    with case.assertLogs(web_onchange.__name__, "WARNING") as warned:
+        screened, plan = screened_plan(partner, stale)
+    check("web warns once", len(warned.output), 1)
+    check(
+        "...naming the top-level and the nested key",
+        all(key in warned.output[0] for key in ("stale_zz", "stale_sub_zz")),
+        True,
+    )
+    check(
+        "the screened specification is web's",
+        screened,
+        {"name": {}, "parent_id": {"fields": {"display_name": {}}}},
+    )
+    check(
+        "a screened many2one label is the kernel's again",
+        plan,
+        (["name", "parent_id"], ["parent_id"], {}),
+    )
+    clean = {"name": {}, "parent_id": {"fields": {"display_name": {}}}}
+    with case.assertNoLogs(web_onchange.__name__, "WARNING"):
+        check(
+            "a clean specification passes unchanged",
+            screened_plan(partner, clean)[0],
+            clean,
+        )
+    with case.assertLogs(web_onchange.__name__, "WARNING"):
+        check(
+            "nothing left once screened refuses",
+            screened_plan(partner, {"stale_zz": {}}),
+            ({}, None),
+        )
+    check(
+        "...and records why",
+        orm_shim._GATE_TL.reason,
+        "empty specification once screened",
+    )
+    orm_shim._GATE_TL.reason = None
+
+
 def test_revive_temporal() -> None:
     orm_shim = _shims()[1]
     revive = orm_shim._revive_temporal
@@ -1963,7 +2030,9 @@ def test_install_is_idempotent_and_keeps_stamps() -> None:
     import inspect
 
     def signature(method):
-        return inspect.signature(method, annotation_format=annotationlib.Format.FORWARDREF)
+        return inspect.signature(
+            method, annotation_format=annotationlib.Format.FORWARDREF
+        )
 
     originals = {
         "search_read": first["orig_search_read"],
