@@ -338,12 +338,28 @@ def test_give_back_resets_the_session() -> None:
     db_shim = _shims()[0]
     rust = _RustConn()
     cnx = db_shim.FakeConnection(rust)
+    check("a fresh connection is read-write", cnx.read_only, False)
     cnx.read_only = True
+    check(
+        "the getter answers what enforce_readonly set",
+        (cnx.read_only, rust.readonly),
+        (True, True),
+    )
     cnx.reset_session(discard=False)
     check(
         "reset ran the fork's statement",
         rust.resets,
         [(db_shim.RESET_SESSION_STATE_SQL, False)],
+    )
+    check("reset clears the read-only flag", cnx.read_only, False)
+    # what the fork's pool does on return: re-set only when the getter differs
+    cnx.read_only = True
+    if cnx.read_only is not False:
+        cnx.read_only = False
+    check(
+        "the pool's conditional re-set reaches the Rust cursor",
+        (cnx.read_only, rust.readonly),
+        (False, False),
     )
     cnx.reset_session(discard=True)
     check(

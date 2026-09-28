@@ -285,6 +285,7 @@ class FakeConnection:
         self._rust = rust_conn
         self._prepared = _Prepared(rust_conn)
         self._isolation = None
+        self._read_only = False
         self._info = None
         self._dsn = ""
 
@@ -309,6 +310,7 @@ class FakeConnection:
         except RuntimeError as e:
             _raise_pg(e)
         self._isolation = None
+        self._read_only = False
 
     @property
     def info(self):
@@ -337,11 +339,18 @@ class FakeConnection:
 
     @property
     def read_only(self) -> bool:
-        return False
+        # The fork's pool re-sets this flag on return only when the getter says
+        # it differs (odoo.db.lifecycle._set_transaction_flags), so the shim
+        # must answer what was set: a False here while the Rust cursor still
+        # held True left the flag on the pooled connection, and the next
+        # borrower's first BEGIN opened READ ONLY.
+        return self._read_only
 
     @read_only.setter
     def read_only(self, value) -> None:
-        self._rust.set_readonly(bool(value))
+        value = bool(value)
+        self._rust.set_readonly(value)
+        self._read_only = value
 
     @property
     def closed(self):
