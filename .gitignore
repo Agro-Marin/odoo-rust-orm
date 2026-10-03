@@ -1,0 +1,22 @@
+/target
+
+# Harness OUTPUT, not harness source. These are results of one run against
+# one database; a committed copy is stale the moment the database moves, and
+# diff.py now refuses an unstamped or foreign baseline rather than comparing
+# against it. Regenerate with gen_expected.py / run-corpus.
+harness/expected.json
+harness/actual.json
+harness/actual_export.json
+harness/registry_export.json
+harness/bench_python.json
+harness/bench_rust.txt
+harness/rust_errors.log
+# phase2_verify's OUTPUT: the models it verified at every identity, on the
+# database it was pointed at. A committed copy is a claim about whichever
+# database was swept last, and running the battery on a smaller one silently
+# shrinks it.
+harness/phase2_allowlist.json
+harness/trace.txt
+
+# python bytecode from the embedded interpreter
+__pycache__/
