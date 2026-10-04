@@ -72,6 +72,77 @@ fn shape(rules: &[odoo_kernel::registry::Rule]) -> Vec<(Vec<i32>, bool)> {
 
 #[tokio::test]
 #[ignore = "needs RUSTORM_TEST_DSN"]
+async fn context_names_preserve_python_values_and_do_not_ignore_attributes() {
+    use odoo_kernel::db::{Db, StmtCache};
+    use odoo_kernel::registry::{Dynamic, Security};
+    use odoo_kernel::security::{UserCtx, eval_py, parse_py};
+    use serde_json::json;
+
+    let schema = "rustorm_t_context_names";
+    let client = connect(schema).await;
+    let stmts = StmtCache::default();
+    let db = Db::new(&client, &stmts);
+    let registry = Registry::new(
+        HashMap::new(),
+        vec![],
+        false,
+        Dynamic {
+            security: Security::default(),
+            defaults: HashMap::new(),
+            signals: vec![],
+            langs: vec![],
+            week_start: HashMap::new(),
+        },
+    );
+    let user = UserCtx {
+        uid: 7,
+        company_id: 3,
+        company_ids: vec![3, 5],
+        groups: std::sync::Arc::new([9, 2].into_iter().collect()),
+        scopes: Default::default(),
+    };
+    for (source, expected) in [
+        ("company_id", json!(3)),
+        ("company_ids", json!([3, 5])),
+        ("group_ids", json!([2, 9])),
+        ("(company_id)", json!(3)),
+        ("(company_ids)", json!([3, 5])),
+        ("(company_id,)", json!([3])),
+        (
+            "([('company_id', '=', (company_id))])",
+            json!([["company_id", "=", 3]]),
+        ),
+    ] {
+        let actual = eval_py(&parse_py(source).unwrap(), &registry, &db, &user)
+            .await
+            .unwrap();
+        tracing::debug!(source, %actual, %expected, "checking rule context values");
+        assert_eq!(actual, expected, "{source}");
+    }
+    for source in [
+        "company_id.id",
+        "company_id.real",
+        "company_id.denominator",
+        "company_ids.ids",
+        "company_ids.mapped('id')",
+        "group_ids.ids",
+    ] {
+        let actual = eval_py(&parse_py(source).unwrap(), &registry, &db, &user).await;
+        tracing::debug!(
+            source,
+            ?actual,
+            "unsupported attributes must delegate to Python"
+        );
+        assert!(
+            matches!(actual, Err(ref error) if error.is::<odoo_kernel::error::Refusal>()),
+            "{source}: {actual:?}"
+        );
+    }
+    drop_schema(&client, schema).await;
+}
+
+#[tokio::test]
+#[ignore = "needs RUSTORM_TEST_DSN"]
 async fn each_read_row_becomes_the_rule_its_kind_and_scope_make_it() {
     let schema = "rustorm_t_access_rows";
     let client = connect(schema).await;

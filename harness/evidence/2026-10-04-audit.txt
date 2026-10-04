@@ -685,3 +685,20 @@ arguments still refuse. Validation with debug logging: focused regression and
 passed. Logs: /tmp/rustorm-grouping-workspace.log and
 /tmp/rustorm-grouping-clippy.log. No coverage percentage improvement is claimed
 without a fresh corpus run.
+
+Rule-context attribute follow-up (2026-10-04)
+------------------------------------------
+Native name resolution ignored trailing attributes on company_id/company_ids.
+The new evaluator test failed before the fix: company_id.id returned 3. Odoo's
+safe_eval probe instead raised ValueError (wrapping AttributeError). It also
+confirmed company_id.denominator returns 1, not the native base value 3, while
+company_id.real legitimately returns 3. These attribute expressions now refuse
+native evaluation so Python decides their meaning; plain context names remain
+native. The same explicit refusal covers group_ids attribute paths.
+
+The database-backed evaluator control verifies seven exact values (including
+grouping and singleton tuples) and six unsupported attribute expressions.
+All four db_rules tests passed on disposable rustorm_expr_20261004_2348 with
+debug logging. The database was removed afterward. All 277 ordinary workspace
+tests and workspace Clippy with warnings denied passed. Before/after and final
+logs: /tmp/rustorm-context-{before,after,workspace,clippy}.log.

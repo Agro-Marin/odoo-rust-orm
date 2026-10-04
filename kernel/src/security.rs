@@ -567,12 +567,15 @@ async fn resolve_name(
     let (mut model_name, mut current_ids, rest): (String, Vec<i32>, &[String]) =
         match chain[0].as_str() {
             "user" => ("res.users".into(), vec![user.uid], &chain[1..]),
-            "company_id" => return Ok(json!(user.company_id)),
-            "company_ids" => return Ok(json!(user.company_ids)),
+            "company_id" if chain.len() == 1 => return Ok(json!(user.company_id)),
+            "company_ids" if chain.len() == 1 => return Ok(json!(user.company_ids)),
             "group_ids" if chain.len() == 1 => {
                 let mut held: Vec<i32> = user.groups.iter().copied().collect();
                 held.sort_unstable();
                 return Ok(json!(held));
+            }
+            "company_id" | "company_ids" | "group_ids" => {
+                refuse!("unsupported attribute path on a rule context value: {chain:?}");
             }
             other => refuse!("unknown name {other:?} in rule expression"),
         };
