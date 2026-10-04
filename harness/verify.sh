@@ -56,10 +56,21 @@ ODOO="${RUSTORM_ODOO_ROOT:-$WORKSPACE/odoo}"
 PY="${RUSTORM_PYTHON:-$WORKSPACE/p314o19m/bin/python}"
 mkdir -p "$OUT"
 
-if [ -z "$BUILD" ] && ! psql -U marin -lqt 2>/dev/null | cut -d'|' -f1 | sed 's/ //g' | grep -qx "$DB"; then
-  echo "verify: database '$DB' does not exist; pass --build mail,contacts (the corpus," \
-       "runtime contracts and tours want mail) or create it through odoo-bin" >&2
-  exit 2
+[ -x "$PY" ] || { echo "no interpreter at $PY (set RUSTORM_PYTHON)"; exit 2; }
+if [ -z "$BUILD" ]; then
+  if ! "$PY" - "$ROOT/harness" "$DB" > "$OUT/database_check.log" 2>&1 <<'PY'
+import sys
+import psycopg
+sys.path.insert(0, sys.argv[1])
+from _env import dsn_for
+with psycopg.connect(dsn_for(sys.argv[2]), connect_timeout=10):
+    pass
+PY
+  then
+    echo "verify: cannot connect to '$DB' using the configured PostgreSQL endpoint; see $OUT/database_check.log." >&2
+    echo "For a new database, pass --build mail,contacts." >&2
+    exit 2
+  fi
 fi
 
 conf_addons=$(sed -nE 's/^addons_path *= *//p' "$RUSTORM_ODOO_CONF" | tail -1)
@@ -153,7 +164,6 @@ diff_stage() {
 }
 
 echo "verifying '$DB'   (artifacts in $OUT)"
-[ -x "$PY" ] || { echo "no interpreter at $PY (set RUSTORM_PYTHON)"; exit 2; }
 
 if [ -n "$BUILD" ]; then
   "${T[@]}" "$PY" "$ODOO/odoo-bin" -c "$RUSTORM_ODOO_CONF" -d "$DB" -i "$BUILD" \
@@ -176,6 +186,9 @@ PYMOD="$OUT/pymod"
 if [ -f "$ROOT/target/release/libengine_py.so" ]; then
   mkdir -p "$PYMOD"
   cp "$ROOT/target/release/libengine_py.so" "$PYMOD/engine_py.so"
+  # Every subprocess, including fixture generation and nested Odoo shells,
+  # must use the same freshly built extension as the explicit probe stages.
+  export PYTHONPATH="$PYMOD${PYTHONPATH:+:$PYTHONPATH}"
   out=$(PYTHONPATH="$PYMOD" "${T[@]}" "$PY" "$ROOT/harness/test_shims.py" 2>&1); rc=$?
   if [ "$rc" = 0 ]; then
     stage "shim units" OK "$(printf '%s' "$out" | grep -E '^SHIMS' | head -1)"
@@ -473,6 +486,13 @@ if [ -f "$ROOT/target/release/libengine_py.so" ] && [ -f "$OUT/sweep_corpus.json
   fi
 else
   stage "search (port)" SKIP "needs libengine_py.so and the sweep corpus"
+fi
+
+if [ -f "$PYMOD/engine_py.so" ]; then
+  PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/search_boundaries.py" > "$OUT/search_boundaries.log" 2>&1; rc=$?
+  if [ "$rc" = 0 ]; then stage "search boundaries" OK "$(grep -a '^SEARCH BOUNDARIES OK' "$OUT/search_boundaries.log" | cut -c1-90)"
+  elif timed_out "$rc"; then stage "search boundaries" FAIL "$expired"
+  else stage "search boundaries" FAIL "see $OUT/search_boundaries.log"; fi
 fi
 
 if [ -f "$PYMOD/engine_py.so" ]; then

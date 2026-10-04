@@ -41,11 +41,13 @@ free_port() {
   "$PY" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'
 }
 
+declare -A exit_codes
 for leg in off on; do
   PYTHONPATH="$OUT/pymod" "$PY" "$ODOO/odoo-bin" -c "$OUT/$leg.conf" -d "$DB" --test-tags "$TAGS" \
     --stop-after-init --http-port "$(free_port)" --db_maxconn=16 \
     --log-handler odoo.debug.logic.base.ir_qweb_assets_esbuild_circuit:DEBUG \
     --log-handler odoo.debug.logic.db.errors:DEBUG > "$OUT/$leg.log" 2>&1
+  exit_codes[$leg]=$?
   failures "$OUT/$leg.log" > "$OUT/$leg.failures"
 done
 
@@ -59,6 +61,14 @@ refusing=$(grep -ac "refusing to arm" "$OUT/on.log")
 echo "ORM TESTS off: ${off_line:-no result}; on: ${on_line:-no result}; routed=${routed:-0} (artifacts in $OUT)"
 if [ -z "$off_line" ] || [ -z "$on_line" ]; then
   echo "ORM TESTS FAILED: a leg reported no result"; exit 1
+fi
+for leg in off on; do
+  if [ "${exit_codes[$leg]}" -gt 1 ]; then
+    echo "ORM TESTS FAILED: $leg process exited abnormally (${exit_codes[$leg]})"; exit 1
+  fi
+done
+if [ "${off_line##* of }" != "${on_line##* of }" ]; then
+  echo "ORM TESTS FAILED: the legs ran different test totals ($off_line vs $on_line)"; exit 1
 fi
 if grep -aq "matched no test" "$OUT/off.log"; then
   echo "ORM TESTS FAILED: the tags matched no test on $DB; install the test modules there"; exit 1

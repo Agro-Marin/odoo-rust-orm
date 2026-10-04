@@ -308,6 +308,9 @@ with env_for() as e:
         shim.KERNEL.dispatch(e.cr._cnx._rust, request)
     except engine.KernelAccessDenied:
         pass
+    except engine.KernelRefused as exc:
+        if "Python read-access class policy" not in str(exc):
+            raise AssertionError("unexpected restricted-field refusal") from exc
     else:
         raise AssertionError("fresh registry allowed restricted field")
 with env_for(uid) as e:

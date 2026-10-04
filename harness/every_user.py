@@ -1,4 +1,5 @@
 import collections
+import logging
 import sys
 
 import rust_orm_shim
@@ -9,6 +10,7 @@ MANY2ONES = 4
 X2MANYS = 3
 COMPUTED = 3
 ROWS = 40
+_logger = logging.getLogger("odoo.rust_kernel.every_user")
 
 
 def shapes(model):
@@ -115,6 +117,7 @@ try:
                 for allowed in ([mine[0]], [mine[-1]], mine, mine[::-1])
             ]
     for uid, ctx in contexts:
+        _logger.debug("starting user=%s context=%r models=%s", uid, ctx, len(models))
         for name in models:
             model = env(user=uid, context=ctx)[name]  # noqa: F821
             for shape, call in shapes(model).items():
@@ -129,6 +132,13 @@ try:
                         (shape, name, repr(ctx)),
                         (uid, str(routed_answer)[:200], str(python_answer)[:200]),
                     )
+        _logger.debug(
+            "finished user=%s context=%r compared=%s mismatches=%s",
+            uid,
+            ctx,
+            sum(compared.values()),
+            sum(mismatched.values()),
+        )
 finally:
     rust_orm_shim.set_mode(previous[0])
     rust_orm_shim.set_sample(previous[1])
