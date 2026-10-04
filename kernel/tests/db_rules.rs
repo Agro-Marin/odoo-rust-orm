@@ -4,6 +4,10 @@ use odoo_kernel::registry::{AccessTopology, Registry};
 use tokio_postgres::Client;
 
 async fn connect(schema: &str) -> Client {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("debug")
+        .with_test_writer()
+        .try_init();
     let dsn = std::env::var("RUSTORM_TEST_DSN")
         .expect("RUSTORM_TEST_DSN names the database these tests may use");
     let (client, conn) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)

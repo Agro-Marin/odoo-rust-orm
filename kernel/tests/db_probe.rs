@@ -192,6 +192,10 @@ async fn a_timed_out_request_is_cancelled_and_the_next_one_runs_on_a_fresh_snaps
 #[tokio::test]
 #[ignore]
 async fn a_tls_dsn_encrypts_the_session_and_rejects_an_untrusted_certificate() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("debug")
+        .with_test_writer()
+        .try_init();
     let dsn = std::env::var("RUSTORM_TLS_DSN")
         .expect("set RUSTORM_TLS_DSN to an owned TLS server with a self-signed certificate");
     let client = odoo_kernel::connect::connect(&dsn).await.unwrap();
@@ -205,15 +209,12 @@ async fn a_tls_dsn_encrypts_the_session_and_rejects_an_untrusted_certificate() {
             .unwrap();
         (row.get(0), row.get(1))
     };
-    eprintln!("ssl={ssl} version={version:?}");
+    tracing::debug!(ssl, ?version, "negotiated PostgreSQL TLS session");
     assert!(ssl, "sslmode=require must produce an encrypted session");
 
     let strict = format!("{dsn} sslmode=verify-full");
     let verified = odoo_kernel::connect::connect(&strict).await;
-    eprintln!(
-        "verify-full against the snakeoil certificate: {:?}",
-        verified.as_ref().err().map(|e| format!("{e:#}"))
-    );
+    tracing::debug!(error = ?verified.as_ref().err(), "verify-full against an untrusted certificate");
     assert!(
         verified.is_err(),
         "a self-signed certificate must not pass verify-full"

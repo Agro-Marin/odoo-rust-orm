@@ -136,12 +136,12 @@ fn p50(mut v: Vec<f64>) -> f64 {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn connection_scoped_cache_beats_request_scoped() {
-    let Some(export) = std::env::var_os("RUSTORM_EXPORT") else {
-        eprintln!(
-            "SKIP: set RUSTORM_EXPORT to a registry export (the bootstrap marks no model pure)"
-        );
-        return;
-    };
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("debug")
+        .with_test_writer()
+        .try_init();
+    let export = std::env::var_os("RUSTORM_EXPORT")
+        .expect("RUSTORM_EXPORT must name a registry export for this ignored benchmark");
     let dsn = odoo_kernel::config::dsn();
     let client = odoo_kernel::connect::connect(&dsn).await.expect("connect");
     let export: serde_json::Value =
