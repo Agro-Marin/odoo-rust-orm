@@ -4,6 +4,10 @@ use pyo3::prelude::*;
 
 const DRIVER: &str = r#"
 import importlib, json, os
+from upstream_suite import run as run_upstream
+from odoo.tests.loader import get_module_test_cases
+from odoo.tests.suite import OdooSuite
+from odoo.tests.tag_selector import TagsSelector
 
 MODULES = [
     "odoo.addons.base.tests.test_expression",
@@ -13,47 +17,6 @@ MODULES = [
 ONLY = [t for t in os.environ.get("PHASE2_ONLY", "").split(",") if t]
 FULL_TB = os.environ.get("PHASE2_TRACEBACK") == "1"
 
-# Odoo's own runner, not a bare unittest one: a case reads the running test
-# from odoo.modules.module.current_test (a test cursor checks it, so does a
-# registry reset in a cleanup), selects by tag and position, and runs
-# assertQueries warm, as it does under odoo-bin --test-enable
-from odoo.modules import module as odoo_module
-from odoo.tests.loader import get_module_test_cases
-from odoo.tests.result import OdooTestResult
-from odoo.tests.suite import OdooSuite
-from odoo.tests.tag_selector import TagsSelector
-
-
-class Recorder(OdooTestResult):
-    # OdooTestResult counts its failures and logs them; the gate also wants
-    # their names, and a subtest's failure arrives here as its own
-    def __init__(self):
-        super().__init__()
-        self.problems = []
-
-    def addError(self, test, err):
-        self.problems.append((test, self._exc_info_to_string(err, test)))
-        super().addError(test, err)
-
-    def addFailure(self, test, err):
-        self.problems.append((test, self._exc_info_to_string(err, test)))
-        super().addFailure(test, err)
-
-
-def _method(test):
-    case = getattr(test, "test_case", test)
-    return getattr(case, "_testMethodName", None) or test.id()
-
-
-def _suite(mod):
-    tags = TagsSelector("standard")
-    return OdooSuite(sorted(
-        (t for t in get_module_test_cases(mod)
-         if tags.select_test(t) and (not ONLY or t._testMethodName in ONLY)),
-        key=lambda t: getattr(t, "test_sequence", 0),
-    ))
-
-
 def run_suite(orm_shim, kernel, label):
     import odoo.tools as tools
     tools.config["db_name"] = os.environ.get("RUSTORM_DB", "rustorm_probe")
@@ -61,23 +24,16 @@ def run_suite(orm_shim, kernel, label):
     k0 = orm_shim.STATS["kernel"]
     out = {}
     for modname in MODULES:
-        result = Recorder()
-        odoo_module.current_test = True
-        try:
-            _suite(importlib.import_module(modname)).run(result)
-        finally:
-            odoo_module.current_test = False
-        out[modname.rsplit(".", 1)[-1]] = {
-            "run": result.testsRun,
-            "failures": result.failures_count,
-            "errors": result.errors_count,
-            "skipped": result.skipped,
-            "problems": sorted(_method(t) for t, _ in result.problems)[:12],
-            "detail": [
-                [_method(t), tb.strip() if FULL_TB else tb.strip().splitlines()[-1][:180]]
-                for t, tb in result.problems[:4]
-            ],
-        }
+        mod = importlib.import_module(modname)
+        tags = TagsSelector("standard")
+        suite = OdooSuite(sorted(
+            (test for test in get_module_test_cases(mod) if tags.select_test(test)),
+            key=lambda test: getattr(test, "test_sequence", 0),
+        ))
+        report = run_upstream(suite, only=ONLY, full_traceback=FULL_TB)
+        report.pop("outcomes")
+        report.pop("all_details")
+        out[modname.rsplit(".", 1)[-1]] = report
     out["kernel_calls"] = orm_shim.STATS["kernel"] - k0
     return out
 
@@ -89,6 +45,12 @@ fn run_mode(mode: &str) -> Result<serde_json::Value> {
     let out = std::process::Command::new(std::env::current_exe()?)
         .env("PHASE2_MODE", mode)
         .output()?;
+    if let Some(dir) = std::env::var_os("RUSTORM_VERIFY_OUT") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join(format!("upstream-{mode}.stdout.log")), &out.stdout)?;
+        std::fs::write(dir.join(format!("upstream-{mode}.stderr.log")), &out.stderr)?;
+    }
     anyhow::ensure!(
         out.status.success(),
         "{mode}: child exited with {}: {}",
@@ -122,10 +84,16 @@ fn problems(m: &serde_json::Value) -> std::collections::BTreeSet<String> {
 }
 
 fn counts(m: &serde_json::Value) -> Vec<i64> {
-    ["run", "failures", "errors", "skipped"]
-        .iter()
-        .map(|k| m[k].as_i64().unwrap_or(0))
-        .collect()
+    [
+        "run",
+        "failures",
+        "errors",
+        "skipped",
+        "infrastructure_skipped",
+    ]
+    .iter()
+    .map(|k| m[k].as_i64().unwrap_or(0))
+    .collect()
 }
 
 fn compare() -> Result<()> {
@@ -139,9 +107,16 @@ fn compare() -> Result<()> {
         }
         let r = &routed[name];
         println!(
-            "  {name:16} baseline {}/{} fail  ->  routed {}/{} fail",
-            b["failures"], b["run"], r["failures"], r["run"]
+            "  {name:16} baseline {} tests, {} failures, {} errors -> routed {} tests, {} failures, {} errors",
+            b["run"], b["failures"], b["errors"], r["run"], r["failures"], r["errors"]
         );
+        if [b, r].iter().any(|m| {
+            m["infrastructure_skipped"].as_i64().unwrap_or(0) > 0
+                || m["aborted"].as_str().is_some_and(|s| !s.is_empty())
+        }) {
+            ok = false;
+            println!("    suite aborted or skipped infrastructure");
+        }
         let (bp, rp) = (problems(b), problems(r));
         for t in rp.difference(&bp) {
             ok = false;
@@ -231,6 +206,10 @@ fn main() -> Result<()> {
         println!("[hybrid] registry + kernel + routing ready; running upstream tests");
 
         let mode = std::env::var("PHASE2_MODE").unwrap_or_else(|_| "routed".into());
+        py.import("sys")?.getattr("path")?.call_method1(
+            "insert",
+            (0, odoo_kernel::config::harness_dir().display().to_string()),
+        )?;
         let ns = pyo3::types::PyDict::new(py);
         py.run(
             &std::ffi::CString::new(DRIVER).unwrap(),

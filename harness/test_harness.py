@@ -27,6 +27,68 @@ def load(name):
 diff = load("diff")
 
 
+def test_upstream_runner_keeps_odoo_test_context_through_class_cleanup(caplog):
+    import logging
+    import unittest
+
+    from upstream_suite import run
+
+    import odoo.modules.module
+    from odoo.tests.case import TestCase
+
+    caplog.set_level(logging.DEBUG)
+    previous = odoo.modules.module.current_test
+    cleaned = []
+
+    class Lifecycle(TestCase):
+        @classmethod
+        def tearDownClass(cls):
+            assert isinstance(odoo.modules.module.current_test, cls)
+            cleaned.append(True)
+
+        def test_body(self):
+            self.assertIs(odoo.modules.module.current_test, self)
+
+    report = run(unittest.TestLoader().loadTestsFromTestCase(Lifecycle))
+    assert report["run"] == 1 and report["errors"] == report["failures"] == 0
+    assert cleaned == [True]
+    assert odoo.modules.module.current_test is previous
+
+
+def test_upstream_runner_reports_failures_errors_and_skips(caplog):
+    import logging
+    import unittest
+
+    from upstream_suite import run
+
+    from odoo.tests.case import TestCase
+
+    caplog.set_level(logging.DEBUG)
+
+    class Outcomes(TestCase):
+        def test_failure(self):
+            self.fail("intentional assertion control")
+
+        def test_error(self):
+            raise ValueError("intentional exception control")
+
+        def test_subtests(self):
+            with self.subTest(case="failure"):
+                self.fail("intentional subtest control")
+
+        @unittest.skip("intentional skip control")
+        def test_skip(self):
+            pass
+
+    report = run(unittest.TestLoader().loadTestsFromTestCase(Outcomes))
+    assert report["run"] == 4
+    assert report["failures"] == 2
+    assert report["errors"] == report["skipped"] == 1
+    assert len(report["problems"]) == len(report["detail"]) == 3
+    assert "not run" not in report["outcomes"].values()
+    assert not report["infrastructure_skipped"] and not report["aborted"]
+
+
 def test_dsn_mirrors_config_rs(monkeypatch) -> None:
     from psycopg.conninfo import conninfo_to_dict
 

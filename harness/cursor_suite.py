@@ -1,19 +1,15 @@
-import io
+import contextlib
 import json
 import os
+import sys
 import unittest
+
+sys.path.insert(0, os.environ["RUSTORM_HARNESS"])
+from upstream_suite import run
 
 MODULES = [
     "odoo.addons.base.tests.test_db_cursor",
 ]
-
-
-def _cases(suite):
-    for t in suite:
-        if isinstance(t, unittest.TestSuite):
-            yield from _cases(t)
-        else:
-            yield t
 
 
 MODE = os.environ.get("RUSTORM_CURSOR", "psycopg")
@@ -46,26 +42,42 @@ from odoo import tools
 
 tools.config["db_name"] = os.environ.get("RUSTORM_DB", "rustorm_probe")
 
-outcomes = {}
-detail = {}
-for modname in MODULES:
-    mod = importlib.import_module(modname)
-    suite = unittest.TestLoader().loadTestsFromModule(mod)
-    short = modname.rsplit(".", 1)[-1]
-    for case in _cases(suite):
-        outcomes["%s.%s" % (short, case.id().split(".", 3)[-1])] = "ok"
-    result = unittest.TextTestRunner(verbosity=0, stream=io.StringIO()).run(suite)
-    for case, tb in result.failures:
-        key = "%s.%s" % (short, case.id().split(".", 3)[-1])
-        outcomes[key] = "fail"
-        detail[key] = tb.strip().splitlines()[-1][:200]
-    for case, tb in result.errors:
-        key = "%s.%s" % (short, case.id().split(".", 3)[-1])
-        outcomes[key] = "error"
-        detail[key] = tb.strip().splitlines()[-1][:200]
-    for case, _reason in result.skipped:
-        outcomes["%s.%s" % (short, case.id().split(".", 3)[-1])] = "skip"
-    outcomes["__ran__%s" % short] = result.testsRun
+# Odoo's normal test lifecycle provides a read-only pool and an HTTP server.
+# The shell entry point provides neither, so establish them explicitly here.
+import odoo.http
+from odoo.service._process_state import get_server, set_server
+from odoo.service.server import ThreadedServer
+
+with contextlib.ExitStack() as stack:
+    stack.enter_context(
+        tools.config.patch(
+            test_enable=True, http_enable=True, http_interface="127.0.0.1", http_port=0
+        )
+    )
+    previous_server = get_server()
+    server = ThreadedServer(odoo.http.root)
+    set_server(server)
+    stack.callback(set_server, previous_server)
+    server.start()
+    stack.callback(server.stop)
+    outcomes = {}
+    detail = {}
+    for modname in MODULES:
+        mod = importlib.import_module(modname)
+        suite = unittest.TestLoader().loadTestsFromModule(mod)
+        short = modname.rsplit(".", 1)[-1]
+        result = run(suite)
+        for name, outcome in result["outcomes"].items():
+            key = "%s.%s" % (short, name.split(".", 3)[-1])
+            outcomes[key] = outcome
+            if name in result["all_details"]:
+                detail[key] = result["all_details"][name]
+        outcomes["__ran__%s" % short] = result["run"]
+        if result["aborted"] or result["infrastructure_skipped"]:
+            raise RuntimeError(
+                "cursor suite did not finish: aborted=%r infrastructure_skipped=%s"
+                % (result["aborted"], result["infrastructure_skipped"])
+            )
 
 if MODE == "rust":
     from odoo.db import db_connect

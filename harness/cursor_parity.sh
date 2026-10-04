@@ -10,23 +10,18 @@ diffed test by test.
 
   harness/cursor_parity.sh --db <db>
 
-`phase2_tests` cannot do this. It differences a baseline leg against a
-routed leg and what it toggles is ORM ROUTING -- the db shim is installed in
-both, so the cursor is rust-backed on both sides and a cursor regression
-lands in the "pre-existing in both modes" bucket the gate ignores. Measured:
-adding `test_db_cursor` there gives `baseline 44/379 -> routed 44/379`,
-which reads as clean.
+`phase2_tests` compares ORM routing with the Rust cursor installed on both
+legs. This harness compares the CURSOR itself, test by test, using Odoo's
+suite lifecycle, a local HTTP server and read-only database connections.
+Each leg must execute the same tests and prove which driver it used.
 
-So the axis here is the CURSOR, not the routing, and the comparison is by
-test NAME rather than by count -- a count reads "one fixed, one new" as no
-change. Failures that are artifacts of driving Odoo's suites with a bare
-`unittest` runner appear on both sides and cancel.
 USAGE
 }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE="${RUSTORM_WORKSPACE:-$(cd "$ROOT/.." && pwd)}"
 export RUSTORM_ENGINE_PYTHON="$ROOT/engine-py/python"
+export RUSTORM_HARNESS="$ROOT/harness"
 ODOO="${RUSTORM_ODOO_ROOT:-${RUSTORM_ODOO:-$WORKSPACE/odoo}}"
 PY="${RUSTORM_PYTHON:-$WORKSPACE/p314o19m/bin/python}"
 CONF="${RUSTORM_ODOO_CONF:-$WORKSPACE/p314o19m.conf}"
@@ -52,7 +47,7 @@ leg() {
   local mode="$1"
   RUSTORM_CURSOR="$mode" RUSTORM_CURSOR_OUT="$OUT/$mode.json" RUSTORM_DB="$DB" \
     PYTHONPATH="$OUT/pymod" \
-    "$PY" "$ODOO/odoo-bin" shell -c "$CONF" -d "$DB" --no-http --db_maxconn=8 \
+    "$PY" "$ODOO/odoo-bin" shell -c "$CONF" -d "$DB" --no-http --dev=replica --db_maxconn=8 \
     <<< "exec(open('$ROOT/harness/cursor_suite.py').read())" > "$OUT/$mode.log" 2>&1
   local line
   line=$(grep -a '^CURSOR SUITE' "$OUT/$mode.log" | head -1)
@@ -112,6 +107,10 @@ for k in only_psy[:5]:
 print()
 if ran_r == 0 or ran_p == 0:
     print("CURSOR PARITY VACUOUS  a leg ran no tests; it compared nothing")
+    sys.exit(1)
+if ran_r != ran_p or any(psy.get(k) is None or rust.get(k) is None or
+                        psy.get(k) == "not run" or rust.get(k) == "not run" for k in names):
+    print("CURSOR PARITY FAILED  the legs did not execute the same tests")
     sys.exit(1)
 import os
 base_path = os.environ.get("RUSTORM_CURSOR_BASELINE", sys.argv[3])
