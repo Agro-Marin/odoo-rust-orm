@@ -1046,8 +1046,25 @@ def _rules_need_python(env, name):
     needed = _RULES_NEED_PYTHON.get(key)
     if needed is None:
         domain = env[name]._access_domain("read")
-        needed = not domain.is_true() and _has_python_search_field_in_domain(
-            env[name], domain
+        # Reach policies are compiled for the live principal by Odoo even when
+        # the resulting domain contains only ordinary stored fields (or TRUE).
+        rows = env["ir.access"]._get_all_access()
+        pending, seen = [name], set()
+        dynamic_reach = False
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            if any(row.reach not in (None, "", "all") for row in rows.get(current, ())):
+                dynamic_reach = True
+                break
+            model = env[current]
+            if model._inherits_rules:
+                pending.extend(model._inherits)
+        needed = dynamic_reach or (
+            not domain.is_true()
+            and _has_python_search_field_in_domain(env[name], domain)
         )
         if len(_RULES_NEED_PYTHON) >= 4096:
             _RULES_NEED_PYTHON.clear()
@@ -2090,7 +2107,11 @@ def _wrap_web_search_read(orig_web_read, orig_web_search_read):
         count_limit=None,
     ):
         plan = None
-        if not _web_clean(self):
+        if "__verbs" in specification:
+            # Screening removes this pseudo-field, but web_read must compute
+            # its per-record authority response before returning the records.
+            _refuse("record verbs are computed in python")
+        elif not _web_clean(self):
             _refuse("web read hooks overridden in python")
         elif not specification:
             _refuse("empty specification")

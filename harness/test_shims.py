@@ -1383,6 +1383,60 @@ def test_web_spec_plan() -> None:
     check("forget_gates empties the verdicts", dict(orm_shim._GATE_CACHE), {})
 
 
+def test_dynamic_reach_rules_resolve_even_when_the_domain_is_true() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    shim = _shims()[1]
+    domain = SimpleNamespace(is_true=lambda: True)
+    rows = {"parent": [SimpleNamespace(reach="partner")]}
+    env = {
+        "ir.access": SimpleNamespace(_get_all_access=lambda: rows),
+        "child": SimpleNamespace(
+            _access_domain=lambda _op: domain,
+            _inherits_rules=True,
+            _inherits={"parent": "parent_id"},
+        ),
+        "parent": SimpleNamespace(
+            _access_domain=lambda _op: domain, _inherits_rules=False
+        ),
+    }
+    with (
+        patch.object(
+            shim, "_rules_key", side_effect=lambda _env, name: ("probe", name)
+        ),
+        patch.object(shim, "_RULES_NEED_PYTHON", {}),
+    ):
+        check(
+            "dynamic rules on delegated parents are compiled",
+            shim._rules_need_python(env, "child"),
+            True,
+        )
+        check(
+            "a TRUE result still replaces native dynamic rules",
+            shim._rules_need_python(env, "parent"),
+            True,
+        )
+
+
+def test_web_search_read_preserves_record_verb_specification() -> None:
+    from types import SimpleNamespace
+
+    shim = _shims()[1]
+    seen = []
+    spec = {"name": {}, "__verbs": {}}
+    expected = {"length": 1, "records": [{"id": 4, "__verbs": ["approve"]}]}
+
+    def original(_model, _domain, specification, **_kwargs):
+        seen.append(specification)
+        return expected
+
+    wrapped = shim._wrap_web_search_read(None, original)
+    actual = wrapped(SimpleNamespace(_name="probe.verbs"), [], spec)
+    check("delegation retains per-record verbs", actual, expected)
+    check("the original sees the complete specification", seen, [spec])
+
+
 def test_web_search_read_plans_what_web_screened() -> None:
     orm_shim = _shims()[1]
     _odoo()
@@ -2229,6 +2283,11 @@ def test_install_is_idempotent_and_keeps_stamps() -> None:
     from odoo.fields import Domain
 
     class _Rules:
+        _inherits_rules = False
+
+        def _get_all_access(self):
+            return {}
+
         def _access_domain(self, *_args):
             return Domain.TRUE
 
