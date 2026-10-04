@@ -3006,6 +3006,12 @@ HTTP burn-in. `harness/traffic_bench.py` replays calls Odoo actually served --
 the byte-parity stage records 1,792 of them, `web_search_read`,
 `web_read_group`, `search_read`, `search_count`, `name_search`, `web_read` --
 in one process, with the method shim routing and with it off, interleaved.
+The current harness alternates which mode runs first in each pair and reports
+the median paired on/off ratio. Method and fallback breakdowns come from the
+actual pair nearest that median, identified in the output. It rejects empty
+workloads, failed timed calls, and calls whose routed/fallback classification
+changes after warmup. Historical figures below used independently selected
+fastest runs and should not be treated as paired measurements.
 Its first reading, on committed `odoo` and `enterprise` worktrees:
 
 ```

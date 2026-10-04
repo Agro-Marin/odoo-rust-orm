@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import pathlib
+import statistics
 import sys
 import time
 
@@ -10,6 +11,8 @@ _logger = logging.getLogger("odoo.rust_kernel.traffic_bench")
 
 REPLAY = os.environ.get("RUSTORM_REPLAY")
 ROUNDS = int(os.environ.get("RUSTORM_TRAFFIC_ROUNDS", "3"))
+if ROUNDS <= 0:
+    raise ValueError("RUSTORM_TRAFFIC_ROUNDS must be positive")
 if not REPLAY or not pathlib.Path(REPLAY).exists():
     print("TRAFFIC SKIP: set RUSTORM_REPLAY to a capture file")
     sys.exit(0)
@@ -91,7 +94,14 @@ def replay(mode):
             raise
         elapsed = time.perf_counter() - started
         if mode == "on":
-            ROUTED[index] = rust_orm_shim.STATS["kernel"] > routed_before
+            routed = rust_orm_shim.STATS["kernel"] > routed_before
+            if index in ROUTED and ROUTED[index] != routed:
+                _logger.error(
+                    "routing changed: call=%s model=%s method=%s warmup=%s now=%s",
+                    index, call["model"], call["method"], ROUTED[index], routed,
+                )
+                raise ValueError("routing changed after warmup; comparison is invalid")
+            ROUTED[index] = routed
         path = "routed" if ROUTED.get(index) else "fallback"
         spent[call["method"]] += elapsed
         count[call["method"]] += 1
@@ -104,7 +114,7 @@ def replay(mode):
 
 previous_mode, previous_sample = rust_orm_shim.MODE, rust_orm_shim.SAMPLE
 rust_orm_shim.set_sample(0.0)
-best = {}
+pairs = []
 try:
     rust_orm_shim.set_mode("off")
     for index, call in enumerate(calls):
@@ -114,27 +124,41 @@ try:
         "rest are rejected during preflight and are not timed"
         % (len(SERVED), len(calls))
     )
+    if not SERVED:
+        raise ValueError("traffic benchmark has no successful preflight calls")
     replay("on")
     replay("off")
     for n in range(ROUNDS):
-        for mode in ("off", "on"):
+        pair = {}
+        order = ("off", "on") if n % 2 == 0 else ("on", "off")
+        _logger.debug("traffic pair=%s execution order=%s", n, order)
+        for mode in order:
             routed = rust_orm_shim.STATS["kernel"]
             total, spent, count = replay(mode)
             print(
                 "TRAFFIC round %d %-3s %.3fs  routed %d"
                 % (n, mode, total, rust_orm_shim.STATS["kernel"] - routed)
             )
-            if mode not in best or total < best[mode][0]:
-                best[mode] = (total, spent, count)
+            if total <= 0:
+                raise ValueError("traffic benchmark measured a nonpositive duration")
+            pair[mode] = (total, spent, count)
+        pairs.append(pair)
 finally:
     rust_orm_shim.set_mode(previous_mode)
     rust_orm_shim.set_sample(previous_sample)
     env.cr.rollback()  # noqa: F821
 
-off, on = best["off"], best["on"]
+ratios = [pair["on"][0] / pair["off"][0] for pair in pairs]
+median_ratio = statistics.median(ratios)
+print("TRAFFIC %d pairs: median paired on/off ratio %.2fx" % (ROUNDS, median_ratio))
+# Keep every breakdown from one actual pair. With an even number of rounds,
+# the median ratio may lie between pairs; label the nearest pair explicitly.
+representative = min(range(ROUNDS), key=lambda n: abs(ratios[n] - median_ratio))
+off, on = pairs[representative]["off"], pairs[representative]["on"]
 print(
-    "TRAFFIC %d calls: routing off %.3fs, on %.3fs -> on is %.2fx off"
+    "TRAFFIC representative pair %d, %d calls: routing off %.3fs, on %.3fs -> on is %.2fx off"
     % (
+        representative,
         sum(v for k, v in off[2].items() if isinstance(k, str)),
         off[0],
         on[0],

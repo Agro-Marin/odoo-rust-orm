@@ -649,3 +649,23 @@ Cleanup: all four owned databases, the temporary TLS cluster, copied configs
 and disposable filestore/cache data were removed. Debug logs remain under the
 artifact root; the original verify2/every_user.log is retained as .log.gz.
 No claim of exhaustive ORM correctness is made by this finite corpus.
+
+Traffic measurement follow-up (2026-10-04)
+----------------------------------------
+Deterministic clock controls reproduced six failures in the previous traffic
+benchmark: independently minimized timings, zero/negative rounds, empty/missing
+model workloads, and a changed routed/fallback classification after warmup.
+The existing injected timed-failure control continued passing.
+
+The benchmark now alternates execution order, reports the median of paired
+on/off ratios, and uses one explicitly identified actual pair for breakdowns.
+Invalid workloads and changing routes fail with state restoration. Debug logs
+identify pair order and routing changes. An even-round control checks that the
+interpolated median and representative pair are labeled separately.
+
+Validation: harness/test_harness.py, 41 passed with --log-level=DEBUG; Ruff
+checks on both changed Python files passed. Before/after test output is in
+/tmp/rustorm-traffic-before.log and /tmp/rustorm-traffic-after.log. These are
+reporting and failure-path controls, not new live performance measurements.
+The prior live results remain historical evidence with their stated limits;
+the standalone coverage gate and actual routing overhead remain open.

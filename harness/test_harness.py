@@ -418,7 +418,23 @@ def test_speedup_reports_both_aggregates_and_what_it_dropped(tmp_path) -> None:
     assert lines["cases"].split()[1] == "4"
 
 
-def test_traffic_benchmark_rejects_a_fast_routed_failure(tmp_path, monkeypatch, caplog):
+def test_traffic_benchmark_rejects_a_fast_routed_failure(traffic_probe, monkeypatch, caplog):
+    import odoo.service.model
+
+    def call_kw(*_args):
+        if traffic_probe.shim.MODE == "on":
+            raise ValueError("injected timed failure")
+        return []
+
+    monkeypatch.setattr(odoo.service.model, "call_kw", call_kw)
+    with pytest.raises(ValueError, match="injected timed failure"):
+        traffic_probe.run()
+    assert "timed replay failed" in caplog.text
+    assert traffic_probe.env.cr.rollback.call_count == 2
+
+
+@pytest.fixture
+def traffic_probe(tmp_path, monkeypatch, caplog):
     import logging
     import runpy
     from types import SimpleNamespace
@@ -430,6 +446,7 @@ def test_traffic_benchmark_rejects_a_fast_routed_failure(tmp_path, monkeypatch, 
     capture = tmp_path / "calls.jsonl"
     capture.write_text(json.dumps({"model": "res.country", "method": "search_read"}))
     monkeypatch.setenv("RUSTORM_REPLAY", str(capture))
+    monkeypatch.setenv("RUSTORM_TRAFFIC_ROUNDS", "3")
     shim = SimpleNamespace(MODE="shadow", SAMPLE=0.5, STATS={"kernel": 0})
     shim.set_mode = lambda value: setattr(shim, "MODE", value)
     shim.set_sample = lambda value: setattr(shim, "SAMPLE", value)
@@ -443,15 +460,76 @@ def test_traffic_benchmark_rejects_a_fast_routed_failure(tmp_path, monkeypatch, 
             return self
 
     env = Env({"res.country": object()})
+    modes = []
 
     def call_kw(*_args):
-        if shim.MODE == "on":
-            raise ValueError("injected timed failure")
+        modes.append(shim.MODE)
         return []
 
     monkeypatch.setattr(odoo.service.model, "call_kw", call_kw)
-    with pytest.raises(ValueError, match="injected timed failure"):
-        runpy.run_path(str(HERE / "traffic_bench.py"), init_globals={"env": env})
-    assert (shim.MODE, shim.SAMPLE) == ("shadow", 0.5)
-    assert "timed replay failed" in caplog.text
-    assert env.cr.rollback.call_count == 2
+
+    def run():
+        try:
+            return runpy.run_path(str(HERE / "traffic_bench.py"), init_globals={"env": env})
+        finally:
+            assert (shim.MODE, shim.SAMPLE) == ("shadow", 0.5)
+
+    return SimpleNamespace(run=run, capture=capture, modes=modes, shim=shim, env=env)
+
+
+def test_traffic_benchmark_reports_a_paired_median(traffic_probe, monkeypatch, capsys):
+    # Warmups, then off/on, on/off, off/on. Independent minima would report 2x,
+    # whereas the actual paired ratios are 8x, 0.2x and 3x (median 3x).
+    ticks = iter(value for duration in [1, 1, 1, 8, 2, 10, 3, 9] for value in [0, duration])
+    monkeypatch.setattr("time.perf_counter", lambda: next(ticks))
+    traffic_probe.run()
+    assert traffic_probe.modes == ["off", "on", "off", "off", "on", "on", "off", "off", "on"]
+    output = capsys.readouterr().out
+    assert "median paired on/off ratio 3.00x" in output
+    assert "representative pair 2" in output
+    assert "routing off 3.000s, on 9.000s" in output
+
+
+def test_traffic_benchmark_labels_even_rounds(traffic_probe, monkeypatch, capsys):
+    monkeypatch.setenv("RUSTORM_TRAFFIC_ROUNDS", "2")
+    ticks = iter(value for duration in [1, 1, 1, 2, 4, 1] for value in [0, duration])
+    monkeypatch.setattr("time.perf_counter", lambda: next(ticks))
+    traffic_probe.run()
+    output = capsys.readouterr().out
+    assert "median paired on/off ratio 3.00x" in output
+    assert "representative pair 0" in output
+    assert "routing off 1.000s, on 2.000s" in output
+
+
+@pytest.mark.parametrize("rounds", ["0", "-1"])
+def test_traffic_benchmark_requires_positive_rounds(traffic_probe, monkeypatch, rounds):
+    monkeypatch.setenv("RUSTORM_TRAFFIC_ROUNDS", rounds)
+    with pytest.raises(ValueError, match="must be positive"):
+        traffic_probe.run()
+    assert traffic_probe.modes == []
+
+
+@pytest.mark.parametrize("capture", ["", '{"model":"missing", "method":"search_read"}'])
+def test_traffic_benchmark_rejects_empty_workloads(traffic_probe, capture):
+    traffic_probe.capture.write_text(capture)
+    with pytest.raises(ValueError, match="no successful preflight calls"):
+        traffic_probe.run()
+
+
+def test_traffic_benchmark_rejects_changing_routes(traffic_probe, monkeypatch, caplog):
+    import odoo.service.model
+
+    on_calls = 0
+
+    def call_kw(*_args):
+        nonlocal on_calls
+        if traffic_probe.shim.MODE == "on":
+            on_calls += 1
+            if on_calls == 1:
+                traffic_probe.shim.STATS["kernel"] += 1
+        return []
+
+    monkeypatch.setattr(odoo.service.model, "call_kw", call_kw)
+    with pytest.raises(ValueError, match="routing changed"):
+        traffic_probe.run()
+    assert "routing changed" in caplog.text
