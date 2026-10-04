@@ -567,13 +567,56 @@ fn token_matches(given: &str, expected: &str) -> bool {
     (diff | same_len) == 0 && !expected.is_empty()
 }
 
+// This is a public protocol, unlike Request, which also carries assertions
+// produced by trusted Python code. An allowlist keeps future internal fields
+// from silently becoming client-controlled authority.
+fn public_request(body: serde_json::Value) -> Result<Request, (StatusCode, String)> {
+    let object = body.as_object().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "expected a request object".to_string(),
+        )
+    })?;
+    for key in object.keys() {
+        if !matches!(
+            key.as_str(),
+            "id" | "registry_sequence"
+                | "model"
+                | "method"
+                | "domain"
+                | "fields"
+                | "limit"
+                | "offset"
+                | "order"
+                | "groupby"
+                | "aggregates"
+                | "having"
+                | "uid"
+                | "su"
+                | "lang"
+                | "allowed_company_ids"
+                | "active_test"
+                | "tz"
+                | "groupby_labels"
+                | "x2many_active_test"
+        ) {
+            tracing::debug!(target: "odoo_kernel::http", field = %key,
+                "rejected a non-public request field");
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!("field {key:?} is not accepted over HTTP"),
+            ));
+        }
+    }
+    serde_json::from_value(body).map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))
+}
+
 async fn handle_call(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
-    AxJson(req): AxJson<Request>,
+    AxJson(body): AxJson<serde_json::Value>,
 ) -> axum::response::Response {
     let t0 = std::time::Instant::now();
-    let mut req = req;
     if let Auth::Token { secret, .. } = &state.auth {
         let given = headers
             .get("x-rustorm-token")
@@ -582,7 +625,6 @@ async fn handle_call(
         if !token_matches(given, secret) {
             tracing::warn!(
                 target: "odoo_kernel::http",
-                model = %req.model,
                 presented = !given.is_empty(),
                 "rejected a call: missing or wrong X-Rustorm-Token"
             );
@@ -593,6 +635,10 @@ async fn handle_call(
                 .into_response();
         }
     }
+    let mut req = match public_request(body) {
+        Ok(req) => req,
+        Err((code, why)) => return (code, AxJson(json!({"error": why}))).into_response(),
+    };
     if let Err((code, why)) = admit(&state.auth, &mut req) {
         return (code, AxJson(json!({"error": why}))).into_response();
     }
@@ -708,6 +754,41 @@ mod tests {
 
     fn request(body: serde_json::Value) -> Request {
         serde_json::from_value(body).expect("a well-formed request")
+    }
+
+    #[test]
+    fn http_cannot_supply_internal_authority_even_with_empty_values() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter("debug")
+            .with_test_writer()
+            .try_init();
+        for field in [
+            "principal_groups",
+            "resolved_rules",
+            "trusted_domain",
+            "sql_nonce",
+            "order_fragments",
+            "unredacted_many2one",
+            "raw_many2one",
+            "root_active_test",
+            "groupby_hidden_labels_empty",
+            "future_internal_field",
+        ] {
+            for value in [json!(null), json!({}), json!([]), json!(true)] {
+                let mut body = json!({"model": "res.partner", "method": "search_count"});
+                body[field] = value;
+                let (code, _) = public_request(body).expect_err(field);
+                assert_eq!(code, StatusCode::FORBIDDEN, "{field}");
+            }
+        }
+        let mut req = public_request(json!({"model": "res.partner", "method": "search_count",
+            "domain": [], "uid": 1, "su": true}))
+        .unwrap();
+        admit(&Auth::Pinned { uid: 6 }, &mut req).unwrap();
+        assert!(matches!(req.uid, Some(odoo_kernel::orm::UidSpec::Id(6))));
+        assert!(!req.su);
+        assert!(req.principal_groups.is_none());
+        assert!(req.resolved_rules.is_empty());
     }
 
     #[test]

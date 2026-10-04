@@ -1675,8 +1675,12 @@ connection it ran on rather than dropping the socket — 503 when no pooled
 connection is available within the acquire timeout (the reconnect of a dead
 pooled connection failing is that too, not a dead connection handed out) or
 the registry is stale, 504 when the request exceeded its timeout, 400 for a
-body axum cannot parse (an unknown key is one: `Request` denies them). Every
-error body carries `kind`, `internal` or `refusal`. `/health` reports `auth`
+malformed request body. HTTP accepts an explicit list of public fields;
+internal assertions such as `principal_groups`, `resolved_rules`, SQL fragments,
+and relation-redaction overrides are rejected with 403, including when empty
+and when token authentication allows superuser calls. Only the trusted Python
+bridge may supply those assertions. Dispatch error bodies carry `kind`,
+`internal` or `refusal`. `/health` reports `auth`
 (`{"mode":"token"}` or `{"mode":"pinned","uid":N}`) so a harness can tell
 whether the identities it names would be honoured.
 
