@@ -67,11 +67,26 @@ SWM=$(sed -n 's/^server_wide_modules[[:space:]]*=[[:space:]]*//p' "$OUT/base.con
 SWM="${SWM:-base,web}"
 case ",$SWM," in *,rust_engine,*) ;; *) SWM="$SWM,rust_engine" ;; esac
 
+# Refuse an occupied endpoint; cleanup must never kill an unrelated listener.
+"$PY" - "$PORT" <<'PYEOF' || exit 2
+import socket, sys
+with socket.socket() as sock:
+    sock.bind(("127.0.0.1", int(sys.argv[1])))
+PYEOF
+
+SERVER_PID=""
 stop() {
-  for p in $(ss -ltnp 2>/dev/null | grep ":$PORT " | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do
-    kill -TERM "$p" 2>/dev/null || true
+  [ -n "$SERVER_PID" ] || return 0
+  kill -TERM "$SERVER_PID" 2>/dev/null || true
+  for _ in $(seq 1 15); do
+    kill -0 "$SERVER_PID" 2>/dev/null || break
+    sleep 1
   done
-  sleep 3
+  if kill -0 "$SERVER_PID" 2>/dev/null; then
+    kill -KILL "$SERVER_PID" 2>/dev/null || true
+  fi
+  wait "$SERVER_PID" 2>/dev/null || true
+  SERVER_PID=""
 }
 trap stop EXIT
 
@@ -97,7 +112,15 @@ boot() {
   } > "$OUT/$mode.conf"
   PYTHONPATH="$OUT/pymod" setsid nohup "$PY" "$ODOO/odoo-bin" -c "$OUT/$mode.conf" -d "$DB" \
       > "$OUT/$mode.log" 2>&1 < /dev/null &
-  for _ in $(seq 1 120); do ss -ltn | grep -q ":$PORT " && break; sleep 1; done
+  SERVER_PID=$!
+  for _ in $(seq 1 120); do
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+      echo "  $mode server exited during startup; see $OUT/$mode.log" >&2
+      exit 1
+    fi
+    ss -ltn | grep -q ":$PORT " && break
+    sleep 1
+  done
   sleep 5
 }
 
