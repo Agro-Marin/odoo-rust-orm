@@ -37,6 +37,7 @@ class _Env:
 
 class _Field:
     is_html = False
+    column_value_is_cache = False
 
     def __init__(self, name, cast, translate):
         self.name = name

@@ -1843,21 +1843,18 @@ def test_a_constraint_raised_by_the_pre_route_flush_reaches_the_caller() -> None
     _odoo()
     from odoo.exceptions import UserError
 
-    class _Store:
+    class _Core:
         @staticmethod
         def is_any_dirty():
             return True
 
-    class _Engine:
-        pending = [1]
-
-    class _Tx:
-        _cache_store = _Store()
-        _compute_engine = _Engine()
+        @staticmethod
+        def has_pending():
+            return True
 
     def env_raising(exc):
         class _Env:
-            transaction = _Tx()
+            core = _Core()
 
             @staticmethod
             def flush_all():
@@ -3002,6 +2999,7 @@ def test_a_column_group_the_kernel_refuses_falls_through_to_the_delegate() -> No
 
 class _InsertField:
     is_html = False
+    column_value_is_cache = False
 
     def __init__(self, name, convert=None) -> None:
         self.name = name
@@ -3756,3 +3754,60 @@ def test_the_security_taint_is_keyed_by_the_transactions_own_cursor() -> None:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def test_a_large_native_insert_goes_in_batches() -> None:
+    backend = _backend()
+    _odoo()
+    from odoo.orm.primitives import INSERT_BATCH_SIZE
+
+    kernel = _InsertKernel()
+    backend.KERNEL_FOR = lambda _env: kernel
+    try:
+        count = 2 * INSERT_BATCH_SIZE + 7
+        cr = _InsertCursor(in_pipeline=True)
+        backend._create_rows_native(
+            _InsertModel(cr), [{"name": "x"}] * count, ["name"], [_InsertField("name")]
+        )
+        check(
+            "the kernel is asked one batch at a time",
+            [asked[2] for asked in kernel.asked],
+            [INSERT_BATCH_SIZE, INSERT_BATCH_SIZE, 7],
+        )
+        check(
+            "one INSERT per batch",
+            [len(params) for _sql, params in cr.executed],
+            [INSERT_BATCH_SIZE, INSERT_BATCH_SIZE, 7],
+        )
+    finally:
+        backend.KERNEL_FOR = None
+
+
+def test_the_uniform_update_rule_is_the_forks_own() -> None:
+    backend = _backend()
+    _odoo()
+    from odoo.orm.runtime.backend import PostgresBackend
+
+    seen = []
+    original = PostgresBackend._resolve_uniform_update_values
+
+    def spy(rows):
+        seen.append(rows)
+        return original(rows)
+
+    class _UpdateKernel(_InsertKernel):
+        def update_rows_sql(self, _model, columns, uniform, row_count):
+            self.asked.append((uniform, row_count))
+            return "UPDATE", [1] * len(columns)
+
+    PostgresBackend._resolve_uniform_update_values = staticmethod(spy)
+    backend.KERNEL_FOR = lambda _env: _UpdateKernel()
+    try:
+        check("no second copy of the rule", hasattr(backend, "_uniform_values"), False)
+        cr = _InsertCursor()
+        backend._update_rows_native(_InsertModel(cr), ("name",), [(1, "a"), (2, "a")])
+        check("the fork's rule decided the update", bool(seen), True)
+        check("one uniform UPDATE", cr.executed, [("UPDATE", ["a", [1, 2]])])
+    finally:
+        backend.KERNEL_FOR = None
+        PostgresBackend._resolve_uniform_update_values = staticmethod(original)

@@ -305,19 +305,6 @@ def _routing_allows(model, method) -> bool:
     return True
 
 
-def _uniform_values(rows):
-    from odoo.orm.runtime.backend import _UNIFORM_UPDATE_TYPES
-
-    if len(rows) < 2:
-        return None
-    values = rows[0][1:]
-    if not all(isinstance(value, _UNIFORM_UPDATE_TYPES) for value in values):
-        return None
-    if any(row[1:] != values for row in rows):
-        return None
-    return values
-
-
 def _update_rows_native(model, fnames, rows) -> bool:
     from odoo.orm.primitives import UPDATE_BATCH_SIZE
 
@@ -333,7 +320,9 @@ def _update_rows_native(model, fnames, rows) -> bool:
         _delegated("update_rows", "the registry moved under this kernel")
         return False
 
-    values = _uniform_values(rows)
+    from odoo.orm.runtime.backend import PostgresBackend
+
+    values = PostgresBackend._resolve_uniform_update_values(rows)
     try:
         statements = []
         if values is not None:
@@ -370,6 +359,7 @@ def _update_rows_native(model, fnames, rows) -> bool:
 
 def _create_rows_native(model, stored_list, columns, col_fields):
     from odoo.libs.sql.builder import SQL
+    from odoo.orm.primitives import INSERT_BATCH_SIZE
     from odoo.orm.runtime.backend import (
         COPY_DISABLED,
         COPY_THRESHOLD,
@@ -401,7 +391,6 @@ def _create_rows_native(model, stored_list, columns, col_fields):
         rows = PostgresBackend._prepare_insert_rows(
             model, stored_list, columns, col_fields
         )
-        params = []
         for row in rows:
             for value in row:
                 if isinstance(value, (SQL, tuple)):
@@ -411,20 +400,28 @@ def _create_rows_native(model, stored_list, columns, col_fields):
                         % type(value).__name__,
                     )
                     return None
-                params.append(value)
         insert_columns = list(columns)
     else:
-        params = []
+        rows = [()] * len(stored_list)
         insert_columns = []
 
+    # one statement per batch, as the Python INSERT path does: a single one
+    # binding every value overflows PostgreSQL's 65535 parameters
+    statements = []
     try:
-        sql = kernel.insert_rows_sql(model._name, insert_columns, len(stored_list))
+        for start in range(0, len(rows), INSERT_BATCH_SIZE):
+            batch = rows[start : start + INSERT_BATCH_SIZE]
+            sql = kernel.insert_rows_sql(model._name, insert_columns, len(batch))
+            statements.append((sql, [value for row in batch for value in row]))
     except (KernelRefused, KernelRegistryStale) as exc:
         _delegated("create_rows", str(exc))
         return None
 
-    cr.execute(sql, params or None)
-    return [id_ for (id_,) in cr.fetchall()]
+    ids = []
+    for sql, params in statements:
+        cr.execute(sql, params or None)
+        ids.extend(id_ for (id_,) in cr.fetchall())
+    return ids
 
 
 def _revive(value):

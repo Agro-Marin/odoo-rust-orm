@@ -754,8 +754,8 @@ def _x2many_cached(model, field):
 
 def _is_flush_required(env) -> bool:
     try:
-        tx = env.transaction
-        return tx._cache_store.is_any_dirty() or bool(tx._compute_engine.pending)
+        core = env.core
+        return core.is_any_dirty() or core.has_pending()
     except Exception:
         return True
 
