@@ -1,9 +1,12 @@
 import collections
 import json
+import logging
 import os
 import pathlib
 import sys
 import time
+
+_logger = logging.getLogger("odoo.rust_kernel.traffic_bench")
 
 REPLAY = os.environ.get("RUSTORM_REPLAY")
 ROUNDS = int(os.environ.get("RUSTORM_TRAFFIC_ROUNDS", "3"))
@@ -43,7 +46,14 @@ def serve(index, call):
             call.get("args") or [],
             call.get("kwargs") or {},
         )
-    except Exception:
+    except Exception as exc:
+        _logger.debug(
+            "preflight rejected call=%s model=%s method=%s error=%s",
+            index,
+            call["model"],
+            call["method"],
+            type(exc).__name__,
+        )
         cenv.cr.rollback()
     else:
         SERVED.add(index)
@@ -68,7 +78,17 @@ def replay(mode):
                 call.get("kwargs") or {},
             )
         except Exception:
+            _logger.exception(
+                "timed replay failed: mode=%s call=%s model=%s method=%s",
+                mode,
+                index,
+                call["model"],
+                call["method"],
+            )
             cenv.cr.rollback()
+            # Timing a fast failure as a successful read reports a fictitious
+            # speedup. Every timed call already succeeded in Python preflight.
+            raise
         elapsed = time.perf_counter() - started
         if mode == "on":
             ROUTED[index] = rust_orm_shim.STATS["kernel"] > routed_before

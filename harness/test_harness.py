@@ -416,3 +416,42 @@ def test_speedup_reports_both_aggregates_and_what_it_dropped(tmp_path) -> None:
         == "dropped before comparing: 1 python-only, 1 rust-only"
     )
     assert lines["cases"].split()[1] == "4"
+
+
+def test_traffic_benchmark_rejects_a_fast_routed_failure(tmp_path, monkeypatch, caplog):
+    import logging
+    import runpy
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    import odoo.service.model
+
+    caplog.set_level(logging.DEBUG)
+    capture = tmp_path / "calls.jsonl"
+    capture.write_text(json.dumps({"model": "res.country", "method": "search_read"}))
+    monkeypatch.setenv("RUSTORM_REPLAY", str(capture))
+    shim = SimpleNamespace(MODE="shadow", SAMPLE=0.5, STATS={"kernel": 0})
+    shim.set_mode = lambda value: setattr(shim, "MODE", value)
+    shim.set_sample = lambda value: setattr(shim, "SAMPLE", value)
+    monkeypatch.setitem(sys.modules, "rust_orm_shim", shim)
+
+    class Env(dict):
+        cr = SimpleNamespace(rollback=Mock())
+        invalidate_all = Mock()
+
+        def __call__(self, **_kwargs):
+            return self
+
+    env = Env({"res.country": object()})
+
+    def call_kw(*_args):
+        if shim.MODE == "on":
+            raise ValueError("injected timed failure")
+        return []
+
+    monkeypatch.setattr(odoo.service.model, "call_kw", call_kw)
+    with pytest.raises(ValueError, match="injected timed failure"):
+        runpy.run_path(str(HERE / "traffic_bench.py"), init_globals={"env": env})
+    assert (shim.MODE, shim.SAMPLE) == ("shadow", 0.5)
+    assert "timed replay failed" in caplog.text
+    assert env.cr.rollback.call_count == 2
