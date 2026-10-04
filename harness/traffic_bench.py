@@ -111,7 +111,7 @@ try:
         serve(index, call)
     print(
         "TRAFFIC %d of %d captured calls succeed in Python on this database; the "
-        "rest name records the recorded run created and are not timed"
+        "rest are rejected during preflight and are not timed"
         % (len(SERVED), len(calls))
     )
     replay("on")

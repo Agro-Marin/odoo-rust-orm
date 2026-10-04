@@ -541,3 +541,111 @@ checksum and disposable PostgreSQL references, with debug logging. Python log:
 /tmp/odoo-rust-missing-python.log. The disposable rustorm_missing_20261004
 database was dropped after confirming zero clients. No full live Odoo corpus
 or browser rerun. Committed on main without creating a feature branch.
+
+Full integration loop, follow-up on 2026-10-04
+---------------------------------------------
+Artifacts: /tmp/odoo-rust-loop-20261004 (local debug logs; not a portable CI
+artifact). All databases used below were created for this audit. Changes were
+committed on main in separate, reviewable commits.
+
+Confirmed and repaired:
+* HTTP accepted internal Request assertions from public JSON. A pinned-user
+  request could supply group/rule state that only Python should produce. The
+  public field allowlist now rejects internal assertions, including empty
+  values and requests authenticated by a token permitting superuser calls.
+  Live checks preserve ordinary permitted reads and existing refusals; six
+  forged pinned-user requests return 403. Token checks preserve 200 for an
+  authorized public request, 401 without authentication, and 403 for internal
+  metadata. The schema is fail-closed for future internal fields.
+* Python rule detection missed dynamic reach policies whose compiled domains
+  use stored fields or become TRUE. Grant scopes previously routed no calls
+  for four principal classes. The revised trusted bridge resolves those rules,
+  including delegated-parent policies: 180 comparisons agree with Python and
+  all five principal classes route. Native-only clients still refuse policies
+  requiring live Python compilation; this boundary was not relaxed.
+* web_search_read screening removed __verbs before Python could compute the
+  per-record response. Those requests now delegate with their specification
+  intact. Odoo's previously failing TestVerbButtons regression now succeeds.
+* Database overrides split quoted keyword DSNs and failed to override URI
+  query-string dbname values. Rust now preserves the original options and
+  appends an escaped final override; Python uses psycopg's conninfo builder.
+  Parser checks cover spaces, quotes, backslashes, reserved URI characters,
+  Unicode, duplicate dbname parameters and passwords containing ://. The Python
+  helper also connected to a live TLS database with a quote, space and slash
+  in its name. Rust coverage of those names uses the actual connection parser.
+* Bare unittest execution did not establish Odoo's current_test lifecycle.
+  The shared runner uses OdooSuite/OdooTestResult and restores prior context.
+  Cursor parity also starts its own HTTP server and enables read-only cursors
+  before registry construction. Both 403-test cursor legs now pass with zero
+  failures; the 97-test upstream routing gate passes with 106 routed calls.
+* The verification shell did not consistently propagate the freshly built
+  extension and assumed a fixed local PostgreSQL user for its initial check.
+  All subprocesses now inherit the selected extension and the database check
+  uses the configured endpoint. ORM comparison checks process exits and test
+  totals. Live boundary coverage checks exact exception types/messages too.
+* Traffic timing counted failed routed calls as fast successful reads. Timed
+  failures now abort, with debug context and mode restoration. An injected
+  failure control verifies that behavior. Parity cleanup now owns a child PID
+  instead of killing any listener on its port; an occupied-port probe verifies
+  the existing listener survives.
+* Low-level probes initialize debug loggers. The ignored statement benchmark
+  now requires its registry export instead of silently passing without it.
+  Reruns with missing and stale exports failed rather than being counted as
+  passing benchmarks. After correcting the fixtures, a fresh-export run passed.
+
+Execution caveats: the first run exposed a stale-extension import. After fixing
+propagation, a long shell run was interrupted when this audit edited its script
+while Bash was reading it. Remaining stages were run from a frozen copy, and
+failed stages were rerun individually after their fixes. This evidence combines
+explicit stage results; it does not claim one uninterrupted all-green verify.sh
+exit. The standalone refusal-share gate remains red as described below.
+
+Completed verification evidence:
+* Rust workspace: 276 ordinary tests pass; fmt and clippy --all-targets pass.
+* Ruff passes on changed Python files and bash -n passes on changed scripts.
+  A broader Ruff scan also reports six existing C901 complexity violations in
+  unchanged ab_workload.py, fuzz_corpus.py (two), soak.py, sweep_corpus.py and
+  write_diff.py. No repository-wide clean-lint claim is made.
+* Python shim checks: 84 pass, zero skipped. Harness/read/search contracts:
+  89 pass with the disposable PostgreSQL DSN, plus the subsequently added
+  timed-failure control (the complete harness module is now 34 passing tests).
+* Runtime contracts pass, including expected injected failure/divergence
+  controls. Live search boundaries: 39 comparisons (27 results, 12 matching
+  errors), 16 native calls and explicit fallback controls.
+* Final HTTP byte parity: 1,644 cases, 1,620 stable, 24 nondeterministic,
+  1,546 answered successfully; zero stable divergences; 1,659 routed reads.
+* Original full sweep: 3,399 native result comparisons and 5,925 matching
+  access-denial decisions; no result mismatch. Its coverage gate FAILS:
+  4,862 refusals plus 259 Python-error/native-decline cases exceed the 30%
+  refusal ceiling (about 35%). Many are deliberately Python-compiled reach
+  rules. The threshold was not reduced and this is not reported as a pass.
+* Earlier full stages also passed: 331 shadow comparisons; fuzz seeds 1-3;
+  24,212 registry shapes (16,834 routed); 12 browser tours with zero shadow
+  divergence; replay controls; cross-database loading; COPY; registry policy;
+  eight native write checks; 112-model write differential (388 rows, 2,716
+  cells); all three injected write controls; and search-port differential.
+* Pool cancellation, reconnect and backend-termination checks pass on owned
+  PostgreSQL databases. TLS negotiates encryption and rejects the untrusted
+  certificate under verify-full. The soak completed 36,309 requests in 20.1s
+  after warmup without a reported mismatch.
+
+Performance evidence is deliberately limited:
+* The statement-retention benchmark's final median was 5.869 ms per three-query
+  iteration, saving 55.0% against request-scoped caches. The earlier cache-hit
+  control also improved at one and four threads. These are focused controls.
+* Captured read traffic: 3,132 of 3,280 calls succeeded in Python preflight;
+  three timed rounds completed without swallowed failures. Best totals were
+  routing off 6.679s and on 10.591s (1.59x slower), with 3,304 native dispatches
+  per on round. Debug logging and concurrent test load were enabled. This
+  does not establish production throughput or an overall routing speedup.
+
+Final six-module ORM rerun: 1,973 tests on each leg, zero failures/errors on
+both legs, 846 routed calls. The previously failing record-verbs test succeeds.
+Final expanded every-user rerun: 62,877 comparisons across 14 users and 66
+contexts, zero mismatches; process exit 0. This includes inactive records,
+French translations, scoped grants and reordered company selections.
+
+Cleanup: all four owned databases, the temporary TLS cluster, copied configs
+and disposable filestore/cache data were removed. Debug logs remain under the
+artifact root; the original verify2/every_user.log is retained as .log.gz.
+No claim of exhaustive ORM correctness is made by this finite corpus.
