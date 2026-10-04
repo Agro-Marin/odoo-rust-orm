@@ -5,7 +5,7 @@ use serde_json::{Value as Json, json};
 use crate::db::Db;
 use crate::registry::{FieldType, Registry};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PyExpr {
     Str(String),
     Int(i64),
@@ -94,6 +94,12 @@ fn parse_atom(c: &[char], p: &mut usize) -> Result<PyExpr> {
                 skip_ws(c, p);
                 match c.get(*p) {
                     Some(',') => *p += 1,
+                    Some(')') if ch == '(' && items.len() == 1 => {
+                        // Without a comma, parentheses group an expression;
+                        // a singleton tuple takes the comma branch instead.
+                        *p += 1;
+                        return Ok(items.remove(0));
+                    }
                     Some(x) if *x == close => {}
                     other => refuse!("expected ',' or '{close}', got {other:?}"),
                 }
@@ -1097,6 +1103,43 @@ fn check_read_access_inner(
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn parentheses_group_expressions_unless_a_comma_makes_a_tuple() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter("debug")
+            .with_test_writer()
+            .try_init();
+        for (grouped, plain) in [
+            ("(user.id)", "user.id"),
+            ("((company_ids))", "company_ids"),
+            ("([('id', '=', (user.id))])", "[('id', '=', user.id)]"),
+            ("(1 + 2) + 3", "1 + 2 + 3"),
+            ("(1 # grouping\n)", "1"),
+            (
+                "user.mapped(('partner_id')).ids",
+                "user.mapped('partner_id').ids",
+            ),
+        ] {
+            let parsed = parse_py(grouped).unwrap();
+            tracing::debug!(
+                grouped,
+                plain,
+                ?parsed,
+                "checking Python expression grouping"
+            );
+            assert_eq!(parsed, parse_py(plain).unwrap(), "{grouped}");
+        }
+        for (source, length) in [("()", 0), ("(1,)", 1), ("(1, 2)", 2), ("[1]", 1)] {
+            let parsed = parse_py(source).unwrap();
+            tracing::debug!(source, ?parsed, "checking sequence controls");
+            assert!(matches!(parsed, PyExpr::Seq(items) if items.len() == length));
+        }
+        for source in ["(1 2)", "(1,,)", "(,)", "(1", "user.mapped(('id',))"] {
+            tracing::debug!(source, "checking invalid or unsupported grouping");
+            assert!(parse_py(source).is_err(), "{source}");
+        }
+    }
 
     #[test]
     fn rule_arithmetic_refuses_overflow_instead_of_wrapping_or_becoming_null() {

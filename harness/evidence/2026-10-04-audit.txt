@@ -669,3 +669,19 @@ checks on both changed Python files passed. Before/after test output is in
 reporting and failure-path controls, not new live performance measurements.
 The prior live results remain historical evidence with their stated limits;
 the standalone coverage gate and actual routing overhead remain open.
+
+Rule-expression grouping follow-up (2026-10-04)
+---------------------------------------------
+The parser represented `(user.id)` as a sequence instead of a grouped name,
+and added an extra sequence layer to parenthesized domains. A regression test
+failed before the change with Seq([Name(...)]) versus Name(...). Python AST
+probes independently confirmed six grouping equivalences, including comments,
+addition, a whole domain and a grouped mapped() field name.
+
+Parentheses now group when no comma is present. Empty, singleton and multi-item
+tuples retain sequence behavior; malformed expressions and non-string mapped()
+arguments still refuse. Validation with debug logging: focused regression and
+277 ordinary workspace tests passed; workspace Clippy with warnings denied
+passed. Logs: /tmp/rustorm-grouping-workspace.log and
+/tmp/rustorm-grouping-clippy.log. No coverage percentage improvement is claimed
+without a fresh corpus run.
