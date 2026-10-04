@@ -622,6 +622,9 @@ async fn resolve_name(
             if i != path.len() - 1 {
                 refuse!("attribute after .id in {chain:?}");
             }
+            if attr == "ids" && chain.last().is_some_and(|segment| segment == "*ids") {
+                refuse!("mapped('ids') names a recordset property, not a field");
+            }
             break;
         }
 
@@ -818,6 +821,17 @@ async fn resolve_name(
         "name chain resolved to a recordset"
     );
     match path.last().map(String::as_str) {
+        Some("id") if chain.last().is_some_and(|segment| segment == "*id") => {
+            Ok(json!(current_ids))
+        }
+        Some("id") => match current_ids[..] {
+            [] => Ok(json!(false)),
+            [one] => Ok(json!(one)),
+            _ => refuse!(
+                "{model_name}.id read on {} records: Python raises 'Expected singleton'",
+                current_ids.len()
+            ),
+        },
         Some("ids") => Ok(json!(current_ids)),
         _ => match current_ids[..] {
             [] => Ok(json!(false)),

@@ -94,7 +94,7 @@ async fn context_names_preserve_python_values_and_do_not_ignore_attributes() {
             week_start: HashMap::new(),
         },
     );
-    let user = UserCtx {
+    let mut user = UserCtx {
         uid: 7,
         company_id: 3,
         company_ids: vec![3, 5],
@@ -126,6 +126,7 @@ async fn context_names_preserve_python_values_and_do_not_ignore_attributes() {
         "company_ids.ids",
         "company_ids.mapped('id')",
         "group_ids.ids",
+        "user.env.companies.mapped('ids')",
     ] {
         let actual = eval_py(&parse_py(source).unwrap(), &registry, &db, &user).await;
         tracing::debug!(
@@ -137,6 +138,31 @@ async fn context_names_preserve_python_values_and_do_not_ignore_attributes() {
             matches!(actual, Err(ref error) if error.is::<odoo_kernel::error::Refusal>()),
             "{source}: {actual:?}"
         );
+    }
+    for ids in [vec![], vec![5], vec![5, 3]] {
+        user.company_ids = ids.clone();
+        for source in ["user.env.companies.ids", "user.env.companies.mapped('id')"] {
+            let actual = eval_py(&parse_py(source).unwrap(), &registry, &db, &user)
+                .await
+                .unwrap();
+            tracing::debug!(source, ?ids, %actual, "ID lists retain cardinality and order");
+            assert_eq!(actual, json!(ids), "{source}");
+        }
+        let actual = eval_py(
+            &parse_py("user.env.companies.id").unwrap(),
+            &registry,
+            &db,
+            &user,
+        )
+        .await;
+        tracing::debug!(?ids, ?actual, "id requires at most one record");
+        match ids.as_slice() {
+            [] => assert_eq!(actual.unwrap(), json!(false)),
+            [id] => assert_eq!(actual.unwrap(), json!(id)),
+            _ => assert!(
+                matches!(actual, Err(ref error) if error.is::<odoo_kernel::error::Refusal>())
+            ),
+        }
     }
     drop_schema(&client, schema).await;
 }

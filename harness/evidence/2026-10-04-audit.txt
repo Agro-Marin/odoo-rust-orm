@@ -702,3 +702,27 @@ All four db_rules tests passed on disposable rustorm_expr_20261004_2348 with
 debug logging. The database was removed afterward. All 277 ordinary workspace
 tests and workspace Clippy with warnings denied passed. Before/after and final
 logs: /tmp/rustorm-context-{before,after,workspace,clippy}.log.
+
+Recordset ID cardinality follow-up (2026-10-04)
+---------------------------------------------
+The rule evaluator conflated scalar .id with mapped('id'): an empty mapped
+result became false, a singleton became an integer, and a multi-record .id
+became a list instead of delegating Python's Expected singleton error. The
+extended evaluator test failed before the fix on false versus []. A probe of
+Odoo's real Id descriptor confirmed empty/singleton/multiple-record behavior;
+the traversal mapped implementation applies the descriptor per record.
+
+The evaluator now distinguishes these forms. Nine controls check .id, .ids
+and mapped('id') over empty, singleton and reverse-ordered multiple IDs.
+mapped('ids') also refuses because ids is not a field. Four database rule tests
+passed against disposable rustorm_ids_20261005_0001, which was then removed.
+All 277 ordinary workspace tests and Clippy with warnings denied passed.
+Tests used debug logging; logs: /tmp/rustorm-ids-{before,after,workspace,clippy}.log.
+An overly broad --include-ignored run failed unrelated db_probe setup because
+its default rustorm_probe database and TLS fixtures were absent; that run is
+not counted as validation (/tmp/rustorm-ids-all.log).
+
+Remaining review candidate: mapped() over ordinary scalar fields still has
+cardinality/order handling that needs independent Python comparison and a
+fixture-backed regression before changes. No overall coverage or performance
+improvement is claimed from this ID-specific fix.
