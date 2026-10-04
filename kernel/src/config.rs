@@ -65,16 +65,16 @@ pub fn dsn_for(db_name: Option<&str>) -> String {
         (None, name) => (
             format!(
                 "host={} user={} dbname={}",
-                pg_host(),
-                pg_user(),
-                name.map(str::to_string).unwrap_or_else(db)
+                conninfo_value(&pg_host()),
+                conninfo_value(&pg_user()),
+                conninfo_value(&name.map(str::to_string).unwrap_or_else(db))
             ),
             false,
         ),
     };
     tracing::debug!(
         target: "odoo_kernel::config",
-        dbname = ?dsn.split_whitespace().find_map(|kv| kv.strip_prefix("dbname=")),
+        dbname = ?db_name,
         from_env,
         "resolved the dsn"
     );
@@ -82,29 +82,25 @@ pub fn dsn_for(db_name: Option<&str>) -> String {
 }
 
 fn with_dbname(dsn: &str, db_name: &str) -> String {
-    if let Some((scheme, rest)) = dsn.split_once("://") {
-        let (authority_and_path, query) = match rest.split_once('?') {
-            Some((a, q)) => (a, Some(q)),
-            None => (rest, None),
-        };
-        let authority = authority_and_path
-            .split_once('/')
-            .map(|(a, _)| a)
-            .unwrap_or(authority_and_path);
-        let mut out = format!("{scheme}://{authority}/{db_name}");
-        if let Some(q) = query {
-            out.push('?');
-            out.push_str(q);
+    // Both conninfo syntaxes use the last occurrence of a parameter. Preserve
+    // the original credentials/options verbatim and append a quoted override.
+    if dsn.starts_with("postgres://") || dsn.starts_with("postgresql://") {
+        let mut out = format!("{dsn}{}dbname=", if dsn.contains('?') { "&" } else { "?" });
+        for byte in db_name.bytes() {
+            if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+                out.push(char::from(byte));
+            } else {
+                use std::fmt::Write;
+                write!(out, "%{byte:02X}").expect("writing to a String");
+            }
         }
         return out;
     }
-    let mut parts: Vec<String> = dsn
-        .split_whitespace()
-        .filter(|kv| !kv.starts_with("dbname="))
-        .map(str::to_string)
-        .collect();
-    parts.push(format!("dbname={db_name}"));
-    parts.join(" ")
+    format!("{dsn} dbname={}", conninfo_value(db_name))
+}
+
+fn conninfo_value(value: &str) -> String {
+    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
 pub fn dsn() -> String {
@@ -310,31 +306,28 @@ mod tests {
     }
 
     #[test]
-    fn a_named_database_keeps_the_rest_of_the_dsn() {
-        assert_eq!(
-            with_dbname("host=db.internal port=6543 user=odoo dbname=old", "new"),
-            "host=db.internal port=6543 user=odoo dbname=new"
-        );
-        assert_eq!(
-            with_dbname("host=/tmp user=x", "new"),
-            "host=/tmp user=x dbname=new"
-        );
-    }
-
-    #[test]
-    fn a_uri_dsn_takes_the_requested_database_in_its_path() {
-        assert_eq!(
-            with_dbname("postgres://u@h/olddb", "new"),
-            "postgres://u@h/new"
-        );
-        assert_eq!(
-            with_dbname("postgres://u@h:5433", "new"),
-            "postgres://u@h:5433/new"
-        );
-        assert_eq!(
-            with_dbname("postgresql://u:p@h/olddb?sslmode=require", "new"),
-            "postgresql://u:p@h/new?sslmode=require"
-        );
+    fn database_overrides_preserve_parsed_connection_options() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter("debug")
+            .with_test_writer()
+            .try_init();
+        for dsn in [
+            "host=db.internal port=6543 user=odoo dbname='old database' password='a b://c'",
+            "postgres://u:p@h:5433/old",
+            "postgresql://u:p@h/old?sslmode=require&dbname=stale",
+        ] {
+            let original: tokio_postgres::Config = dsn.parse().unwrap();
+            for name in ["new", "quote's /db", "a\\b ?&=雪", ""] {
+                let updated: tokio_postgres::Config = with_dbname(dsn, name).parse().unwrap();
+                tracing::debug!(dbname = name, "checked parsed database override");
+                assert_eq!(updated.get_dbname(), Some(name));
+                assert_eq!(updated.get_hosts(), original.get_hosts());
+                assert_eq!(updated.get_ports(), original.get_ports());
+                assert_eq!(updated.get_user(), original.get_user());
+                assert_eq!(updated.get_password(), original.get_password());
+                assert_eq!(updated.get_ssl_mode(), original.get_ssl_mode());
+            }
+        }
     }
 
     #[test]
@@ -362,6 +355,7 @@ mod tests {
 
     #[test]
     fn env_overrides_win() {
-        assert!(dsn_for(Some("somedb")).contains("dbname=somedb"));
+        let config: tokio_postgres::Config = dsn_for(Some("somedb")).parse().unwrap();
+        assert_eq!(config.get_dbname(), Some("somedb"));
     }
 }

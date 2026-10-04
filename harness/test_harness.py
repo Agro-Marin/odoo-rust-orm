@@ -28,15 +28,50 @@ diff = load("diff")
 
 
 def test_dsn_mirrors_config_rs(monkeypatch) -> None:
+    from psycopg.conninfo import conninfo_to_dict
+
     monkeypatch.delenv("RUSTORM_DSN", raising=False)
     monkeypatch.setenv("RUSTORM_PGHOST", "/tmp/pg")
     monkeypatch.setenv("RUSTORM_PGUSER", "odoo")
     assert _env.dsn_for("mydb") == "host=/tmp/pg user=odoo dbname=mydb"
     monkeypatch.setenv("RUSTORM_DSN", "host=db.internal port=6543 user=odoo dbname=old")
     assert _env.dsn_for() == "host=db.internal port=6543 user=odoo dbname=old"
-    assert _env.dsn_for("new") == "host=db.internal port=6543 user=odoo dbname=new"
+    assert conninfo_to_dict(_env.dsn_for("new")) == {
+        "host": "db.internal",
+        "port": "6543",
+        "user": "odoo",
+        "dbname": "new",
+    }
     monkeypatch.setenv("RUSTORM_DSN", "postgres://u@h/olddb")
-    assert _env.dsn_for("new") == "postgres://u@h/new"
+    assert conninfo_to_dict(_env.dsn_for("new")) == {
+        "user": "u",
+        "host": "h",
+        "dbname": "new",
+    }
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        "host=localhost dbname='old db' password='dummy  spaces'",
+        "postgresql://localhost/old?dbname=override&sslmode=require",
+        "host=localhost dbname=old",
+    ],
+)
+@pytest.mark.parametrize("name", ["new", "new db", "quote'and\\slash", "slash/?#é"])
+def test_database_override_preserves_connection_parameters(dsn, name, caplog):
+    import logging
+
+    from psycopg.conninfo import conninfo_to_dict
+
+    caplog.set_level(logging.DEBUG)
+    expected = conninfo_to_dict(dsn)
+    expected["dbname"] = name
+    actual = conninfo_to_dict(_env._with_dbname(dsn, name))
+    logging.getLogger(__name__).debug(
+        "DSN override requested=%r actual=%r", name, actual["dbname"]
+    )
+    assert actual == expected
 
 
 def test_harness_dir_derives_from_the_file(monkeypatch) -> None:

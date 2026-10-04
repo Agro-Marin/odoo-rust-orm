@@ -41,19 +41,9 @@ def default_db():
 
 
 def _with_dbname(dsn, dbname):
-    if "://" in dsn:
-        scheme, rest = dsn.split("://", 1)
-        rest, _, query = rest.partition("?")
-        authority = rest.split("/", 1)[0]
-        return "%s://%s/%s%s" % (
-            scheme,
-            authority,
-            dbname,
-            "?" + query if query else "",
-        )
-    parts = [kv for kv in dsn.split() if not kv.startswith("dbname=")]
-    parts.append("dbname=%s" % dbname)
-    return " ".join(parts)
+    from psycopg.conninfo import make_conninfo
+
+    return make_conninfo(dsn, dbname=dbname)
 
 
 def dsn_for(dbname=None):
@@ -62,7 +52,9 @@ def dsn_for(dbname=None):
         return dsn
     if dsn:
         return _with_dbname(dsn, dbname)
-    return "host=%s user=%s dbname=%s" % (pg_host(), pg_user(), dbname or default_db())
+    from psycopg.conninfo import make_conninfo
+
+    return make_conninfo(host=pg_host(), user=pg_user(), dbname=dbname or default_db())
 
 
 def base_env(env, uid=2):
