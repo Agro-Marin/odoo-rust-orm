@@ -108,7 +108,8 @@ async fn scalar_mapping_preserves_list_shape_order_and_singleton_access() {
     client
         .batch_execute(
             "CREATE TABLE res_company (id int PRIMARY KEY, code varchar, parent_id int);
-         INSERT INTO res_company VALUES (3, 'three', 3), (5, 'five', 5);",
+         INSERT INTO res_company VALUES (3, 'three', 3), (5, 'five', 5),
+         (7, 'seven', 5), (9, 'nine', NULL);",
         )
         .await
         .unwrap();
@@ -184,6 +185,31 @@ async fn scalar_mapping_preserves_list_shape_order_and_singleton_access() {
         "missing records must not silently disappear from mapped results"
     );
     assert!(matches!(actual, Err(ref error) if error.is::<odoo_kernel::error::Refusal>()));
+    for (ids, expression, expected) in [
+        (
+            vec![7, 3, 5, 9],
+            "user.env.companies.parent_id.ids",
+            json!([5, 3]),
+        ),
+        (vec![7, 5], "user.env.companies.parent_id.id", json!(5)),
+        (
+            vec![7, 5],
+            "user.env.companies.mapped('parent_id').code",
+            json!("five"),
+        ),
+        (
+            vec![7, 3, 5],
+            "user.env.companies.mapped('parent_id.code')",
+            json!(["five", "three"]),
+        ),
+    ] {
+        user.company_ids = ids;
+        let actual = eval_py(&parse_py(expression).unwrap(), &registry, &db, &user)
+            .await
+            .unwrap();
+        tracing::debug!(expression, %actual, %expected, "many2one traversal preserves first-seen order and uniqueness");
+        assert_eq!(actual, expected);
+    }
     drop_schema(&client, schema).await;
 }
 

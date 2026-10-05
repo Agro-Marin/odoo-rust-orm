@@ -777,3 +777,18 @@ denied passed. Disposable rustorm_nulls_20261005_a was removed. Logs:
 This does not establish conversion parity for translated text, JSON, binary,
 dates or non-finite floating point. Relational ordering/deduplication and the
 fresh broad integration/coverage/performance runs remain open.
+
+Many2one ordering follow-up (2026-10-05 UTC)
+-----------------------------------------
+The database regression reproduced [3, 5, 5] instead of [5, 3] when traversing
+source records [7, 3, 5, 9]. Odoo's actual Many2one.convert_to_record_multi
+independently confirmed first-seen uniqueness and exclusion of null relations.
+The native query now follows input ordinality and deduplicates targets in that
+order. Missing source rows refuse instead of disappearing. Four controls cover
+ordered IDs, duplicate targets collapsing to a singleton, ordinary scalar
+access after mapping, and a mapped dotted scalar path.
+
+Six database rule tests and 277 ordinary workspace tests passed with debug
+logging; workspace Clippy with warnings denied passed. Disposable database
+rustorm_rel_20261005_a was removed. Logs are /tmp/rustorm-rel-*.log.
+One2many and many2many traversal still require separate ordering/domain review.

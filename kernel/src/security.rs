@@ -742,17 +742,27 @@ async fn resolve_name(
             }
             FieldType::Many2one => {
                 let sql = format!(
-                    "SELECT {} FROM {} WHERE id = ANY($1)",
+                    "SELECT record.{}, record.id FROM \
+                     unnest($1::int4[]) WITH ORDINALITY AS input(id, position) \
+                     LEFT JOIN {} record ON record.id = input.id ORDER BY input.position",
                     crate::db::ident(&field.name),
                     crate::db::ident(&model.table)
                 );
                 let rows = db.query(&sql, &[&current_ids]).await?;
+                let mut ids = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for row in rows {
+                    if row.try_get::<_, Option<i32>>(1)?.is_none() {
+                        refuse!("missing {model_name} record while traversing {attr}");
+                    }
+                    if let Some(id) = row.try_get::<_, Option<i32>>(0)?
+                        && seen.insert(id)
+                    {
+                        ids.push(id);
+                    }
+                }
                 model_name = field.relation.clone().unwrap();
-                current_ids = rows
-                    .iter()
-                    .map(|r| r.try_get::<_, Option<i32>>(0))
-                    .filter_map(|r| r.transpose())
-                    .collect::<std::result::Result<_, _>>()?;
+                current_ids = ids;
                 hops += 1;
                 tracing::trace!(
                     target: "odoo_kernel::rules",
