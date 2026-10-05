@@ -7,6 +7,55 @@ mod support;
 
 #[tokio::test]
 #[ignore = "needs RUSTORM_TEST_DSN"]
+async fn rule_scalar_traversal_does_not_return_translation_storage() {
+    use odoo_kernel::db::{Db, StmtCache};
+    use odoo_kernel::registry::FieldType;
+    use odoo_kernel::security::{UserCtx, eval_py, parse_py};
+    use support::{field, model, registry};
+
+    let schema = "rustorm_t_rule_translations";
+    let client = connect(schema).await;
+    client
+        .batch_execute(
+            "CREATE TABLE res_company (id int PRIMARY KEY, label jsonb);
+             INSERT INTO res_company VALUES
+             (3, '{\"en_US\":\"Company\",\"fr_FR\":\"Entreprise\"}'), (5, NULL);",
+        )
+        .await
+        .unwrap();
+    let cache = StmtCache::default();
+    let db = Db::new(&client, &cache);
+    let mut label = field("label", FieldType::Char);
+    label.translated = true;
+    label.translate_whole = true;
+    label.pg_type = "jsonb".into();
+    label.column_cast = Some("jsonb".into());
+    let registry = registry(vec![model("res.company", "id", vec![label])]);
+    for ids in [vec![3], vec![5], vec![]] {
+        let user = UserCtx {
+            uid: 7,
+            company_id: 3,
+            company_ids: ids,
+            groups: Default::default(),
+            scopes: Default::default(),
+        };
+        for source in [
+            "user.env.companies.label",
+            "user.env.companies.mapped('label')",
+        ] {
+            let actual = eval_py(&parse_py(source).unwrap(), &registry, &db, &user).await;
+            tracing::debug!(source, ?user.company_ids, ?actual, "translation storage requires field conversion");
+            assert!(
+                matches!(actual, Err(ref error) if error.is::<odoo_kernel::error::Refusal>()),
+                "{actual:?}"
+            );
+        }
+    }
+    drop_schema(&client, schema).await;
+}
+
+#[tokio::test]
+#[ignore = "needs RUSTORM_TEST_DSN"]
 async fn rule_traversal_does_not_ignore_x2many_field_domains() {
     use odoo_kernel::db::{Db, StmtCache};
     use odoo_kernel::registry::FieldType;

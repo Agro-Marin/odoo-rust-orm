@@ -892,3 +892,24 @@ Logs: /tmp/rustorm-rel-domains-{before,after,workspace,clippy}.log and
 /tmp/rustorm-integration-20261005/relation-domain-python.log. These controls
 cover field domains and inverse discrimination, not all comodel search or
 ordering behavior.
+
+Translated rule values and rejected hypothesis (2026-10-05 UTC)
+-------------------------------------------------------------
+The new PostgreSQL regression returned the entire translation JSON dictionary
+as a string before the fix. Native rule traversal now delegates translated
+fields to Python instead of treating their storage representation as a scalar
+record value. Controls cover direct and mapped access, present/NULL values and
+empty recordsets. All eight PostgreSQL rule tests, 277 workspace tests, Clippy
+with warnings denied and formatting passed. Logs:
+/tmp/rustorm-translations-{before,after,workspace,clippy}.log.
+
+A separate Odoo probe read a translated country name as 'Afghanistan' while
+its stored value was {'en_US': 'Afghanistan'}, confirming the distinction.
+The same probe rejected a suspected company-context mismatch: this fork's
+with_context({}) preserves allowed_company_ids. Request and rule-user company
+values matched with absent, singleton and reversed two-company selections.
+No company-context code was changed. The first hypothesis probe intentionally
+asserted the suspected difference and failed; an initial translation fixture
+also omitted the required country code. Neither is a product defect. The
+corrected probe reads an existing country and rolls back temporary companies.
+Successful log: /tmp/rustorm-integration-20261005/company-context-confirmed.log.

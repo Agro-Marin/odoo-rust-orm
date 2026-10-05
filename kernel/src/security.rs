@@ -665,6 +665,12 @@ async fn resolve_name(
             path.splice(i..=i, expansion);
             continue;
         }
+        if field.translated {
+            refuse!(
+                "cannot traverse {model_name}.{attr}: translated storage requires \
+                 Python's field conversion"
+            );
+        }
         if field.company_dependent {
             refuse!(
                 "cannot traverse {model_name}.{attr}: a company-dependent value is a \
