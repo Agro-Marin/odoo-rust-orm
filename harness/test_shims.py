@@ -1384,6 +1384,7 @@ def test_web_spec_plan() -> None:
 
 
 def test_dynamic_reach_rules_resolve_even_when_the_domain_is_true() -> None:
+    import logging
     from types import SimpleNamespace
     from unittest.mock import patch
 
@@ -1417,6 +1418,17 @@ def test_dynamic_reach_rules_resolve_even_when_the_domain_is_true() -> None:
             shim._rules_need_python(env, "parent"),
             True,
         )
+        for reach in (None, "", "all", "none"):
+            rows["parent"] = [SimpleNamespace(reach=reach)]
+            shim._RULES_NEED_PYTHON.clear()
+            logging.getLogger("odoo.rust_kernel.tests").debug(
+                "checking native constant reach=%r on a delegated parent", reach
+            )
+            check(
+                "constant reach needs no per-principal Python resolution",
+                shim._rules_need_python(env, "child"),
+                False,
+            )
 
 
 def test_web_search_read_preserves_record_verb_specification() -> None:

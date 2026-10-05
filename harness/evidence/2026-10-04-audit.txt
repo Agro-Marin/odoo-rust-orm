@@ -819,3 +819,15 @@ against the extension rebuilt from 37d0cdf. Ruff passed for the changed script.
 Logs are runtime-base-only.log, runtime-preflight.log and runtime.log under
 /tmp/rustorm-integration-20261005. The original setup failure is not counted
 as a product regression or an intentional injected-error test.
+
+Constant reach routing follow-up (2026-10-05 UTC)
+-----------------------------------------------
+The shim classified reach=none as dynamic, causing per-principal Python domain
+resolution even though the native loader already implements it as FALSE.
+The new control failed before the one-case allowlist correction and passes
+afterward. Odoo's real _reach_domain independently returned TRUE for all and
+FALSE for none. Delegated-parent controls retain Python resolution for partner
+reach and skip it for None/empty/all/none. All 84 shim tests passed with debug
+logging; Ruff passed for both changed Python files. Logs:
+/tmp/rustorm-constant-reach-{before,after}.log. No timing benefit is claimed
+without measurement; this removes an unnecessary resolution path.
