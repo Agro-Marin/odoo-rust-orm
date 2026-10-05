@@ -1242,19 +1242,30 @@ def _request(model, method, **kw):
 def _dispatch(model, method, **kw):
     from odoo.libs.json import loads as json_loads
 
+    timing = _call_logger.isEnabledFor(logging.DEBUG)
+    started = time.monotonic() if timing else 0
     request = _request(model, method, **kw)
-    started = time.monotonic()
-    raw = KERNEL.dispatch(_rust_conn(model.env), request)
-    kernel_ms = (time.monotonic() - started) * 1000
-    _call_logger.debug(
-        "%s.%s routed: %d request bytes, %d answer bytes, %.2f ms in the kernel",
-        model._name,
-        method,
-        len(request),
-        len(raw),
-        kernel_ms,
-    )
-    return json_loads(raw)
+    dispatch = KERNEL.dispatch
+    conn = _rust_conn(model.env)
+    prepared = time.monotonic() if timing else 0
+    raw = dispatch(conn, request)
+    dispatched = time.monotonic() if timing else 0
+    result = json_loads(raw)
+    if timing:
+        finished = time.monotonic()
+        _call_logger.debug(
+            "%s.%s routed: %d request chars, %d answer chars; "
+            "preparation=%.2f ms kernel=%.2f ms decode=%.2f ms total=%.2f ms",
+            model._name,
+            method,
+            len(request),
+            len(raw),
+            (prepared - started) * 1000,
+            (dispatched - prepared) * 1000,
+            (finished - dispatched) * 1000,
+            (finished - started) * 1000,
+        )
+    return result
 
 
 _parse_dt = datetime.datetime.fromisoformat

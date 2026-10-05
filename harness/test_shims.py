@@ -1449,6 +1449,34 @@ def test_web_search_read_preserves_record_verb_specification() -> None:
     check("the original sees the complete specification", seen, [spec])
 
 
+def test_dispatch_debug_timing_includes_preparation_and_decoding() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import Mock, patch
+
+    shim = _shims()[1]
+    _odoo()
+    model = SimpleNamespace(_name="probe", env=object())
+    kernel = SimpleNamespace(dispatch=Mock(return_value='{"name":"café"}'))
+    with (
+        patch.object(shim, "KERNEL", kernel),
+        patch.object(shim, "_request", return_value="{}"),
+        patch.object(shim, "_rust_conn", return_value=object()),
+    ):
+        with (
+            unittest.TestCase().assertLogs(shim._call_logger, level="DEBUG") as logs,
+            patch.object(shim.time, "monotonic", side_effect=[1, 1.01, 1.03, 1.06]),
+        ):
+            check("dispatch still decodes the answer", shim._dispatch(model, "read"), {"name": "café"})
+        message = logs.output[0]
+        for expected in ["preparation=10.00 ms", "kernel=20.00 ms", "decode=30.00 ms", "total=60.00 ms", "answer chars"]:
+            assert expected in message, message
+        with (
+            patch.object(shim._call_logger, "isEnabledFor", return_value=False),
+            patch.object(shim.time, "monotonic", side_effect=AssertionError("disabled timing")),
+        ):
+            check("disabled debug logging does not time the call", shim._dispatch(model, "read"), {"name": "café"})
+
+
 def test_web_search_read_plans_what_web_screened() -> None:
     orm_shim = _shims()[1]
     _odoo()

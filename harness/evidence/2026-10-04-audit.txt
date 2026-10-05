@@ -847,3 +847,28 @@ after cleanup. bash -n and git diff --check passed. Before/after artifacts are
 parity/ and parity-fixed/ under /tmp/rustorm-integration-20261005. The first
 run's background jobs changed fixture contents, so the regenerated corpus is
 six cases larger; the rerun is not claimed to use identical database contents.
+
+Dispatch timing follow-up (2026-10-05 UTC)
+----------------------------------------
+Fresh traffic replay: 2,516 of 2,622 captured calls passed Python preflight.
+Alternating paired totals were off/on 2.279/3.219s, 2.304/3.110s and
+2.470/3.278s. Median paired on/off ratio: 1.35x (slower). Every on round made
+2,624 native dispatches; no timed call failed and routing classification stayed
+stable. Logs: traffic.log under /tmp/rustorm-integration-20261005. Different
+fixtures and logging mean this is not a speedup comparison with older runs.
+
+A separate cProfile replay attributed 3.416s cumulative of 6.701s routed time
+to _resolved_rules, primarily optimize_full and hierarchy expansion. These are
+instrumented diagnostic times, not the unprofiled benchmark. Profiles and
+sorted reports are profile-{off,on}.pstats[.txt] in the artifact directory.
+Caching these results across writes/snapshots would require a dependency and
+invalidation contract; the profile does not justify dropping rule resolution.
+
+The dispatch debug logger previously measured only native dispatch. It now
+reports preparation (including connection acquisition), native dispatch, JSON
+decoding and total bridge-call time. String lengths are labeled characters,
+not bytes. Disabled debug logging performs no clock reads. Deterministic timing
+controls reproduced the missing phases before the change and now pass; all
+85 shim tests and Ruff passed. A live six-call native probe confirmed the new
+log fields and preserved results (dispatch-timing.log). Unit logs:
+/tmp/rustorm-dispatch-{before,after}.log.
