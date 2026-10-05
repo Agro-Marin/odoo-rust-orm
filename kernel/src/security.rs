@@ -767,7 +767,11 @@ async fn resolve_name(
                 }
 
                 if current_ids.is_empty() {
-                    return Ok(if mapped { json!([]) } else { json!(false) });
+                    return if mapped {
+                        Ok(json!([]))
+                    } else {
+                        scalar_json(field, None)
+                    };
                 }
 
                 if current_ids.len() > 1 && !mapped {
@@ -791,10 +795,8 @@ async fn resolve_name(
                         if row.try_get::<_, Option<i32>>(1)?.is_none() {
                             refuse!("missing {model_name} record while mapping {attr}");
                         }
-                        out.push(match row.try_get::<_, Option<String>>(0)? {
-                            Some(s) => scalar_json(field, &s)?,
-                            None => json!(false),
-                        });
+                        let value = row.try_get::<_, Option<String>>(0)?;
+                        out.push(scalar_json(field, value.as_deref())?);
                     }
                     return Ok(Json::Array(out));
                 }
@@ -806,12 +808,9 @@ async fn resolve_name(
                 );
                 let v: Option<String> = match db.query_opt(&sql, &[&id]).await? {
                     Some(r) => r.try_get(0)?,
-                    None => None,
+                    None => refuse!("missing {model_name} record while reading {attr}"),
                 };
-                return Ok(match v {
-                    Some(s) => scalar_json(field, &s)?,
-                    None => json!(false),
-                });
+                return scalar_json(field, v.as_deref());
             }
         }
     }
@@ -843,9 +842,18 @@ async fn resolve_name(
     }
 }
 
-fn scalar_json(field: &crate::registry::Field, s: &str) -> Result<Json> {
+fn scalar_json(field: &crate::registry::Field, value: Option<&str>) -> Result<Json> {
+    let Some(s) = value else {
+        // Field record conversion differs from search comparands: text NULL
+        // remains false, whereas numeric NULL becomes a typed zero.
+        return Ok(match field.ttype {
+            FieldType::Integer | FieldType::Many2oneReference => json!(0),
+            FieldType::Float | FieldType::Monetary => json!(0.0),
+            _ => json!(false),
+        });
+    };
     Ok(match field.ttype {
-        FieldType::Integer => json!(s.parse::<i64>()?),
+        FieldType::Integer | FieldType::Many2oneReference => json!(s.parse::<i64>()?),
         FieldType::Boolean => json!(s == "true" || s == "t"),
         FieldType::Float | FieldType::Monetary => json!(s.parse::<f64>()?),
         _ => json!(s),

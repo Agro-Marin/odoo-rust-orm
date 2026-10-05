@@ -752,3 +752,28 @@ warnings denied. Disposable rustorm_scalar_20261005_a was removed. Logs:
 Relational traversal ordering/deduplication and scalar null/type conversion
 remain separate review areas; this fix does not claim parity for every mapped
 expression or an improved overall corpus coverage percentage.
+
+Numeric scalar conversion follow-up (2026-10-05 UTC)
+--------------------------------------------------
+Direct probes of Odoo's field convert_to_record(None, ...) confirmed integer
+and Many2oneReference nulls become 0, float/monetary nulls become 0.0, and
+text/boolean nulls remain false. The registry's text search-comparand default
+is not the record value and was deliberately not reused for this conversion.
+
+The database regression failed against the previous commit with Bool(false)
+versus Number(0). A preliminary test-fixture error (the JSON macro interpreting
+the identifier `null` as literal JSON null) was corrected before that baseline
+run. The evaluator now shares null/value conversion across direct and mapped
+reads, returns integer Many2oneReference values, and refuses missing direct
+rows instead of treating them as null fields.
+
+Twenty exact-value controls cover five field types across null rows, empty
+recordsets, populated rows and mixed mapped reads; an additional missing-row
+control requires refusal. Six database rule tests and all 277 ordinary
+workspace tests passed with debug logging. Workspace Clippy with warnings
+denied passed. Disposable rustorm_nulls_20261005_a was removed. Logs:
+/tmp/rustorm-nulls-{before,after,workspace,clippy}.log.
+
+This does not establish conversion parity for translated text, JSON, binary,
+dates or non-finite floating point. Relational ordering/deduplication and the
+fresh broad integration/coverage/performance runs remain open.

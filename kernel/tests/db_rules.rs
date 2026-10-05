@@ -7,6 +7,95 @@ mod support;
 
 #[tokio::test]
 #[ignore = "needs RUSTORM_TEST_DSN"]
+async fn scalar_nulls_follow_record_conversion_not_search_comparands() {
+    use odoo_kernel::db::{Db, StmtCache};
+    use odoo_kernel::registry::FieldType;
+    use odoo_kernel::security::{UserCtx, eval_py, parse_py};
+    use serde_json::json;
+    use support::{field, model, registry};
+
+    let schema = "rustorm_t_scalar_nulls";
+    let client = connect(schema).await;
+    client
+        .batch_execute(
+            "CREATE TABLE res_company (id int PRIMARY KEY, label varchar, number int,
+         amount float8, enabled bool, reference int);
+         INSERT INTO res_company VALUES (3, NULL, NULL, NULL, NULL, NULL),
+         (5, 'five', 7, 1.5, true, 9);",
+        )
+        .await
+        .unwrap();
+    let cases = [
+        ("label", FieldType::Char, json!(false), json!("five")),
+        ("number", FieldType::Integer, json!(0), json!(7)),
+        ("amount", FieldType::Float, json!(0.0), json!(1.5)),
+        ("enabled", FieldType::Boolean, json!(false), json!(true)),
+        (
+            "reference",
+            FieldType::Many2oneReference,
+            json!(0),
+            json!(9),
+        ),
+    ];
+    let registry = registry(vec![model(
+        "res.company",
+        "id",
+        cases
+            .iter()
+            .map(|(name, kind, _, _)| field(name, *kind))
+            .collect(),
+    )]);
+    let cache = StmtCache::default();
+    let db = Db::new(&client, &cache);
+    let mut user = UserCtx {
+        uid: 7,
+        company_id: 3,
+        company_ids: vec![],
+        groups: Default::default(),
+        scopes: Default::default(),
+    };
+    for (name, _, null_value, value) in cases {
+        for (ids, expression, expected) in [
+            (
+                vec![3],
+                format!("user.env.companies.{name}"),
+                null_value.clone(),
+            ),
+            (
+                vec![],
+                format!("user.env.companies.{name}"),
+                null_value.clone(),
+            ),
+            (vec![5], format!("user.env.companies.{name}"), value.clone()),
+            (
+                vec![3, 5],
+                format!("user.env.companies.mapped('{name}')"),
+                json!([null_value, value]),
+            ),
+        ] {
+            user.company_ids = ids;
+            let actual = eval_py(&parse_py(&expression).unwrap(), &registry, &db, &user)
+                .await
+                .unwrap();
+            tracing::debug!(expression, ?user.company_ids, %actual, %expected, "checking typed record values");
+            assert_eq!(actual, expected);
+        }
+    }
+    user.company_ids = vec![999];
+    let actual = eval_py(
+        &parse_py("user.env.companies.number").unwrap(),
+        &registry,
+        &db,
+        &user,
+    )
+    .await;
+    tracing::debug!(?actual, "a missing row is not a null field");
+    assert!(matches!(actual, Err(ref error) if error.is::<odoo_kernel::error::Refusal>()));
+    drop_schema(&client, schema).await;
+}
+
+#[tokio::test]
+#[ignore = "needs RUSTORM_TEST_DSN"]
 async fn scalar_mapping_preserves_list_shape_order_and_singleton_access() {
     use odoo_kernel::db::{Db, StmtCache};
     use odoo_kernel::registry::FieldType;
