@@ -55,7 +55,13 @@ src, dst, addons, port = sys.argv[1:5]
 conf = open(src).read()
 conf = re.sub(r"(?m)^addons_path\s*=\s*(.*)$",
               lambda m: "addons_path = %s,%s" % (m.group(1), addons), conf)
-for key, value in (("http_port", port), ("workers", "0"), ("db_maxconn", "8")):
+# Both legs must observe the same fixture: inherited background workers can
+# commit between baseline and routed requests and create false divergences.
+for key, value in (
+    ("http_port", port), ("http_enable", "True"), ("workers", "0"),
+    ("max_cron_threads", "0"), ("job_workers", "0"), ("stream_workers", "0"),
+    ("db_maxconn", "8"),
+):
     if re.search(r"(?m)^%s\s*=" % key, conf):
         conf = re.sub(r"(?m)^%s\s*=.*$" % key, "%s = %s" % (key, value), conf)
     else:

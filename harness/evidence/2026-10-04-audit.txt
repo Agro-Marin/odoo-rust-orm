@@ -831,3 +831,19 @@ reach and skip it for None/empty/all/none. All 84 shim tests passed with debug
 logging; Ruff passed for both changed Python files. Logs:
 /tmp/rustorm-constant-reach-{before,after}.log. No timing benefit is claimed
 without measurement; this removes an unnecessary resolution path.
+
+HTTP parity isolation follow-up (2026-10-05 UTC)
+---------------------------------------------
+The fresh HTTP run reported five differences, all on ir.cron.progress: baseline
+count 29 versus routed count 30. The routed server log showed the scheduled
+API Communications retry job inserting progress between the legs. The test
+configuration had inherited two cron, one job and one stream worker.
+
+parity.sh now disables those background workers in both legs and explicitly
+enables its HTTP endpoint. The rerun passed: 1,311 cases, 1,287 stable, 24
+nondeterministic, 1,234 answered, zero divergences and 1,315 native dispatches.
+Both server startup logs confirm zero background workers. Port 9560 was free
+after cleanup. bash -n and git diff --check passed. Before/after artifacts are
+parity/ and parity-fixed/ under /tmp/rustorm-integration-20261005. The first
+run's background jobs changed fixture contents, so the regenerated corpus is
+six cases larger; the rerun is not claimed to use identical database contents.
