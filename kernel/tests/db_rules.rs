@@ -71,7 +71,7 @@ async fn rule_traversal_does_not_ignore_x2many_field_domains() {
          CREATE TABLE company_links (owner_id int, target_id int);
          INSERT INTO res_company VALUES (7, NULL, NULL),
          (3, 7, 'res.company'), (5, 7, 'res.partner');
-         INSERT INTO company_links VALUES (7, 3), (7, 5);",
+         INSERT INTO company_links VALUES (7, 3), (7, 5), (3, 7), (5, 7);",
         )
         .await
         .unwrap();
@@ -146,6 +146,24 @@ async fn rule_traversal_does_not_ignore_x2many_field_domains() {
                     .collect();
                 ids.sort_unstable();
                 assert_eq!(ids, [3, 5]);
+                if kind == FieldType::Many2many {
+                    let shared = UserCtx {
+                        uid: user.uid,
+                        company_id: user.company_id,
+                        company_ids: vec![3, 5],
+                        groups: user.groups.clone(),
+                        scopes: user.scopes.clone(),
+                    };
+                    for (source, expected) in [
+                        ("user.env.companies.links.ids", json!([7])),
+                        ("user.env.companies.links.id", json!(7)),
+                    ] {
+                        let actual =
+                            eval_py(&parse_py(source).unwrap(), &registry, &db, &shared).await;
+                        tracing::debug!(source, ?actual, %expected, "shared targets form a unique recordset");
+                        assert_eq!(actual.unwrap(), expected);
+                    }
+                }
             }
         }
     }

@@ -751,6 +751,8 @@ async fn resolve_name(
                     .iter()
                     .map(|r| r.try_get::<_, i32>(0))
                     .collect::<std::result::Result<_, _>>()?;
+                let mut seen = std::collections::HashSet::new();
+                current_ids.retain(|id| seen.insert(*id));
                 hops += 1;
                 tracing::trace!(
                     target: "odoo_kernel::rules",

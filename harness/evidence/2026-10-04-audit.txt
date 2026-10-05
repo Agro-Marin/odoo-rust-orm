@@ -913,3 +913,18 @@ asserted the suspected difference and failed; an initial translation fixture
 also omitted the required country code. Neither is a product defect. The
 corrected probe reads an existing country and rolls back temporary companies.
 Successful log: /tmp/rustorm-integration-20261005/company-context-confirmed.log.
+
+Shared many2many target follow-up (2026-10-05 UTC)
+------------------------------------------------
+Two source rows linked to the same target produced [7, 7] in the native rule
+evaluator; Odoo produces the unique recordset [7]. This also made a valid .id
+access spuriously require fallback. The evaluator now removes repeated target
+IDs while retaining first-seen order. The PostgreSQL control failed before
+and now checks both .ids and singleton .id. A separate real test_orm probe
+confirmed two source records return one tag and allow .id after flush and
+cache invalidation; its data was rolled back. This does not claim to repair
+all default-order semantics for x2many reads.
+
+Eight PostgreSQL rule tests, 277 workspace tests, Clippy with warnings denied
+and formatting passed. Logs: /tmp/rustorm-m2m-unique-{before,after,workspace,clippy}.log
+and /tmp/rustorm-integration-20261005/m2m-unique-python.log.
