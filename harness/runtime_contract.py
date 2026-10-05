@@ -23,6 +23,12 @@ from odoo.tools import config
 
 config.parse_config(["-c", os.environ["RUSTORM_ODOO_CONF"], "-d", DB, "--no-http"])
 reg = Registry(DB)
+missing_models = {"res.role", "mail.mail"} - reg.models.keys()
+if missing_models:
+    raise RuntimeError(
+        "runtime contracts require the mail module; initialize the disposable "
+        f"database with -i mail first (missing models: {sorted(missing_models)})"
+    )
 spec = importlib.util.spec_from_file_location(
     "runtime_addon", Path(root_dir()) / "addons/rust_engine/__init__.py"
 )

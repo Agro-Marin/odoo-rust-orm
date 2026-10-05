@@ -807,3 +807,15 @@ arithmetic-overflow tests remain green. Six database tests, all 277 ordinary
 workspace tests and workspace Clippy passed, with debug logging for tests.
 Disposable rustorm_nonfinite_20261005_a was removed. Logs:
 /tmp/rustorm-nonfinite-{before,after,workspace,clippy}.log.
+
+Runtime prerequisite follow-up (2026-10-05 UTC)
+--------------------------------------------
+A new base-only database reached the middle of runtime_contract.py before
+failing because res.role belongs to mail. The harness now checks for res.role
+and mail.mail immediately after loading the registry, before installing shims
+or modifying fixtures. A base-only control exits with the required module and
+missing model names. Installing mail and rerunning the full contract succeeds
+against the extension rebuilt from 37d0cdf. Ruff passed for the changed script.
+Logs are runtime-base-only.log, runtime-preflight.log and runtime.log under
+/tmp/rustorm-integration-20261005. The original setup failure is not counted
+as a product regression or an intentional injected-error test.
