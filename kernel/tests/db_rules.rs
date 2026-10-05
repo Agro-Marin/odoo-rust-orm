@@ -21,7 +21,10 @@ async fn scalar_nulls_follow_record_conversion_not_search_comparands() {
             "CREATE TABLE res_company (id int PRIMARY KEY, label varchar, number int,
          amount float8, enabled bool, reference int);
          INSERT INTO res_company VALUES (3, NULL, NULL, NULL, NULL, NULL),
-         (5, 'five', 7, 1.5, true, 9);",
+         (5, 'five', 7, 1.5, true, 9),
+         (7, 'nan', 0, 'NaN'::float8, false, 0),
+         (8, 'infinity', 0, 'Infinity'::float8, false, 0),
+         (9, 'negative infinity', 0, '-Infinity'::float8, false, 0);",
         )
         .await
         .unwrap();
@@ -81,6 +84,32 @@ async fn scalar_nulls_follow_record_conversion_not_search_comparands() {
             assert_eq!(actual, expected);
         }
     }
+    for id in [7, 8, 9] {
+        user.company_ids = vec![id];
+        for expression in [
+            "user.env.companies.amount",
+            "user.env.companies.mapped('amount')",
+        ] {
+            let actual = eval_py(&parse_py(expression).unwrap(), &registry, &db, &user).await;
+            tracing::debug!(
+                id,
+                expression,
+                ?actual,
+                "non-finite values must not become JSON null"
+            );
+            assert!(
+                matches!(actual, Err(ref error) if error.is::<odoo_kernel::error::Refusal>()),
+                "{actual:?}"
+            );
+        }
+    }
+    let expression = format!("{}.0", "9".repeat(400));
+    let actual = eval_py(&parse_py(&expression).unwrap(), &registry, &db, &user).await;
+    tracing::debug!(
+        ?actual,
+        "an overflowing float literal also requires delegation"
+    );
+    assert!(matches!(actual, Err(ref error) if error.is::<odoo_kernel::error::Refusal>()));
     user.company_ids = vec![999];
     let actual = eval_py(
         &parse_py("user.env.companies.number").unwrap(),

@@ -349,7 +349,7 @@ pub async fn eval_py(
     Ok(match expr {
         PyExpr::Str(s) => json!(s),
         PyExpr::Int(i) => json!(i),
-        PyExpr::Float(f) => json!(f),
+        PyExpr::Float(f) => float_json(*f)?,
         PyExpr::Bool(b) => json!(b),
         PyExpr::None => Json::Null,
         PyExpr::Seq(items) => {
@@ -543,10 +543,7 @@ fn add_values(a: Json, b: Json) -> Result<Json> {
                     .ok_or_else(|| refusal!("rule number {x} cannot be represented"))?
                     + y.as_f64()
                         .ok_or_else(|| refusal!("rule number {y} cannot be represented"))?;
-                Json::Number(
-                    serde_json::Number::from_f64(sum)
-                        .ok_or_else(|| refusal!("rule addition is non-finite: {x} + {y}"))?,
-                )
+                float_json(sum)?
             }
         },
         (x, y) => refuse!("unsupported operands for +: {x} and {y}"),
@@ -852,6 +849,14 @@ async fn resolve_name(
     }
 }
 
+fn float_json(value: f64) -> Result<Json> {
+    Ok(Json::Number(
+        serde_json::Number::from_f64(value).ok_or_else(|| {
+            refusal!("non-finite rule value {value} cannot be represented in JSON")
+        })?,
+    ))
+}
+
 fn scalar_json(field: &crate::registry::Field, value: Option<&str>) -> Result<Json> {
     let Some(s) = value else {
         // Field record conversion differs from search comparands: text NULL
@@ -865,7 +870,7 @@ fn scalar_json(field: &crate::registry::Field, value: Option<&str>) -> Result<Js
     Ok(match field.ttype {
         FieldType::Integer | FieldType::Many2oneReference => json!(s.parse::<i64>()?),
         FieldType::Boolean => json!(s == "true" || s == "t"),
-        FieldType::Float | FieldType::Monetary => json!(s.parse::<f64>()?),
+        FieldType::Float | FieldType::Monetary => float_json(s.parse::<f64>()?)?,
         _ => json!(s),
     })
 }

@@ -792,3 +792,18 @@ Six database rule tests and 277 ordinary workspace tests passed with debug
 logging; workspace Clippy with warnings denied passed. Disposable database
 rustorm_rel_20261005_a was removed. Logs are /tmp/rustorm-rel-*.log.
 One2many and many2many traversal still require separate ordering/domain review.
+
+Non-finite rule numbers follow-up (2026-10-05 UTC)
+-----------------------------------------------
+The database regression reproduced Ok(Null) when reading a stored NaN. Odoo's
+actual Float converter preserved NaN and both infinities; safe_eval also kept
+an overflowing decimal float literal as infinity. Native JSON cannot represent
+these values, so field reads, float literals and arithmetic now share a checked
+conversion that refuses rather than substituting null.
+
+Six database controls cover direct and mapped reads of the three non-finite
+values; one checks an overflowing literal. Existing finite/null controls and
+arithmetic-overflow tests remain green. Six database tests, all 277 ordinary
+workspace tests and workspace Clippy passed, with debug logging for tests.
+Disposable rustorm_nonfinite_20261005_a was removed. Logs:
+/tmp/rustorm-nonfinite-{before,after,workspace,clippy}.log.
