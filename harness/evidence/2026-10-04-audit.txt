@@ -872,3 +872,23 @@ controls reproduced the missing phases before the change and now pass; all
 85 shim tests and Ruff passed. A live six-call native probe confirmed the new
 log fields and preserved results (dispatch-timing.log). Unit logs:
 /tmp/rustorm-dispatch-{before,after}.log.
+
+Relation-domain traversal follow-up (2026-10-05 UTC)
+--------------------------------------------------
+Native rule traversal omitted literal and callable x2many field domains. A
+PostgreSQL regression returned both related IDs before the fix where the
+field domain allowed only one. Traversal now refuses domains it cannot apply,
+allowing the Python fallback to preserve field semantics. Empty literal
+lists and absent domains remain supported. Polymorphic one2many inverses also
+refuse because Python adds a model discriminator to the inverse-ID filter.
+The fixture includes equal inverse IDs belonging to different model names.
+
+An independent Odoo test_orm probe confirmed static/callable one2many domains
+return one of two messages, and a many2many field domain returns one of two
+tags, after flushing and invalidating caches. The probe rolled back its data.
+All seven ignored PostgreSQL rule tests, 277 workspace tests, Clippy with
+warnings denied, and formatting passed with debug logging enabled for tests.
+Logs: /tmp/rustorm-rel-domains-{before,after,workspace,clippy}.log and
+/tmp/rustorm-integration-20261005/relation-domain-python.log. These controls
+cover field domains and inverse discrimination, not all comodel search or
+ordering behavior.

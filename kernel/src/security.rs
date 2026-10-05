@@ -671,6 +671,15 @@ async fn resolve_name(
                  jsonb the rule evaluator does not resolve"
             );
         }
+        if matches!(field.ttype, FieldType::One2many | FieldType::Many2many)
+            && (field.domain_callable
+                || field
+                    .domain
+                    .as_ref()
+                    .is_some_and(|domain| !domain.as_array().is_some_and(|items| items.is_empty())))
+        {
+            refuse!("cannot traverse {model_name}.{attr}: its field domain requires Python");
+        }
         let active_clause = |co: &crate::registry::Model, alias: &str| -> Result<String> {
             Ok(
                 match (
@@ -688,6 +697,16 @@ async fn resolve_name(
             FieldType::One2many if field.stored => {
                 let co = registry.get(field.comodel()?)?;
                 let inverse = field.o2m_inverse_column(&model_name, co)?;
+                if co
+                    .fields
+                    .get(inverse)
+                    .is_some_and(|inverse| inverse.ttype == FieldType::Many2oneReference)
+                {
+                    refuse!(
+                        "cannot traverse {model_name}.{attr}: its polymorphic inverse \
+                         requires Python's model discriminator"
+                    );
+                }
                 let sql = format!(
                     "SELECT co.id FROM {} co WHERE co.{} = ANY($1){}",
                     crate::db::ident(&co.table),

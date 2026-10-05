@@ -7,6 +7,104 @@ mod support;
 
 #[tokio::test]
 #[ignore = "needs RUSTORM_TEST_DSN"]
+async fn rule_traversal_does_not_ignore_x2many_field_domains() {
+    use odoo_kernel::db::{Db, StmtCache};
+    use odoo_kernel::registry::FieldType;
+    use odoo_kernel::security::{UserCtx, eval_py, parse_py};
+    use serde_json::json;
+    use support::{field, model, registry};
+
+    let schema = "rustorm_t_relation_domains";
+    let client = connect(schema).await;
+    client
+        .batch_execute(
+            "CREATE TABLE res_company (id int PRIMARY KEY, parent_id int, parent_model varchar);
+         CREATE TABLE company_links (owner_id int, target_id int);
+         INSERT INTO res_company VALUES (7, NULL, NULL),
+         (3, 7, 'res.company'), (5, 7, 'res.partner');
+         INSERT INTO company_links VALUES (7, 3), (7, 5);",
+        )
+        .await
+        .unwrap();
+    let cache = StmtCache::default();
+    let db = Db::new(&client, &cache);
+    let user = UserCtx {
+        uid: 7,
+        company_id: 7,
+        company_ids: vec![7],
+        groups: Default::default(),
+        scopes: Default::default(),
+    };
+    for kind in [FieldType::One2many, FieldType::Many2many] {
+        for (domain, callable, polymorphic, refuses) in [
+            (None, false, false, false),
+            (Some(json!([])), false, false, false),
+            (Some(json!([["id", "=", 3]])), false, false, true),
+            (None, true, false, true),
+            (None, false, true, kind == FieldType::One2many),
+        ] {
+            let mut relation = field("links", kind);
+            relation.has_column = false;
+            relation.relation = Some("res.company".into());
+            relation.relation_field = Some("parent_id".into());
+            relation.relation_table = Some("company_links".into());
+            relation.column1 = Some("owner_id".into());
+            relation.column2 = Some("target_id".into());
+            relation.domain = domain;
+            relation.domain_callable = callable;
+            let mut parent = field(
+                "parent_id",
+                if polymorphic {
+                    FieldType::Many2oneReference
+                } else {
+                    FieldType::Many2one
+                },
+            );
+            parent.model_field = polymorphic.then(|| "parent_model".into());
+            parent.relation = Some("res.company".into());
+            let registry = registry(vec![model(
+                "res.company",
+                "id",
+                vec![parent, field("parent_model", FieldType::Char), relation],
+            )]);
+            let actual = eval_py(
+                &parse_py("user.env.companies.links.ids").unwrap(),
+                &registry,
+                &db,
+                &user,
+            )
+            .await;
+            tracing::debug!(
+                ?kind,
+                callable,
+                polymorphic,
+                refuses,
+                ?actual,
+                "field domains cannot be silently omitted from rule traversal"
+            );
+            if refuses {
+                assert!(
+                    matches!(actual, Err(ref error) if error.is::<odoo_kernel::error::Refusal>()),
+                    "{actual:?}"
+                );
+            } else {
+                let mut ids: Vec<i64> = actual
+                    .unwrap()
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_i64().unwrap())
+                    .collect();
+                ids.sort_unstable();
+                assert_eq!(ids, [3, 5]);
+            }
+        }
+    }
+    drop_schema(&client, schema).await;
+}
+
+#[tokio::test]
+#[ignore = "needs RUSTORM_TEST_DSN"]
 async fn scalar_nulls_follow_record_conversion_not_search_comparands() {
     use odoo_kernel::db::{Db, StmtCache};
     use odoo_kernel::registry::FieldType;
