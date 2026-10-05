@@ -726,3 +726,29 @@ Remaining review candidate: mapped() over ordinary scalar fields still has
 cardinality/order handling that needs independent Python comparison and a
 fixture-backed regression before changes. No overall coverage or performance
 improvement is claimed from this ID-specific fix.
+
+Scalar mapping follow-up (2026-10-05 UTC)
+---------------------------------------
+The fixture-backed regression reproduced an empty mapped scalar becoming false
+instead of []. The evaluator also returned a bare scalar for a singleton and
+sorted larger mapped results by database ID instead of recordset order. A
+preceding relational mapped() incorrectly made subsequent ordinary scalar
+access return a list instead of requiring a singleton.
+
+Terminal scalar mappings now retain list shape and input order, including
+repeated IDs, using unnest WITH ORDINALITY. Missing mapped rows refuse rather
+than silently disappearing. Ordinary scalar access still requires a singleton,
+even after mapped('parent_id'). Existing field/model/registry test builders were
+moved into kernel/tests/support so pure and database tests share the fixtures.
+
+Odoo's actual TraversalMixin.mapped was independently invoked with field/cache
+stubs over empty, singleton, reversed and duplicate IDs; all four results
+matched the Rust regression's expectations. This was a focused method probe,
+not a full Odoo integration run. Five database rule tests passed with debug
+logging, along with 277 ordinary workspace tests and workspace Clippy with
+warnings denied. Disposable rustorm_scalar_20261005_a was removed. Logs:
+/tmp/rustorm-scalar-{before,after,workspace,clippy}.log.
+
+Relational traversal ordering/deduplication and scalar null/type conversion
+remain separate review areas; this fix does not claim parity for every mapped
+expression or an improved overall corpus coverage percentage.

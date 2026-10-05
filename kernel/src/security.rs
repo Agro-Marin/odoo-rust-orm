@@ -580,16 +580,12 @@ async fn resolve_name(
             other => refuse!("unknown name {other:?} in rule expression"),
         };
 
-    let mut mapped = false;
+    // A mapped relation followed by ordinary scalar access still requires a
+    // singleton. Only a scalar inside the terminal mapped() returns a list.
+    let mapped = rest.last().is_some_and(|segment| segment.starts_with('*'));
     let mut path: Vec<String> = rest
         .iter()
-        .map(|seg| match seg.strip_prefix('*') {
-            Some(bare) => {
-                mapped = true;
-                bare.to_string()
-            }
-            None => seg.clone(),
-        })
+        .map(|seg| seg.strip_prefix('*').unwrap_or(seg).to_string())
         .collect();
     if model_name == "res.users" && path.first().is_some_and(|a| a == "env") {
         match path.get(1).map(String::as_str) {
@@ -771,7 +767,7 @@ async fn resolve_name(
                 }
 
                 if current_ids.is_empty() {
-                    return Ok(json!(false));
+                    return Ok(if mapped { json!([]) } else { json!(false) });
                 }
 
                 if current_ids.len() > 1 && !mapped {
@@ -781,15 +777,20 @@ async fn resolve_name(
                         current_ids.len()
                     );
                 }
-                if current_ids.len() > 1 {
+                if mapped {
                     let sql = format!(
-                        "SELECT {}::text FROM {} WHERE id = ANY($1) ORDER BY id",
+                        "SELECT record.{}::text, record.id FROM \
+                         unnest($1::int4[]) WITH ORDINALITY AS input(id, position) \
+                         LEFT JOIN {} record ON record.id = input.id ORDER BY input.position",
                         crate::db::ident(&field.name),
                         crate::db::ident(&model.table)
                     );
                     let rows = db.query(&sql, &[&current_ids]).await?;
                     let mut out = Vec::with_capacity(rows.len());
                     for row in &rows {
+                        if row.try_get::<_, Option<i32>>(1)?.is_none() {
+                            refuse!("missing {model_name} record while mapping {attr}");
+                        }
                         out.push(match row.try_get::<_, Option<String>>(0)? {
                             Some(s) => scalar_json(field, &s)?,
                             None => json!(false),

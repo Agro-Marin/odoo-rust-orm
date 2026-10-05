@@ -3,6 +3,101 @@ use std::collections::HashMap;
 use odoo_kernel::registry::{AccessTopology, Registry};
 use tokio_postgres::Client;
 
+mod support;
+
+#[tokio::test]
+#[ignore = "needs RUSTORM_TEST_DSN"]
+async fn scalar_mapping_preserves_list_shape_order_and_singleton_access() {
+    use odoo_kernel::db::{Db, StmtCache};
+    use odoo_kernel::registry::FieldType;
+    use odoo_kernel::security::{UserCtx, eval_py, parse_py};
+    use serde_json::json;
+    use support::{field, model, registry};
+
+    let schema = "rustorm_t_scalar_mapping";
+    let client = connect(schema).await;
+    client
+        .batch_execute(
+            "CREATE TABLE res_company (id int PRIMARY KEY, code varchar, parent_id int);
+         INSERT INTO res_company VALUES (3, 'three', 3), (5, 'five', 5);",
+        )
+        .await
+        .unwrap();
+    let mut parent = field("parent_id", FieldType::Many2one);
+    parent.relation = Some("res.company".into());
+    let registry = registry(vec![model(
+        "res.company",
+        "id",
+        vec![field("code", FieldType::Char), parent],
+    )]);
+    let cache = StmtCache::default();
+    let db = Db::new(&client, &cache);
+    let mut user = UserCtx {
+        uid: 7,
+        company_id: 3,
+        company_ids: vec![],
+        groups: Default::default(),
+        scopes: Default::default(),
+    };
+    for (ids, expected) in [
+        (vec![], json!([])),
+        (vec![5], json!(["five"])),
+        (vec![5, 3], json!(["five", "three"])),
+        (vec![5, 5, 3], json!(["five", "five", "three"])),
+    ] {
+        user.company_ids = ids;
+        let actual = eval_py(
+            &parse_py("user.env.companies.mapped('code')").unwrap(),
+            &registry,
+            &db,
+            &user,
+        )
+        .await
+        .unwrap();
+        tracing::debug!(?user.company_ids, %actual, %expected, "scalar mapping follows record order and cardinality");
+        assert_eq!(actual, expected);
+    }
+    for source in [
+        "user.env.companies.code",
+        "user.env.companies.mapped('parent_id').code",
+    ] {
+        let actual = eval_py(&parse_py(source).unwrap(), &registry, &db, &user).await;
+        tracing::debug!(
+            source,
+            ?actual,
+            "a preceding relational map does not map the scalar access"
+        );
+        assert!(
+            matches!(actual, Err(ref error) if error.is::<odoo_kernel::error::Refusal>()),
+            "{source}: {actual:?}"
+        );
+    }
+    user.company_ids = vec![5];
+    let actual = eval_py(
+        &parse_py("user.env.companies.code").unwrap(),
+        &registry,
+        &db,
+        &user,
+    )
+    .await
+    .unwrap();
+    assert_eq!(actual, json!("five"));
+    user.company_ids = vec![5, 999];
+    let actual = eval_py(
+        &parse_py("user.env.companies.mapped('code')").unwrap(),
+        &registry,
+        &db,
+        &user,
+    )
+    .await;
+    tracing::debug!(
+        ?actual,
+        "missing records must not silently disappear from mapped results"
+    );
+    assert!(matches!(actual, Err(ref error) if error.is::<odoo_kernel::error::Refusal>()));
+    drop_schema(&client, schema).await;
+}
+
 async fn connect(schema: &str) -> Client {
     let _ = tracing_subscriber::fmt()
         .with_env_filter("debug")
