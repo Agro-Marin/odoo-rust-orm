@@ -928,3 +928,66 @@ all default-order semantics for x2many reads.
 Eight PostgreSQL rule tests, 277 workspace tests, Clippy with warnings denied
 and formatting passed. Logs: /tmp/rustorm-m2m-unique-{before,after,workspace,clippy}.log
 and /tmp/rustorm-integration-20261005/m2m-unique-python.log.
+
+Fresh integration pass and remaining limits (2026-10-05 UTC)
+----------------------------------------------------------
+Artifacts: /tmp/rustorm-integration-20261005 (local, retained). Tests and probes
+used debug loggers. This was a new base/mail/contacts fixture, plus separate
+runtime-contract and six-module ORM-test databases. Results are scoped to the
+binaries and Python sources loaded when each process started; the following
+is not a claim that every expensive suite ran again at the final commit.
+
+- 97 harness/search-boundary unit tests passed. The latest dispatch change
+  passed all 85 shim tests. Final Rust state passed 277 workspace tests and
+  eight explicitly enabled PostgreSQL rule tests, formatting, and Clippy with
+  warnings denied. Ordinary workspace tests leave DB tests ignored; the eight
+  enabled tests are reported separately.
+- Initial fresh CLI corpus (extension/CLI at 45e9820): 11,461 cases, 3,049 value
+  comparisons, 4,736 matching access denials, zero result mismatches and no data
+  fingerprint drift. Coverage FAIL: 3,470 refusals plus 206 Python-error/native-
+  decline cases yield 32.07% declined, exceeding the 30% limit. The threshold
+  was not changed. This smaller fixture is not comparable to older coverage
+  percentages as evidence of improvement.
+- Upstream expression/search gate at that version passed 97 tests in each
+  mode, with 89 native dispatches. Search-path parity matched 3,004 native
+  answers, delegated 1,137 and matched 2,777 errors. Every-user parity matched
+  46,258 comparisons across 13 users and 63 contexts, including language and
+  ordered company selections. These long-running processes predate later
+  fixes; their counters are not relabeled as final-commit tests.
+- Rebuilt extension at 37d0cdf passed the full runtime contract after installing
+  its mail prerequisite. Six upstream test modules passed 1,973 tests in each
+  mode with zero failures/errors and 803 native dispatches in the on leg.
+  That leg loaded the shim at 89d445f; it predates dispatch timing changes and
+  the later relation-domain/translation/shared-target guards.
+- HTTP parity after isolating background workers passed 1,311 cases: 1,287
+  stable, 24 nondeterministic, 1,234 answered, zero divergences, 1,315 native
+  dispatches. This used Rust 37d0cdf and the Python parity/shim fixes through
+  62b27f2. The five initial differences and fixture change are explained above.
+- Paired HTTP traffic replay on that fixture was 1.35x slower routed; no timed
+  failures or routing drift. Profiling points to Python rule preparation and
+  hierarchy expansion. Debug logs now expose that cost; no speedup is claimed.
+- A release rebuild through a1dec30 passed 39 live boundary cases (27 value
+  results, 12 errors, 16 native dispatches) and all 180 grant-scope comparisons.
+  A dedicated translated-rule live test produced the same one-country result
+  off/on and recorded the precise native translated-storage refusal followed
+  by Python fallback. Initially doing setup and checking on the same cursor
+  hit the expected security-write gate, so the successful probe commits only
+  disposable fixture data and checks in a fresh process. The guard was then
+  removed. Logs: final-rule-guards-live.log, rule-translation-{seed,fallback,
+  cleanup}.log, final-grant-scopes.log. The later shared-target deduplication
+  has PostgreSQL and independent Odoo controls, not another full ORM rerun.
+
+Open work is explicit: native coverage still fails its configured gate;
+representative traffic remains slower; x2many traversal's default ordering and
+custom comodel search behavior need further parity work. Other structured or
+Python-converted scalar types merit the same storage-versus-record-value audit
+as translated values. These are not reported as already repaired, nor are
+untested suspicions claimed to be reproduced defects. No broad cache of
+resolved rules was introduced: invalidation must account for hierarchy/data
+writes and request-local SQL fragments before such caching is correct.
+
+Cleanup: all four databases owned by this fresh integration pass are absent;
+no database clients remained at cleanup. The parity port 9560 is free. Twelve
+copied configuration files and the owned filestore/cache directory were removed.
+Logs, JSON comparisons, captures, profiles and versioned extension copies remain
+in the artifact directory. Earlier per-fix disposable databases were also dropped.
