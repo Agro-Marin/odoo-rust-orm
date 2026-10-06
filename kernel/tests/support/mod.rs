@@ -76,6 +76,7 @@ pub fn model(name: &str, order: &str, fields: Vec<Field>) -> Model {
         check_access_pure: true,
         access_guard_pure: true,
         access_company_anchor: None,
+        access_anchors: None,
         name_search_fields: Some(vec!["name".into()]),
         display_name_search_exact: Vec::new(),
         impure_read_methods: Vec::new(),

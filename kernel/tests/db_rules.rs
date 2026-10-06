@@ -38,6 +38,7 @@ async fn rule_scalar_traversal_does_not_return_translation_storage() {
             company_ids: ids,
             groups: Default::default(),
             scopes: Default::default(),
+            access_partner: None,
         };
         for source in [
             "user.env.companies.label",
@@ -83,6 +84,7 @@ async fn rule_traversal_does_not_ignore_x2many_field_domains() {
         company_ids: vec![7],
         groups: Default::default(),
         scopes: Default::default(),
+        access_partner: None,
     };
     for kind in [FieldType::One2many, FieldType::Many2many] {
         for (domain, callable, polymorphic, refuses) in [
@@ -153,6 +155,7 @@ async fn rule_traversal_does_not_ignore_x2many_field_domains() {
                         company_ids: vec![3, 5],
                         groups: user.groups.clone(),
                         scopes: user.scopes.clone(),
+                        access_partner: user.access_partner,
                     };
                     for (source, expected) in [
                         ("user.env.companies.links.ids", json!([7])),
@@ -221,6 +224,7 @@ async fn scalar_nulls_follow_record_conversion_not_search_comparands() {
         company_ids: vec![],
         groups: Default::default(),
         scopes: Default::default(),
+        access_partner: None,
     };
     for (name, _, null_value, value) in cases {
         for (ids, expression, expected) in [
@@ -322,6 +326,7 @@ async fn scalar_mapping_preserves_list_shape_order_and_singleton_access() {
         company_ids: vec![],
         groups: Default::default(),
         scopes: Default::default(),
+        access_partner: None,
     };
     for (ids, expected) in [
         (vec![], json!([])),
@@ -504,6 +509,7 @@ async fn context_names_preserve_python_values_and_do_not_ignore_attributes() {
         company_ids: vec![3, 5],
         groups: std::sync::Arc::new([9, 2].into_iter().collect()),
         scopes: Default::default(),
+        access_partner: None,
     };
     for (source, expected) in [
         ("company_id", json!(3)),
