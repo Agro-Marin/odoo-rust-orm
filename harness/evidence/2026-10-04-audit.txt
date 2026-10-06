@@ -1,0 +1,543 @@
+ORM audit and adversarial reassessment, 2026-10-04
+
+This replaces the initial audit's conclusions. The challenge found that two
+local patches repaired symptoms of an invalid optimization. They were removed,
+not retained as evidence that the optimization was sound. This remains a
+bounded audit, not verification of every ORM line or every addon behavior.
+
+Disposition of every original finding
+------------------------------------
+1. Pool capacity on cancelled reconnect: CONFIRMED; fix retained.
+   Pool::acquire formerly forgot its permit and removed the connection before
+   awaiting reconnect. Cancellation bypassed the explicit error cleanup.
+   The stalled-handshake regression demonstrated free=0, permits=0 before the
+   fix and free=1, permits=1 afterward. A Lease now owns the slot before await.
+   Added tests cover a saturated waiter's timeout, reconnect configuration
+   failure, actual PostgreSQL backend termination under a request guard, and
+   subsequent successful queries. These complement the existing poison tests.
+
+   Limit exposed by challenging the TEST: an initial backend-termination test
+   demanded that is_closed() immediately reflect the remote kill. It failed:
+   the driver had not published closure yet. Acquisition cannot guarantee the
+   peer stays alive. The corrected test exercises TxGuard, the server's actual
+   mechanism for preventing interrupted requests from returning usable leases.
+   The production fix is slot ownership, not automatic retry of any SQL error.
+
+2. Post-flush untracked-write recheck: LOCAL DEFECT CONFIRMED, PATCH SUPERSEDED.
+3. Write scanner missing newline/comment-separated INSERT: REPRODUCED, PATCH
+   SUPERSEDED. My original five-fix summary gave these changes too much weight.
+   Neither made empty_by_construction correct. Three stronger database tests
+   disproved the optimization after both local patches were already applied:
+
+   a. A committed integer res_model/res_id reference can point to an ID inserted
+      later. No foreign key prohibits that row. The shortcut returned no rows;
+      PostgreSQL returned id 1.
+   b. A lazy Query was built while the reference table was empty; a valid FK
+      reference was inserted before execution. The shortcut froze WHERE FALSE;
+      PostgreSQL's normal predicate found id 1. Perfect write tracking at
+      compilation time would not fix this temporal error.
+   c. A preexisting SQL function inserted a reference through SELECT. The text
+      scanner saw no write, so the shortcut again answered an empty set.
+
+   All three originally produced:
+       SELECT "audit_search_ref"."id" FROM "audit_search_ref" WHERE FALSE
+       actual=[]; expected=[(1,)]
+   All now pass through ordinary predicate compilation and return [(1,)].
+
+   Resolution: removed the empty-search branch, its created-ID and trigger
+   caches, its commit/rollback cleanup hook, and its sole-use cursor write
+   scanner/state/getters. Removed the old unit test which asserted the unsafe
+   optimization as expected behavior, and replaced it with database contracts.
+   RUSTORM_PORT_NO_EMPTY and search_raw.empty no longer control/report a path.
+   Private RustConn written_tables/writes_untracked diagnostics were removed;
+   repository call-site searches found no other consumer. Native search itself
+   remains armed and uses its existing compiler/delegation path.
+   Performance tradeoff: formerly short-circuited searches now compile/execute;
+   every cursor statement also loses unnecessary write scanning. No net speed
+   improvement or regression has been measured.
+
+4. Quoted SQL identifiers consumed parameters: CONFIRMED; fix retained.
+   This is not justified solely by arbitrary PostgreSQL identifiers. The fork's
+   check_pg_name/check_column_name validators explicitly allow dollar signs.
+   A new test builds a query with SeaQuery for audit$1.amount$2, then converts
+   that actual generated SQL. Identifiers survive and exactly one parameter
+   binds. The direct tests also cover quotes and percents, but apostrophes and
+   percent signs are outside the fork's normal name validators: those cases
+   are robustness coverage, not proof of common application failures.
+   to_odoo_dialect still handles generated SQL, not arbitrary PostgreSQL text.
+
+5. Standalone test runner skipped two definitions: CONFIRMED; fix retained.
+   sys.exit(main()) occurred before the large-insert and uniform-update tests.
+   Pytest could see them while the script used by verify.sh could not. Moving
+   the entry point to EOF closes that coverage gap. Current script run:
+   SHIMS OK (81 tests, 0 skipped); one old empty-shortcut test was removed.
+
+6. Trigger cache freshness: STATIC FINDING, SUBSYSTEM NOW REMOVED.
+   Negative trigger presence was cached by registry identity, and the probe
+   inspected only public. It was not valid proof for arbitrary later DDL or
+   schemas. This challenge did not run an actual full-registry trigger-change
+   reproduction. No claim of such a reproduction is made.
+   Correction: mixed-case table names cited initially are rejected by the
+   fork's table-name validator; that particular concern was overbroad. Dollar
+   signs are allowed and were also outside the old target reader's grammar.
+
+7. Duplicated SQL parsing: OBSERVATION, NOT A PROVEN SHARED-LEXER DESIGN.
+   Cursor placeholders, trusted fragment ingestion, and generated-SQL output
+   have different contracts. Sharing all rewrite behavior would be incorrect
+   (notably printf placeholder handling versus SQL lexical interpretation).
+   Centralizing opaque-region recognition may be useful, but requires explicit
+   supported-input contracts. No general parser rewrite is justified here.
+
+8. Serializer accepts short rows: DOWNGRADED TO DEFENSIVE HARDENING.
+   records_to_json accepts fewer cells than names. However, its sole production
+   caller decodes one cell per kinds entry, adds one cell per x2many entry, and
+   builds names from those same lists. Inspection found no current route that
+   violates the width invariant. No production corruption was demonstrated.
+   Do not present this as a user-visible bug or urgently add branches to the
+   hot serialization loop without a reachable counterexample.
+
+9. Prepared-statement LRU cost: UNMEASURED HYPOTHESIS.
+   get() does retain over a queue and copies a key under a mutex, with capacity
+   256. That establishes algorithmic work, not a latency bottleneck. The
+   existing stmt_cache_bench compares cache lifetimes, not alternative LRU hit
+   implementations. No replacement data structure or performance claim follows
+   from this audit. A representative contention benchmark is still needed.
+
+10. Logging overhead: CONDITIONAL OBSERVATION, NOT A MEASURED REGRESSION.
+    PythonLogLayer formats before Python isEnabledFor. However, the Rust
+    EnvFilter defaults to warn, filtering DEBUG upstream. Extra disabled-DEBUG
+    formatting requires a permissive Rust filter paired with a restrictive
+    Python logger. Moving formatting into Python::attach could also extend GIL
+    ownership. No optimization or performance conclusion without measurements.
+
+11. Search statistics attributed to wrong method: REPRODUCED AND FIXED.
+    Calling search_raw with bypass_access without superuser recorded one
+    delegated search and zero delegated search_raw calls. Tests cover both
+    entry points. The helper now carries the originating method for refusal
+    reasons and online-compile counts. This corrects telemetry, not row results.
+
+12. Generate forwarding methods: OPTIONAL IDEA WITHDRAWN AS A REQUIRED CHANGE.
+    Explicit methods aid protocol discovery, signatures and tracebacks. A
+    generated method table can reduce repetition but adds indirection; existing
+    protocol/signature tests already detect drift. No actual defect found.
+
+13. Unused deadpool-postgres dependency: SOURCE OBSERVATION CONFIRMED.
+    It is declared in server/Cargo.toml; no runtime source calls it. Correction:
+    this is an unused dependency, not two actively competing pool designs.
+    Removing it is optional build cleanup. No runtime speed claim is supported.
+
+14. README length/reorganization: EDITORIAL PREFERENCE, NOT A DEFECT.
+    README.md has 4,298 lines, but M3-PLAN.md and dated evidence already separate
+    some concerns. Historical evidence can be useful. A split is not justified
+    merely by line count and was not performed.
+
+15. Coverage and test counts: CLAIMS NARROWED AND RECHECKED.
+    The earlier 260 Rust / 115 Python counts were sums of passing tests, not
+    375 independent end-to-end contracts. Running server tests separately
+    repeats its three pure tests. Default cargo test skips database tests.
+    Debug environment variables alone do not install a Rust subscriber; the
+    new Rust probes explicitly install one and Python runs configure logging.
+
+Reproducible new contracts and limits
+------------------------------------
+- harness/test_search_time_contract.py: three PostgreSQL data/time contracts
+  and two method-attribution tests. RustConn, RustBackend routing, Domain,
+  dependency flushing and Query are real. WHERE compilation is substituted
+  with an ordinary predicate builder; the model facade has no computed fields.
+  Thus these isolate the invalid shortcut, not full Odoo compiler/addon parity.
+  Data lives in connection-local temporary tables. SQL functions are in pg_temp.
+- kernel/tests/pure.rs: generated-SQL identifier conversion and direct quoting
+  edge cases. No PostgreSQL execution is claimed for these Rust unit tests.
+- server/src/http.rs: cancelled reconnect, waiter timeout, reconnect error and
+  real backend termination with TxGuard. Only the test-owned backend is killed.
+
+Commands (cwd odoo-rust-orm; extension freshly rebuilt)
+-----------------------------------------------------
+cargo build --release -p odoo-engine-py --lib
+RUST_LOG=debug RUSTORM_LOG=debug cargo test --workspace
+RUSTORM_LOG=debug RUSTORM_DB=rustorm_challenge_20261004 \
+  cargo test -p odoo-server -- --include-ignored --nocapture
+PYTHONPATH=/tmp/odoo-rust-audit-pymod:/home/marin/Odoo/odoo:/home/marin/Odoo/odoo-rust-orm/engine-py/python \
+  RUSTORM_LOG=debug \
+  RUSTORM_TEST_DSN='host=/var/run/postgresql user=marin dbname=rustorm_challenge_20261004' \
+  /home/marin/Odoo/p314o19m/bin/python -m pytest harness/test_shims.py \
+    harness/test_harness.py harness/test_read_probe.py \
+    harness/test_search_time_contract.py --log-level=DEBUG
+
+Local debug artifacts: /tmp/odoo-rust-challenge-{search-before,search-after,
+stats-before,workspace,pool,python,standalone,build,clippy}.log. Before search
+log preserves all three counterexamples; stats-before preserves the miscount.
+These temporary logs are not permanent repository evidence. Tests are retained.
+
+Final validation: 259 workspace Rust tests passed, 12 explicitly ignored;
+8 server tests passed with --include-ignored (3 repeat the pure workspace
+tests, 5 exercise database/pool behavior); 119 Python tests passed, including
+the 3 database counterexamples; standalone shims passed 81 with no skips.
+The release extension passed the source-checksum test. Workspace Clippy
+(-D warnings), Rust formatting, Ruff on changed Python files, and whitespace
+checks passed. The changed search_path.py integration scenario was linted but
+not executed against a full Odoo registry. M3-PLAN.md now marks the old shortcut
+measurements as historical. The disposable database was removed after testing.
+
+No production database, full Odoo differential corpus, browser tour or
+throughput benchmark was used. All live probes used the disposable
+rustorm_challenge_20261004 database. Performance hypotheses remain hypotheses.
+
+
+Implementation follow-through (same day, on main)
+------------------------------------------------
+The previous sections preserve the earlier review and its limits. The user
+subsequently requested implementation, including maintainability improvements.
+The following supersedes earlier optional/unmeasured/unexecuted status:
+
+- Shared SQL boundary scanning in kernel/src/sqllex.rs replaces duplicated
+  comment/quote handling in the cursor, SQL comparands and write conversion.
+  Nested block comments, E-string escapes, doubled identifier quotes, dollar
+  strings and dollar-bearing identifiers are covered. Placeholder semantics
+  remain layer-specific: cursor printf substitution still operates in quotes.
+  PostgreSQL db_probe executes escaped-string/nested-comment comparisons.
+- Row serialization rejects both short and long rows instead of emitting
+  incomplete objects. The invariant is checked once per row before zipping.
+- StmtCache hits now update an integer age with one map lookup, no String
+  allocation or queue scan. Eviction scans the bounded 256-entry map. A
+  reference queue checks 2,000 mixed operations and forced age overflow.
+- An ignored release benchmark compares the current cache with the old queue
+  implementation, using real prepared statements but timing only cache hits.
+  Five alternating trials, median, 50,000 lookups per thread:
+      1 thread: 3.458293 ms vs 52.095758 ms (ratio 0.06638)
+      4 threads: 55.468370 ms vs 298.824456 ms (ratio 0.18562)
+  This is a synthetic cache-hit result, NOT an application throughput claim.
+- The logging bridge checks Python log levels before formatting event fields.
+  A same-callsite WARNING/DEBUG/WARNING regression verifies one rendering and
+  one delivered event, preserving live level changes. Enabled events acquire
+  the GIL twice; no net enabled-logging speedup is claimed.
+- Mechanical persistence-port forwarding now shares one implementation with
+  explicit class attributes, preserving names, kwargs, exceptions and stats.
+  Existing protocol/forwarding tests validate the contract.
+- Removed the unused deadpool-postgres dependency and its lockfile entries.
+- Search diagnostics aggregate search and search_raw counters; verify.sh now
+  runs harness/database contracts and fails if DSN resolution fails.
+
+New issue found through the full Odoo differential run:
+The disposable database was initialized with base,mail,contacts (48 installed
+modules, 337 models). sweep_corpus generated 11,461 cases. Its archived-company
+identity was skipped because the fork refuses archiving a default company
+still used by active users. The first search_path run had 3 mismatches:
+s1706/s1707/s1708, discuss.channel.ai_agent_id, ilike/not ilike/empty ilike.
+The native path answered; Python raised AccessError. Metadata inspection found
+access_classes.read=('ai.channel_agent',) while groups=None. Thus this was not
+an incorrect user/group fixture or a trusted_domain shortcut: the export
+omitted the fork's class policies, which need not have a groups= equivalent.
+
+The exporter now marks fields with read-access classes or alternatives.
+Non-superuser compilation refuses such fields for Python evaluation, including
+before constant folding. Read and order callers propagate refusal rather than
+silently allowing the field or dropping its order term. Superuser behavior is
+preserved. This conservative fallback also leaves row-level masking to Python;
+it does not attempt to reimplement arbitrary class policies. Fresh registry
+exports are required to carry this new metadata. The pure regression covers
+missing groups=, direct read checks, positive/negative/empty predicates,
+constant folding and superuser compilation. search_path now checks exception
+types when both legs raise, rather than counting every dual exception as parity.
+
+Final validation of the implementation follow-through:
+- cargo test --workspace: 265 passed; 14 database/benchmark tests explicitly
+  ignored by the default run. Not every ignored test was executed below.
+- Server --include-ignored: 8 passed (3 repeat workspace tests).
+- db_probe --ignored --skip a_tls: 3 passed (SQL boundaries, stale cached plan,
+  timeout/cancellation and a fresh subsequent snapshot).
+- Python pytest: 119 passed. Standalone shim runner: 81 passed, 0 skipped
+  (overlaps pytest; not additional independent tests).
+- Rebuilt release extension; source-checksum validation passed.
+- Full search_path on the regenerated 11,461-case corpus (deduplicated by
+  search inputs): 3,004 native comparisons matched, 1,137 delegated, 2,777
+  raised the same exception type. Zero mismatches. The lazy follower query
+  and in-transaction security write checks both passed. No native floor was
+  lowered (default 1,000).
+- write_path: passed, including native VALUES/uniform updates, translated
+  JSON merge/clear, native INSERT, COPY delegation and pipelined insertion.
+- Clippy --workspace --all-targets -D warnings, changed Rust formatting, changed
+  Python Ruff checks, shell syntax and git diff whitespace checks passed.
+
+Debug logs revealed one further telemetry defect: connect_with_fault logged
+`encrypted=true` merely because a TLS connector was configured, including
+Unix-socket connections. The field is now accurately named `tls_configured`;
+it makes no assertion about negotiated transport encryption.
+
+TLS probe limitation: the initial --ignored db_probe invocation failed its
+TLS test because RUSTORM_TLS_DSN was absent. Unix sockets cannot supply that
+TLS probe, and local TCP requires credentials unavailable to this test. The
+subsequent run explicitly excluded a_tls; no shared server authentication or
+roles were changed. No TLS validation or browser-tour coverage is claimed.
+
+Artifacts: /tmp/odoo-rust-improve-{final-workspace,final-pool,final-db,
+final-python,final-standalone,final-build,final-clippy,cache-bench,search,
+search-fixed,write}.log and /tmp/odoo-rust-improve/search-odoo.log. All live
+work used disposable rustorm_improve_20261004; no production database used.
+
+Cleanup: disposable rustorm_improve_20261004 was dropped after all clients
+closed. Temporary Odoo configuration copies were removed; debug logs remain.
+Final release checksum was rechecked after the logging-field rename. Changes
+were implemented directly on main; no feature branch was created.
+
+Workspace-wide cargo fmt --check also exposed a pre-existing import-order
+difference in untouched engine-py/src/lib.rs. All changed Rust files pass
+rustfmt --check; the unrelated file was left unchanged.
+
+
+Continuation after commit 3c76bb8 (on main)
+-----------------------------------------
+Challenging the previous fix exposed a missing-state problem: from_export
+used as_bool().unwrap_or(false) for python_read_access. An old export or a
+malformed value therefore still meant public access. Field now carries
+Option<bool>: only Some(false) states that Python class evaluation is
+unneeded. None refuses non-superuser field access with a regenerate-export
+message. Database-only bootstrap also leaves this policy unknown. Sudo is
+unchanged. A live Odoo loader probe builds five kernels from fresh, explicit
+class, missing, null and malformed metadata and compiles each as user and
+superuser. All ten outcomes pass. harness/registry_policy.py is retained and
+wired into verify.sh. Its synthetic flags test the real export decoder and
+compiler; they do not claim coverage of every possible Python class policy.
+
+The company-default partial-index guard used a separate recursive LIKE
+matcher. It did not implement SQL backslash escapes, database collation or
+unaccent. A PostgreSQL regression with a NULL-backed company default 'a%b'
+and pattern a\%b returned one row through compiled SQL versus two through
+the PostgreSQL control. This disproved the prior matcher's broad unit-test
+name claiming PostgreSQL parity. The matcher and its redundant unit test
+were removed; pattern predicates now stay in the ordinary PostgreSQL
+condition without this extra IS NOT NULL guard. Regression probes for
+escaped percent, underscore and backslash all now return both rows. Other
+company-default guards remain. This may lose partial-index opportunities
+for pattern queries; no overall performance improvement is claimed.
+
+SQL fragment integer parameters beyond int8 were accepted as float8. A
+before-test logged SELECT ($1::float8::numeric) for an integer parameter;
+nearby integers can lose precision in that conversion. Rust now refuses
+unsigned JSON integers beyond int8. Python validates scalar and array
+integer ranges before JSON serialization, also preventing larger positive
+or negative Python integers from first losing their integer representation
+in the JSON decoder. Regression coverage includes int8 boundaries, 2^53+1,
+out-of-range arrays, a 10^100 Python integer, booleans and genuine floats.
+This addresses typed SQL-comparand parameters; it is not a claim that every
+numeric conversion elsewhere in the ORM was audited.
+
+Validation for this continuation:
+- Workspace: 266 Rust tests passed, 15 tests explicitly ignored by default.
+- Python: 119 tests passed using the rebuilt release extension; source CRC
+  and fragment wire contracts rechecked after the final import-order fix.
+- PostgreSQL: the escaped-pattern regression failed before and passed after
+  the change (three cases, using a connection-local temporary table).
+- Live Odoo: registry-policy probe passed all ten compilation outcomes on a
+  database initialized with base. The complete previous differential corpus
+  was not rerun for this continuation.
+- Clippy all targets with -D warnings, Ruff, shell syntax, and whitespace
+  checks pass. The existing engine-py/src/lib.rs import ordering is now fixed;
+  workspace-wide cargo fmt --check passes, superseding its earlier limitation.
+- Debug evidence: /tmp/odoo-rust-followup-{workspace,python,policy,
+  pattern-before,pattern-after,integer-before,build,checksum,clippy}.log and
+  /tmp/odoo-rust-followup/odoo.log. Only rustorm_followup_20261004 was used.
+
+Continuation cleanup: disposable database dropped after every client closed;
+temporary configuration removed. Debug logs retained. Follow-up changes are
+uncommitted on main; no feature branch was created.
+
+
+Second continuation: numeric coercion and parser scaling
+------------------------------------------------------
+A new regression failed before the numeric fix: credit_limit = 'NaN' compiled
+to credit_limit IN (0) OR credit_limit IS NULL. coerce_numeric parsed a float
+then Json::from silently represented non-finite values as null. The reference
+probe used the fork's actual _coerce_numeric and PostgreSQL: Python's NaN
+selected the NaN row (id 3), whereas the old emitted predicate selected zero
+and NULL (ids 1 and 2). inf, -Infinity and overflowing 1e999 have the same
+representation problem. Python-valid 1_000 and Arabic decimal digits were
+instead incorrectly classified as nonnumbers by Rust's parser.
+
+coerce_numeric now distinguishes invalid strings (the existing drop behavior)
+from unsupported numeric representations (KernelRefused, allowing Python
+fallback). It refuses non-finite floats and strings containing underscores or
+non-ASCII characters. The latter is conservative: some invalid strings also
+delegate; no claim of implementing Python's complete numeric grammar is made.
+The native regression covers six representations and five operators. Six
+Python/PostgreSQL reference tests live in test_search_time_contract.py, which
+verify.sh already runs. These reference tests do not build a full Odoo registry.
+
+The domain parser's nary helper repeatedly copied a growing right-hand suffix
+into a new Vec, producing quadratic work on a flat, right-associated domain.
+Pending junctions now use VecDeque, merging the smaller child list into the
+larger one while preserving left-to-right order. Conversion to the public
+Vec-based AST happens when a junction is finished. Binary parsing no longer
+allocates an extra two-element operand Vec. Structural depth checks and
+negation-pair collapse remain intact. An independent prefix interpreter checks
+200 generated expressions against all 32 assignments of five Boolean inputs;
+a separate traversal verifies exact leaf order. Existing large-domain and
+nesting-boundary regressions also pass. This tests both semantics and layout;
+benchmark timing itself is not a correctness assertion.
+
+Release parser benchmark (five trials per size, medians, same input generator):
+    Terms      Before ms      After ms
+     2,000       4.276595       0.275194
+     4,000      15.438824       0.455641
+     8,000      74.971490       0.932629
+    16,000     411.512462       1.902940
+The benchmark is retained as kernel/tests/domain_bench.rs (ignored by default).
+It times parsing only, excluding input construction and output-tree drop, with
+DEBUG logging installed but TRACE domain dumps disabled. Measurements are
+from separate before/after release builds, not alternating in one process.
+They establish local parser scaling, not whole-application throughput.
+
+Validation: 268 workspace Rust tests passed; 16 tests explicitly ignored by
+default. The parser benchmark was separately executed. 125 Python tests passed,
+including PostgreSQL temporary-table references and the rebuilt extension's
+source checksum. Clippy all targets -D warnings, workspace cargo fmt --check,
+Ruff, shell syntax and whitespace checks pass. A full Odoo differential corpus
+and browser tests were not rerun for this continuation.
+
+Artifacts: /tmp/odoo-rust-next-{domain-before,domain-after,numeric-before,
+numeric-postgres,workspace,python,clippy,build}.log. Only the disposable
+rustorm_numeric_20261004 database was used. All probes used debug loggers.
+
+Second-continuation cleanup: rustorm_numeric_20261004 was dropped after all
+clients closed. Debug logs retained. Changes remain uncommitted on main.
+
+Third continuation: search comparands and arithmetic boundaries
+--------------------------------------------------------------
+Reproduced Char search truncation against a PostgreSQL varchar(2): code = USA
+incorrectly matched stored US. The fork's Char._comparand_to_column preserves
+search text, unlike its storage conversion. Removed search truncation and the
+now-unused Field.size / Column.max_length metadata and export member. The
+retained PostgreSQL test compares three values (ASCII, Unicode, integer) across
+eight operators, 24 comparisons total. Three Python tests independently check
+the fork's storage/search conversion distinction.
+
+Reproduced a company-default guard excluding NULL-backed rows for numeric 123
+against text default "123": binding converted the value after the guard had
+already compared unlike JSON types. Normalize text numbers before guards.
+The retained PostgreSQL test verifies both default-backed and explicit rows.
+Float-to-text comparands delegate conservatively because Python and JSON
+formatting differ; this does not claim a native Python float formatter.
+
+Reproduced hierarchy root 4294967297 wrapping to record 1. Checked int4
+conversion now serves hierarchy seeds and the two relation scan narrowing
+sites. Unsupported hierarchy seed types are refused rather than dropped.
+Boundary unit tests cover representability; live child_of and parent_of
+compilation both refuse the overflowing ID. Large-ID relation reads were not
+separately exercised end to end.
+
+Reproduced a debug panic from rule addition i64::MAX + 1. Checked integer
+addition and finite float result construction now refuse unsupported results;
+unsigned integers outside int8 also refuse. Unit tests exercise integer and
+float overflow and preserve ordinary numeric, string and array addition.
+This is evaluator coverage, not a full security-rule differential corpus.
+
+Validation with debug logging:
+- 271 workspace Rust tests passed; 17 ignored by default.
+- Both ignored pure PostgreSQL tests passed separately (24 Char comparisons,
+  three escaped-pattern cases and the numeric text default case).
+- 128 Python tests passed, including PostgreSQL references and rebuilt native
+  extension source-checksum validation.
+- A fresh base Odoo registry passed all 10 access-policy metadata cases.
+- Nine live native res.country searches matched Odoo; two hierarchy overflow
+  and one float-to-text request refused as expected.
+- Clippy workspace/all-targets with -D warnings passed.
+No browser run or full search corpus rerun was performed in this continuation.
+
+Artifacts: /tmp/odoo-rust-boundaries-{char-before,char-after,hierarchy-before,
+rules-before,default-before,workspace,postgres,python,registry,clippy,build}.log
+and /tmp/odoo-rust-boundaries/odoo.log. Only disposable database
+rustorm_boundaries_20261004 was used in this continuation.
+
+Final checks: workspace formatting, Ruff, shell syntax and git diff --check
+passed. The disposable database was dropped after confirming zero clients;
+the temporary configuration was removed and debug logs retained. All three
+continuations are committed together on main under the user's existing commit
+instruction; earlier uncommitted-status notes describe their checkpoints.
+
+Fourth continuation: follower-search ID narrowing
+------------------------------------------------
+A sweep of remaining `as i32` casts found the follower-search compiler still
+narrowing partner IDs without checking. The before regression logged partner
+4294967297 compiling to partner_id IN (1). This custom search is also used by
+record rules; the test establishes incorrect SQL, not an end-to-end privilege
+escalation on a live user fixture.
+
+The compiler now uses the shared checked record_id conversion before building
+the subquery, collecting int4 IDs directly. Unrepresentable IDs delegate via
+KernelRefused. Regression coverage checks three overflowing values through
+=, !=, in and not in, plus representable int4 endpoints and ordinary ID 1.
+An initial assertion that ID 0 should compile was disproved: existing domain
+optimization normalizes it to false and this custom search delegates that
+operand. That existing behavior was preserved and the assertion corrected.
+
+A separate hypothesis about large company-default integer comparisons was
+not established: a synthetic bigint company field reached an int4 JSON cast
+and PostgreSQL rejected its value before the suspected comparison could be
+observed. The invalid exploratory test was removed; no precision-comparison
+fix or broad bigint company-field support is claimed.
+
+Validation: 272 Rust workspace tests passed, 17 ignored by default; 128 Python
+tests passed with the rebuilt release extension, source-checksum validation
+and disposable PostgreSQL references. Clippy all targets -D warnings,
+workspace formatting and whitespace checks passed. Tests used debug logging.
+No live Odoo follower-rule differential corpus or browser run was performed.
+Logs: /tmp/odoo-rust-followers-{before,workspace,build,clippy,python}.log;
+rejected exploratory probe: /tmp/odoo-rust-precision-before.log.
+Disposable database rustorm_precision_20261004 was dropped after zero clients
+were confirmed. Work committed on main; no feature branch created.
+
+Fifth continuation: constant domain leaves
+-----------------------------------------
+Reproduced [2, '=', 2] parsing as Node::True in Rust. The parser previously
+evaluated arbitrary integer-left leaves, treating an unparseable right operand
+as -1 and unsupported operators as false. Odoo's Domain constructor instead
+recognizes only the TRUE_LEAF and FALSE_LEAF sentinel tuples; other non-string
+left operands raise TypeError. Python tuple equality also permits numerically
+equivalent booleans and floats, which Rust previously refused or misclassified.
+
+The parser now recognizes only those two sentinels with Python-equal numeric
+forms and refuses all other non-string-left leaves. Tests cover seven invalid
+and seven valid forms against the actual local Odoo Domain constructor, with
+matching native parser regressions. The before native regression failed on
+[2, '=', 2]; after it passes. No claim of a live authorization exploit is made:
+this verifies parser semantics, including inputs Python rejects.
+
+273 workspace Rust tests passed, 17 ignored by default. All 14 standalone
+Python reference cases passed. Debug logs:
+/tmp/odoo-rust-constants-{before,oracle,workspace,build,clippy}.log.
+The rebuilt release extension passed the full selected Python suite: 142 tests,
+including source checksum and PostgreSQL references, with debug logging.
+Clippy all targets -D warnings, Ruff, formatting and whitespace checks passed.
+The disposable rustorm_constants_20261004 database was dropped after confirming
+zero clients. Full live Odoo corpus and browser tests were not rerun.
+Final Python log: /tmp/odoo-rust-constants-python.log. Committed on main.
+
+Sixth continuation: validate fields before leaf folding
+------------------------------------------------------
+Reproduced an unknown field disappearing into WHERE TRUE for =? false. The
+native optimizer looked up the field optionally and ran constant-producing
+rewrites before the later mandatory lookup. Odoo's BASIC optimizer instead
+resolves the field first and raises ValueError. The same ordering matters for
+empty membership and empty/wildcard-only patterns.
+
+The native optimizer now refuses unknown field heads before rewriting. The
+exact display_name pseudo-field keeps its dedicated synthetic compiler path;
+this exception does not extend to dotted display_name names absent from the
+registry. This is field-existence validation, not new support for arbitrary
+field properties or custom search methods.
+
+Retained regressions cover seven operator/value pairs across direct and dotted
+unknown names, both positive and negated (28 native cases). Fourteen Python
+reference cases run the actual Odoo BASIC optimizer on a model facade with an
+empty field map, confirming ValueError before any field-dependent execution.
+They do not require a live Odoo registry or assert end-to-end shim routing.
+
+The workspace passed 274 Rust tests with 17 ignored by default; after narrowing
+the display_name exception, all 184 pure tests passed again. Clippy all targets
+-D warnings, Ruff, formatting and whitespace checks passed. Debug logs:
+/tmp/odoo-rust-missing-{before,oracle,workspace,final-pure,build,clippy}.log.
+The rebuilt release extension passed 156 Python tests, including its source
+checksum and disposable PostgreSQL references, with debug logging. Python log:
+/tmp/odoo-rust-missing-python.log. The disposable rustorm_missing_20261004
+database was dropped after confirming zero clients. No full live Odoo corpus
+or browser rerun. Committed on main without creating a feature branch.
