@@ -417,6 +417,16 @@ fn py_to_sql(
             let s: String = v.str()?.extract()?;
             return text_or(v, parse_tstz(&s));
         }
+        Type::INTERVAL if v.is_instance_of::<pyo3::types::PyDelta>() => {
+            // what psycopg sends: the days apart from the time, so a day stays
+            // a calendar day in timestamptz arithmetic
+            let days: i64 = v.getattr("days")?.extract()?;
+            let seconds: i64 = v.getattr("seconds")?.extract()?;
+            let micros: i64 = v.getattr("microseconds")?.extract()?;
+            Box::new(TextParam(Some(format!(
+                "{days} days {seconds} seconds {micros} microseconds"
+            ))))
+        }
 
         Type::JSON | Type::JSONB => match v.extract::<String>() {
             Ok(s) if serde_json::from_str::<serde_json::Value>(&s).is_ok() => {
@@ -1465,9 +1475,14 @@ impl RustConn {
 }
 
 fn declared_type(v: &Bound<'_, PyAny>) -> Type {
-    use pyo3::types::{PyBool, PyDate, PyDateTime, PyFloat, PyInt, PyString};
+    use pyo3::types::{PyBool, PyDate, PyDateTime, PyDelta, PyFloat, PyInt, PyString};
     if v.is_none() {
         return Type::UNKNOWN;
+    }
+    // untyped, PostgreSQL infers an interval's type from the expression and
+    // reads `ts - $1` as a timestamp subtraction
+    if v.is_instance_of::<PyDelta>() {
+        return Type::INTERVAL;
     }
     if v.is_instance_of::<PyBool>() {
         return Type::BOOL;
