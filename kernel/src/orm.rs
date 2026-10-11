@@ -1441,6 +1441,27 @@ impl<'a> Orm<'a> {
     ) -> Result<CompiledWhere> {
         let dynamic = self.snapshot(req, checked).await?;
         let snapshot = dynamic.clone();
+        let node = if matches!(req.domain, Json::Null) {
+            domain::Node::True
+        } else {
+            domain::parse(&req.domain)?
+        };
+        if !req.trusted_domain {
+            domain::reject_internal_operators(&node)?;
+        }
+        if domain::is_false(&node) {
+            tracing::debug!(
+                target: "odoo_kernel::compile",
+                model = %req.model,
+                "the domain selects nothing: no WHERE to compile"
+            );
+            return Ok(CompiledWhere {
+                fragment: "FALSE".to_string(),
+                params: Vec::new(),
+                touched: Vec::new(),
+                snapshot,
+            });
+        }
         let env = self.build_env(req, dynamic).await?;
         let model = self.registry.get(&req.model)?;
         let rules = if env.su {

@@ -546,6 +546,9 @@ def _search_native(
         _delegated(method, str(exc))
         return None
 
+    if fragment == "FALSE":
+        _count("native", f"{method}.domain_false")
+        return model.browse()._as_query()
     payload = json_loads(payload)
     to_flush = []
     for name, fname in payload["touched"]:

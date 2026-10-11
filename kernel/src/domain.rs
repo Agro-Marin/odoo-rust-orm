@@ -276,6 +276,19 @@ pub fn referenced_fields(node: &Node, out: &mut Vec<String>) {
     }
 }
 
+// whether the domain selects no row whatever the rows hold, as Python's
+// optimization finds it (an `in` of nothing is FALSE on every field): a search
+// for it is answered without a statement
+pub fn is_false(node: &Node) -> bool {
+    match node {
+        Node::False => true,
+        Node::Leaf(l) => l.op == "in" && matches!(&l.value, Json::Array(a) if a.is_empty()),
+        Node::And(v) => v.iter().any(is_false),
+        Node::Or(v) => !v.is_empty() && v.iter().all(is_false),
+        Node::Not(_) | Node::True => false,
+    }
+}
+
 pub fn reject_internal_operators(node: &Node) -> Result<()> {
     match node {
         Node::And(v) | Node::Or(v) => v.iter().try_for_each(reject_internal_operators),
@@ -416,5 +429,18 @@ mod tests {
     fn a_quiet_no_is_not_an_empty_domain() {
         assert!(matches!(parse(&json!([])).unwrap(), Node::True));
         assert!(parse_nested(&json!("private")).is_none());
+    }
+
+    #[test]
+    fn a_domain_selecting_nothing_is_false_as_python_optimizes_it() {
+        let is = |domain: Json| is_false(&parse(&domain).unwrap());
+        assert!(is(json!([["res_id", "in", []]])));
+        assert!(is(json!([["res_model", "=", "x"], ["res_id", "in", []]])));
+        assert!(is(json!(["|", ["a", "in", []], ["b.c", "in", []]])));
+        assert!(!is(json!(["|", ["a", "in", []], ["b", "=", 1]])));
+        assert!(!is(json!([["a", "not in", []]])));
+        assert!(!is(json!(["!", ["a", "in", []]])));
+        assert!(!is(json!([["a", "in", [1]]])));
+        assert!(!is(json!([])));
     }
 }
