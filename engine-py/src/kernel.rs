@@ -244,8 +244,10 @@ impl RustKernel {
         let t0 = std::time::Instant::now();
         let out = py.detach(|| {
             let _ = client.batch_execute(SAVEPOINT_OPEN).now_or_never();
+            stmts.note_executed(1);
             let orm = Orm::new(&self.registry, &client, self.caches.clone(), &stmts);
             let result = rt.block_on(orm.dispatch_with(&req, checked.clone()));
+            stmts.note_executed(1);
             if result.is_ok() {
                 let _ = client.batch_execute(SAVEPOINT_RELEASE).now_or_never();
             } else {

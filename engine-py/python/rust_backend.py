@@ -1,6 +1,7 @@
 import collections
 import logging
 import os
+import time
 
 from rust_engine_errors import KernelRefused, KernelRegistryStale
 
@@ -540,7 +541,14 @@ def _search_native(
         if answer is None:
             _count("native", f"{method}.online")
             with env.cr.savepoint(flush=False):
-                answer = kernel.search_where(conn, request, offline=False)
+                sent_before = conn.kernel_statements
+                sent_from = time.monotonic()
+                try:
+                    answer = kernel.search_where(conn, request, offline=False)
+                finally:
+                    rust_orm_shim.report_kernel_statements(
+                        env, conn, sent_before, time.monotonic() - sent_from
+                    )
         fragment, payload = answer
     except (KernelRefused, KernelRegistryStale) as exc:
         _delegated(method, str(exc))

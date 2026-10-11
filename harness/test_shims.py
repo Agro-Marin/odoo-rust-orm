@@ -1460,11 +1460,15 @@ def test_dispatch_debug_timing_includes_preparation_and_decoding() -> None:
     with (
         patch.object(shim, "KERNEL", kernel),
         patch.object(shim, "_request", return_value="{}"),
-        patch.object(shim, "_rust_conn", return_value=object()),
+        patch.object(
+            shim, "_rust_conn", return_value=SimpleNamespace(kernel_statements=0)
+        ),
     ):
         with (
             unittest.TestCase().assertLogs(shim._call_logger, level="DEBUG") as logs,
-            patch.object(shim.time, "monotonic", side_effect=[1, 1.01, 1.03, 1.06]),
+            patch.object(
+                shim.time, "monotonic", side_effect=[1, 1.01, 1.03, 1.06]
+            ),
         ):
             check("dispatch still decodes the answer", shim._dispatch(model, "read"), {"name": "café"})
         message = logs.output[0]
@@ -3718,6 +3722,26 @@ def _observations(cursor):
     finally:
         del thread.query_hooks
     check("the cursor ends unobserved", cursor.statements_observed, False)
+
+
+def test_a_routed_call_counts_its_statements_on_the_cursor() -> None:
+    orm_shim = _shims()[1]
+    recorded = []
+
+    class _Cursor:
+        def record_foreign_statements(self, count, delay):
+            recorded.append((count, delay >= 0))
+
+    class _Env:
+        cr = _Cursor()
+
+    class _Conn:
+        kernel_statements = 7
+
+    orm_shim.report_kernel_statements(_Env(), _Conn(), 4, 0.002)
+    check("the kernel's three statements reach the cursor", recorded, [(3, True)])
+    orm_shim.report_kernel_statements(_Env(), _Conn(), 7, 0.002)
+    check("a call that sent nothing records nothing", recorded, [(3, True)])
 
 
 class _PastTheObservationCheck(Exception):

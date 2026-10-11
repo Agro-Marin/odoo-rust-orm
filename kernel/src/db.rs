@@ -8,6 +8,9 @@ pub const MAX_PREPARED: usize = 256;
 #[derive(Default)]
 pub struct StmtCache {
     inner: std::sync::Mutex<RecencyMap<tokio_postgres::Statement>>,
+    // what the kernel sent on this connection, beside the caller's cursor,
+    // which counts none of it: the caller reads it around each call
+    executed: std::sync::atomic::AtomicU64,
 }
 
 struct CacheEntry<T> {
@@ -70,6 +73,15 @@ impl<T> RecencyMap<T> {
 }
 
 impl StmtCache {
+    pub fn executed(&self) -> u64 {
+        self.executed.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn note_executed(&self, statements: u64) {
+        self.executed
+            .fetch_add(statements, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub fn get(&self, sql: &str) -> Option<tokio_postgres::Statement> {
         self.inner.lock().unwrap().get(sql).cloned()
     }
@@ -230,6 +242,7 @@ impl<'a> Db<'a> {
         let prepare_ms = t_prepare.elapsed().as_secs_f64() * 1000.0;
         let t0 = std::time::Instant::now();
         let rows = self.client.query(&stmt, params).await;
+        self.stmts.note_executed(1);
 
         if !freshly_prepared && rows.as_ref().err().is_some_and(stale_plan_code) {
             tracing::info!(

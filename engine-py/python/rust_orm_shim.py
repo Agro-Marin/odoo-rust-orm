@@ -1239,6 +1239,15 @@ def _request(model, method, **kw):
     return json.dumps(req, default=encode)
 
 
+def report_kernel_statements(env, conn, before, delay) -> None:
+    # the kernel's statements run on the connection, beside the cursor: counted
+    # as the cursor's own, a count taken on it holds whichever path served
+    sent = conn.kernel_statements - before
+    # an odoo older than the cursor's record_foreign_statements counts none
+    if sent and (record := getattr(env.cr, "record_foreign_statements", None)):
+        record(sent, delay)
+
+
 def _dispatch(model, method, **kw):
     from odoo.libs.json import loads as json_loads
 
@@ -1248,8 +1257,12 @@ def _dispatch(model, method, **kw):
     dispatch = KERNEL.dispatch
     conn = _rust_conn(model.env)
     prepared = time.monotonic() if timing else 0
+    sent_before = conn.kernel_statements
     raw = dispatch(conn, request)
     dispatched = time.monotonic() if timing else 0
+    # with debug logging off the call reads no clock: the statements count,
+    # their time does not
+    report_kernel_statements(model.env, conn, sent_before, dispatched - prepared)
     result = json_loads(raw)
     if timing:
         finished = time.monotonic()

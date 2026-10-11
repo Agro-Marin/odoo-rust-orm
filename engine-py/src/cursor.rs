@@ -1932,6 +1932,11 @@ impl RustConn {
     }
 
     #[getter]
+    fn kernel_statements(&self) -> u64 {
+        self.kernel_stmts.executed()
+    }
+
+    #[getter]
     fn in_failed_transaction(&self) -> bool {
         self.in_tx.load(Ordering::SeqCst) && self.aborted.load(Ordering::SeqCst)
     }
