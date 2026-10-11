@@ -1441,27 +1441,6 @@ impl<'a> Orm<'a> {
     ) -> Result<CompiledWhere> {
         let dynamic = self.snapshot(req, checked).await?;
         let snapshot = dynamic.clone();
-        let node = if matches!(req.domain, Json::Null) {
-            domain::Node::True
-        } else {
-            domain::parse(&req.domain)?
-        };
-        if !req.trusted_domain {
-            domain::reject_internal_operators(&node)?;
-        }
-        if domain::is_false(&node) {
-            tracing::debug!(
-                target: "odoo_kernel::compile",
-                model = %req.model,
-                "the domain selects nothing: no WHERE to compile"
-            );
-            return Ok(CompiledWhere {
-                fragment: "FALSE".to_string(),
-                params: Vec::new(),
-                touched: Vec::new(),
-                snapshot,
-            });
-        }
         let env = self.build_env(req, dynamic).await?;
         let model = self.registry.get(&req.model)?;
         let rules = if env.su {
@@ -1472,6 +1451,22 @@ impl<'a> Orm<'a> {
         let cond = self
             .build_condition(model, &req.domain, &env, &rules, req.trusted_domain)
             .await?;
+        // after the compile, which refuses what Python's search would raise
+        // on (an unknown field, a caller's internal operator), as Python
+        // validates a condition before optimizing it to FALSE
+        if !matches!(req.domain, Json::Null) && domain::is_false(&domain::parse(&req.domain)?) {
+            tracing::debug!(
+                target: "odoo_kernel::compile",
+                model = %req.model,
+                "the domain selects nothing: no statement to run"
+            );
+            return Ok(CompiledWhere {
+                fragment: "FALSE".to_string(),
+                params: Vec::new(),
+                touched: Vec::new(),
+                snapshot,
+            });
+        }
         let mut select = sea_query::Query::select();
         select
             .expr(sea_query::Expr::cust("1"))
