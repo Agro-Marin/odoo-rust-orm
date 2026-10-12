@@ -1058,7 +1058,10 @@ def _rules_need_python(env, name):
             seen.add(current)
             # The native loader also handles the constant FALSE reach (none).
             # Only principal-dependent reaches need a resolved Python domain.
-            if any(row.reach not in (None, "", "all", "none") for row in rows.get(current, ())):
+            if any(
+                row.reach not in (None, "", "all", "none")
+                for row in rows.get(current, ())
+            ):
                 dynamic_reach = True
                 break
             model = env[current]

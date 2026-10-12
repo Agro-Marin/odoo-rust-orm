@@ -98,7 +98,11 @@ def replay(mode):
             if index in ROUTED and ROUTED[index] != routed:
                 _logger.error(
                     "routing changed: call=%s model=%s method=%s warmup=%s now=%s",
-                    index, call["model"], call["method"], ROUTED[index], routed,
+                    index,
+                    call["model"],
+                    call["method"],
+                    ROUTED[index],
+                    routed,
                 )
                 raise ValueError("routing changed after warmup; comparison is invalid")
             ROUTED[index] = routed

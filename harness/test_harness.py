@@ -418,7 +418,9 @@ def test_speedup_reports_both_aggregates_and_what_it_dropped(tmp_path) -> None:
     assert lines["cases"].split()[1] == "4"
 
 
-def test_traffic_benchmark_rejects_a_fast_routed_failure(traffic_probe, monkeypatch, caplog):
+def test_traffic_benchmark_rejects_a_fast_routed_failure(
+    traffic_probe, monkeypatch, caplog
+):
     import odoo.service.model
 
     def call_kw(*_args):
@@ -470,7 +472,9 @@ def traffic_probe(tmp_path, monkeypatch, caplog):
 
     def run():
         try:
-            return runpy.run_path(str(HERE / "traffic_bench.py"), init_globals={"env": env})
+            return runpy.run_path(
+                str(HERE / "traffic_bench.py"), init_globals={"env": env}
+            )
         finally:
             assert (shim.MODE, shim.SAMPLE) == ("shadow", 0.5)
 
@@ -480,10 +484,22 @@ def traffic_probe(tmp_path, monkeypatch, caplog):
 def test_traffic_benchmark_reports_a_paired_median(traffic_probe, monkeypatch, capsys):
     # Warmups, then off/on, on/off, off/on. Independent minima would report 2x,
     # whereas the actual paired ratios are 8x, 0.2x and 3x (median 3x).
-    ticks = iter(value for duration in [1, 1, 1, 8, 2, 10, 3, 9] for value in [0, duration])
+    ticks = iter(
+        value for duration in [1, 1, 1, 8, 2, 10, 3, 9] for value in [0, duration]
+    )
     monkeypatch.setattr("time.perf_counter", lambda: next(ticks))
     traffic_probe.run()
-    assert traffic_probe.modes == ["off", "on", "off", "off", "on", "on", "off", "off", "on"]
+    assert traffic_probe.modes == [
+        "off",
+        "on",
+        "off",
+        "off",
+        "on",
+        "on",
+        "off",
+        "off",
+        "on",
+    ]
     output = capsys.readouterr().out
     assert "median paired on/off ratio 3.00x" in output
     assert "representative pair 2" in output

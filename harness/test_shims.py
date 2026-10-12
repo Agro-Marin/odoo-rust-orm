@@ -1466,19 +1466,33 @@ def test_dispatch_debug_timing_includes_preparation_and_decoding() -> None:
     ):
         with (
             unittest.TestCase().assertLogs(shim._call_logger, level="DEBUG") as logs,
-            patch.object(
-                shim.time, "monotonic", side_effect=[1, 1.01, 1.03, 1.06]
-            ),
+            patch.object(shim.time, "monotonic", side_effect=[1, 1.01, 1.03, 1.06]),
         ):
-            check("dispatch still decodes the answer", shim._dispatch(model, "read"), {"name": "café"})
+            check(
+                "dispatch still decodes the answer",
+                shim._dispatch(model, "read"),
+                {"name": "café"},
+            )
         message = logs.output[0]
-        for expected in ["preparation=10.00 ms", "kernel=20.00 ms", "decode=30.00 ms", "total=60.00 ms", "answer chars"]:
+        for expected in [
+            "preparation=10.00 ms",
+            "kernel=20.00 ms",
+            "decode=30.00 ms",
+            "total=60.00 ms",
+            "answer chars",
+        ]:
             assert expected in message, message
         with (
             patch.object(shim._call_logger, "isEnabledFor", return_value=False),
-            patch.object(shim.time, "monotonic", side_effect=AssertionError("disabled timing")),
+            patch.object(
+                shim.time, "monotonic", side_effect=AssertionError("disabled timing")
+            ),
         ):
-            check("disabled debug logging does not time the call", shim._dispatch(model, "read"), {"name": "café"})
+            check(
+                "disabled debug logging does not time the call",
+                shim._dispatch(model, "read"),
+                {"name": "café"},
+            )
 
 
 def test_web_search_read_plans_what_web_screened() -> None:
