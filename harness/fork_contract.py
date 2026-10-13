@@ -156,7 +156,7 @@ BEHAVIOURS = [
         "ReadMixin.fetch",
         {},
         {"check_access"},
-        "read falls back for a model overriding _check_access",
+        "read falls back for a model overriding _get_records_forbidden_and_error_factory",
     ),
 ]
 

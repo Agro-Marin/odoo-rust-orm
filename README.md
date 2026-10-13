@@ -3429,7 +3429,7 @@ many2ones raw, named ones labelled where the target is visible and returned as
 the bare id where it is not, and only those go to web's resolver. A record the
 kernel does not return -- deleted, or hidden by a rule -- falls back, so Python
 raises its own MissingError or AccessError. It is gated like `read`, so a model
-overriding `read` or `_check_access` falls back, and it keeps
+overriding `read` or `_get_records_forbidden_and_error_factory` falls back, and it keeps
 `@api.readonly` and `@versioned_envelope`, whose stamp the fork's
 `web_search_read` now relies on.
 
@@ -3571,7 +3571,7 @@ The kernel labels a many2one target from the comodel's `_rec_name`, and hides
 the ones record rules hide. Python labels through
 `Many2one.convert_to_read_multi`, which asks `_filtered_display_name_access`,
 which asks `_filtered_access("read")`, which runs the comodel's
-`_check_access`. Five models in this database override that method --
+`_get_records_forbidden_and_error_factory`. Five models in this database override that method --
 `mail.message`, `mail.activity`, `mail.followers`, `mail.scheduled.message`
 and `ir.attachment` -- and the kernel read none of them.
 
@@ -3583,7 +3583,7 @@ read at the admin as `(8788, 'Security Update: Password Changed')` routed and
 `False` from Python, and `{"id": 8788}` against a name through
 `web_search_read`.
 
-- **The export records `check_access_pure`**, whether `_check_access` is
+- **The export records `check_access_pure`**, whether `_get_records_forbidden_and_error_factory` is
   Odoo's own. The kernel refuses to label a target whose comodel's is not,
   for anyone but the superuser, whatever called it.
 - **The shim labels those columns in Python.** `search_read` and `read` ask
@@ -3591,7 +3591,7 @@ read at the admin as `(8788, 'Security Update: Password Changed')` routed and
   labelling `read()` uses. `web_search_read` sends them to web's own resolver
   whole. A comodel whose name Python computes goes the same way, so those
   reads route instead of falling back.
-- **`read(ids)` on a model that overrides `_check_access` falls back.**
+- **`read(ids)` on a model that overrides `_get_records_forbidden_and_error_factory` falls back.**
   Python's `fetch` runs `check_access("read")` on the ids it is given, which
   `search_fetch` does not, so only `read` needs it.
 
@@ -3995,7 +3995,7 @@ the rule.
 **A many2many the record rules traverse is read from a sudo cache.** Reading
 `project.workflow.step.project_ids` as a user returned all eleven linked
 projects in Python and the six the user may see in the kernel. The step's own
-rules go through `project_ids`, so `read` and `web_read` run `_check_access`,
+rules go through `project_ids`, so `read` and `web_read` run `_get_records_forbidden_and_error_factory`,
 which evaluates them with `sudo().filtered_domain` and caches the unfiltered
 relation; the fetch that follows builds the rule-filtered query and then answers
 from that cache. The shim now refuses a `read` or `web_read` of an x2many that

@@ -175,7 +175,7 @@ def export_registry(reg):
             "_read_group_postprocess_groupby", "_read_group_empty_value",
         )
         display_name_access_pure = pure("_get_display_name_visible_ids")
-        check_access_pure = pure("_check_access")
+        check_access_pure = pure("_get_records_forbidden_and_error_factory")
         access_guard_pure = pure("_access_guard")
         dn_default = getattr(cls, "_compute_display_name", None) is getattr(
             base, "_compute_display_name", None

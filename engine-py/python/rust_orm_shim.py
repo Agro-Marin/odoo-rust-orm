@@ -460,7 +460,12 @@ _READ_GROUP_HOOKS = (
     "_read_group_empty_value",
 )
 _READ_PATH_NEEDS = {
-    "read": ("read", "_check_access", "fetch", *_FETCH_HOOKS),
+    "read": (
+        "read",
+        "_get_records_forbidden_and_error_factory",
+        "fetch",
+        *_FETCH_HOOKS,
+    ),
     "search_read": ("_search", "search_read", "search_fetch", *_FETCH_HOOKS),
     "web_search_read": (
         "_search",
@@ -567,7 +572,10 @@ def _kernel_labels(comodel) -> bool:
     key = _cache_key(comodel, "ca")
     pure = _GATE_CACHE.get(key)
     if pure is None:
-        pure = type(comodel.sudo())._check_access is _BASE_METHODS["_check_access"]
+        pure = (
+            type(comodel.sudo())._get_records_forbidden_and_error_factory
+            is _BASE_METHODS["_get_records_forbidden_and_error_factory"]
+        )
         _GATE_CACHE[key] = pure
     return pure
 
@@ -2737,7 +2745,7 @@ def install():
         "_compute_display_name",
         "_search_display_name",
         "name_search",
-        "_check_access",
+        "_get_records_forbidden_and_error_factory",
         "_access_guard",
         "search_fetch",
         "fetch",

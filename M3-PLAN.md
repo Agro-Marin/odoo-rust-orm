@@ -528,7 +528,7 @@ kernel answers what Python answers, per method. `read` and `search_read` give
 `False` (`Many2one.convert_to_read_multi`); `web_read` and `web_search_read`
 give `{"id": id}` without a name (`_web_read_resolve_many2one`); sudo only
 renders the name of a target already allowed. A comodel that decides read
-access or display-name visibility in Python (`_check_access`,
+access or display-name visibility in Python (`_get_records_forbidden_and_error_factory`,
 `_get_display_name_visible_ids`) is refused and labelled by Python. README:
 "Routed `web_search_read` redacted many2one targets `web_read` keeps",
 "`web_read` routes, and labels visible many2one targets in the kernel" and "A
@@ -1582,7 +1582,7 @@ What that found, none of it visible to the corpora:
 - **A closed Rust connection kept its backend**, and one suite run exhausted
   the shared cluster.
 - **Routed answers diverged where Python's rules are not the columns'**: a
-  hidden many2one target through `web_read`, a `_check_access` override behind
+  hidden many2one target through `web_read`, a `_get_records_forbidden_and_error_factory` override behind
   a label, a text column compared with a number, an html comparand, an unknown
   timezone.
 - **Odoo itself had defects the differential exposed**: the mail access scans
@@ -1606,14 +1606,14 @@ after every sync, which `harness/orm_tests.sh` does for any tag set.
 - models whose read path is Python -- `_search` overrides on mail.message,
   mail.followers, mail.activity, ir.attachment, res.groups -- are the largest
   fallback class, and they are access logic, not queries;
-- record rules evaluated in memory (`_check_access` through `filtered_domain`)
+- record rules evaluated in memory (`_get_records_forbidden_and_error_factory` through `filtered_domain`)
   are the largest Python cost left in the calls that do route;
 - composing SQL in Python is not: `_field_to_sql` and `Query.select` are under
   a tenth of a replay, so a native `fetch` would buy a few percent.
 
 The next step toward replacement is therefore access logic, not statements,
 and one version of it has already been measured and set aside: answering the
-rule half of `_check_access` as a `SELECT id ... WHERE id = ANY(ids) AND <rule>`
+rule half of `_get_records_forbidden_and_error_factory` as a `SELECT id ... WHERE id = ANY(ids) AND <rule>`
 agreed with Python on 1,804 decisions and saved nothing, because the round trip
 costs what the in-memory evaluation does (README, "Recorded traffic said the
 routed path was slower, and why"). What remains open is evaluation without the
@@ -1628,7 +1628,7 @@ traffic. A profile of its 286 calls puts about a third of the time in
 `filtered_domain`, which looks like the case the rule-check step missed:
 fresh group records, so the in-memory rules fetch the fields they compare.
 Replacing that helper with one rule-filtered `_search` over the group ids,
-for comodels whose display-name visibility and `_check_access` are the base
+for comodels whose display-name visibility and `_get_records_forbidden_and_error_factory` are the base
 ones, gave identical responses on all 286 calls and 1.025 s against 1.043 s.
 The fetches move into the query rather than disappear, and the remaining time
 is web's formatting over the groups. What would move grouped views is routing

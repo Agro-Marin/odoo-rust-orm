@@ -487,7 +487,7 @@ impl<'a> Orm<'a> {
         }
         if !env.su && !comodel.check_access_pure {
             refuse!(
-                "{comodel_name} decides read access in Python (_check_access); \
+                "{comodel_name} decides read access in Python (_get_records_forbidden_and_error_factory); \
                  the kernel cannot tell which of its records uid {} may see named",
                 env.uid
             );

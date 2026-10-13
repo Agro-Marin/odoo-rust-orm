@@ -769,7 +769,7 @@ if "mail.mail" in reg:
                 "registry_sequence": reg.registry_sequence,
             }
             with unittest.TestCase().assertRaisesRegex(
-                engine.KernelRefused, "_check_access"
+                engine.KernelRefused, "_get_records_forbidden_and_error_factory"
             ):
                 shim.KERNEL.dispatch(e.cr._cnx._rust, json.dumps(request))
             request["raw_many2one"] = ["mail_message_id"]
@@ -778,7 +778,7 @@ if "mail.mail" in reg:
     finally:
         shim.MODE, shim.SAMPLE = previous_mode, previous_sample
     print(
-        "CONTRACT the kernel refuses to label a comodel that decides access in _check_access",
+        "CONTRACT the kernel refuses to label a comodel that decides access in _get_records_forbidden_and_error_factory",
         flush=True,
     )
 
