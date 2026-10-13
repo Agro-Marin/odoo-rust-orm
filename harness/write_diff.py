@@ -562,14 +562,43 @@ def rewrite_rows(env, recs, fields, dropped) -> None:
         )
 
 
+def supplied(fields, count):
+    return [
+        [
+            dump(case(f, 3 if k == 0 else 4))
+            if f.type in ("date", "datetime")
+            else None
+            for f in fields
+        ]
+        for k in range(count)
+    ]
+
+
+def diff_existing(env, model, rec, fields, stats, before):
+    dropped = unwritable(env, rec, fields)
+    fields = [f for f in fields if f.name not in dropped]
+    env.flush_all()
+    columns, types, rows = readback(env, model, rec.ids, fields)
+    return {
+        "columns": columns,
+        "types": types,
+        "rows": rows,
+        "supplied": supplied(fields, 1),
+        "unlinked": [],
+        "dropped": sorted(dropped),
+        "scenario": "update",
+        "native": native_delta(stats, before),
+    }
+
+
 def diff_model(env, model, fields, bases, stats):
     before = dict(stats["native"]) if stats else {}
     env.cr.execute("SELECT COALESCE(max(id), 0) FROM %s" % model._table)
     last = env.cr.fetchone()[0]
     recs = create_or_minimal(model, fields, bases, row_vals(fields, bases))
-    if all(i <= last for i in recs.ids):
-        raise _NothingInserted
     env.flush_all()
+    if all(i <= last for i in recs.ids):
+        return diff_existing(env, model, recs[:1], fields, stats, before)
     dropped = unwritable(env, recs[0], fields)
     if dropped:
         fields = [f for f in fields if f.name not in dropped]
@@ -585,6 +614,7 @@ def diff_model(env, model, fields, bases, stats):
         "columns": columns,
         "types": types,
         "rows": rows,
+        "supplied": supplied(fields, len(ids)),
         "unlinked": [k for k in range(len(ids)) if k % 2 == 1],
         "dropped": sorted(dropped),
         "native": native_delta(stats, before),
@@ -611,10 +641,6 @@ def run_models(env, result, stats) -> None:
                 raise _Rollback
         except _Rollback:
             done += 1
-        except _NothingInserted:
-            result["skipped"][name] = (
-                "create inserted no row: the model writes an existing record instead"
-            )
         except Exception as e:
             result["skipped"][name] = "%s: %s" % (type(e).__name__, str(e)[:120])
 
@@ -649,10 +675,6 @@ def main(env):
 
 
 class _Rollback(Exception):
-    pass
-
-
-class _NothingInserted(Exception):
     pass
 
 

@@ -27,6 +27,10 @@ def odoo_root():
     return _var("RUSTORM_ODOO_ROOT") or os.path.join(workspace(), "odoo")
 
 
+class StaleEngineError(RuntimeError):
+    pass
+
+
 def stale_engine(engine_py):
     path = os.path.join(root_dir(), "addons", "rust_engine", "__init__.py")
     spec = importlib.util.spec_from_file_location("rust_engine_freshness", path)
@@ -42,7 +46,9 @@ def usable_engine():
         return None, "engine_py is not importable (%s)" % exc
     stale = stale_engine(engine_py)
     if stale:
-        return None, "the engine_py under test is not this checkout's build: %s" % stale
+        raise StaleEngineError(
+            "the engine_py under test is not this checkout's build: %s" % stale
+        )
     return engine_py, None
 
 

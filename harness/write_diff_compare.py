@@ -31,8 +31,8 @@ def leg_clocks(armed, control):
     ]
 
 
-def clock_shifted(t, a, b, clocks):
-    if clocks is None or a is None or b is None:
+def clock_shifted(t, a, b, clocks, given):
+    if clocks is None or a is None or b is None or given in (a, b):
         return False
     (a0, a1), (c0, c1) = clocks
     if t == "datetime":
@@ -47,6 +47,7 @@ def clock_shifted(t, a, b, clocks):
     return lo <= parse(a) - parse(b) <= hi
 
 
+NATIVE_KEYS = {"copy": None, "update": "update_rows"}
 mismatches = []
 clock_derived = set()
 clocks = leg_clocks(armed, control)
@@ -69,25 +70,29 @@ for name, m in sorted(armed["models"].items()):
             (name, "*", "columns differ or model absent on the control leg")
         )
         continue
-    if m.get("scenario") != "copy" and not any(
-        k.startswith("create_rows") for k in m["native"]
-    ):
+    native_key = NATIVE_KEYS.get(m.get("scenario"), "create_rows")
+    if native_key and not any(k.startswith(native_key) for k in m["native"]):
         not_native.append(name)
     models += 1
-    for k, (ra, rc) in enumerate(zip(m["rows"], c["rows"], strict=True)):
+    given_rows = m.get("supplied") or [[None] * len(m["columns"])] * len(m["rows"])
+    for k, (ra, rc, given_row) in enumerate(
+        zip(m["rows"], c["rows"], given_rows, strict=True)
+    ):
         if (ra is None) != (rc is None):
             mismatches.append((name, k, "row present on one leg only"))
             continue
         if ra is None:
             continue
         rows_n += 1
-        for col, t, a, b in zip(m["columns"], m["types"], ra, rc, strict=True):
+        for col, t, a, b, given in zip(
+            m["columns"], m["types"], ra, rc, given_row, strict=True
+        ):
             if col == "parent_path":
                 continue
             compared += 1
             if same(t, a, b):
                 continue
-            if clock_shifted(t, a, b, clocks):
+            if clock_shifted(t, a, b, clocks, given):
                 clock_derived.add("%s.%s" % (name, col))
                 continue
             mismatches.append((name, k, "%s: armed %r control %r" % (col, a, b)))
@@ -118,7 +123,10 @@ if clock_derived:
 for n, k, msg in mismatches[:20]:
     print("  MISMATCH %s[%s] %s" % (n, k, msg))
 if not_native:
-    print("  NOT NATIVE (the port delegated every create): %s" % ", ".join(not_native))
+    print(
+        "  NOT NATIVE (the port delegated every write the model was measured on): %s"
+        % ", ".join(not_native)
+    )
 verdict = "OK" if compared and not mismatches and not not_native else "FAILED"
 if not compared:
     print("  NOTHING COMPARED: every model was skipped or absent")

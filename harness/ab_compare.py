@@ -5,9 +5,10 @@
 Every base table in `public` of A is read in both, ordered by `id` (or by
 every column when there is none), with the volatile columns left out:
 `create_date`, `write_date`, every timestamp column (a workload's clock is
-not the same on two runs), the random secrets a table draws per row
-(`VOLATILE_COLUMNS`), and the tables that record a process rather than a
-business fact. Exit 0 when every remaining cell agrees.
+not the same on two runs), and the tables that record a process rather than
+a business fact. The random secrets a table draws per row (`VOLATILE_COLUMNS`)
+are compared only on whether they are set. Exit 0 when every remaining cell
+agrees.
 """
 
 import argparse
@@ -52,18 +53,23 @@ def columns(cur, table):
         "WHERE table_schema = 'public' AND table_name = %s ORDER BY ordinal_position",
         (table,),
     )
-    skip = SKIP_COLUMNS | VOLATILE_COLUMNS.get(table, set())
     return [
-        c for c, t in cur.fetchall() if c not in skip and not t.startswith("timestamp")
+        c
+        for c, t in cur.fetchall()
+        if c not in SKIP_COLUMNS and not t.startswith("timestamp")
     ]
 
 
+def selected(table, col):
+    if col in VOLATILE_COLUMNS.get(table, ()):
+        return '("%s" IS NULL)' % col
+    return '"%s"' % col
+
+
 def rows(cur, table, cols, has_id):
-    order = '"id"' if has_id else ", ".join('"%s"' % c for c in cols)
-    cur.execute(
-        "SELECT %s FROM %s ORDER BY %s"
-        % (", ".join('"%s"' % c for c in cols), '"%s"' % table, order)
-    )
+    exprs = ", ".join(selected(table, c) for c in cols)
+    order = '"id"' if has_id else exprs
+    cur.execute("SELECT %s FROM %s ORDER BY %s" % (exprs, '"%s"' % table, order))
     return cur.fetchall()
 
 

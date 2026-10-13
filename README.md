@@ -451,7 +451,8 @@ confirmed and invoiced, payments, purchase orders, leads through their
 stages, tasks) run on A with the engine on, on B on Python and on C on
 Python as the control, then `ab_compare.py` reads every table of A and B in
 id order and compares cell by cell, timestamps and the columns the control
-proved random left out. It found a sub-second race in crm's `day_close` on
+proved random left out; `access_link`'s per-row token secrets are compared
+only on whether they are set, so a leg that drops a nonce still differs. It found a sub-second race in crm's `day_close` on
 its second run -- a fork defect, not the engine's -- which is the kind of
 thing it exists for. About 15 minutes; it drops its four databases.
 
@@ -3184,6 +3185,27 @@ naming both checksums and the rebuild, `cargo build --release -p odoo-server`.
 A binary whose checkout is gone is not checked; `RUSTORM_SKIP_FRESHNESS_CHECK=1`
 bypasses it. A binary built before the stamp existed cannot refuse, so the
 first rebuild is by hand.
+
+The battery's other binaries -- `export_registry`, `phase1_shell`,
+`phase2_tests`, `phase2_verify` and `probe_audit`, all in `engine-py/src/bin`
+-- ran unstamped, and `export_registry` runs before `rustorm`: after the
+rebuild that message names, which builds only `odoo-server`, the registry
+export still booted with the old kernel and died on the same column. One
+module, `kernel/src/freshness.rs`, now holds the checksum, the stamps and the
+check, and both build scripts include it. `engine-py/build.rs` emits the
+extension's stamp as before and a second one for its binaries, which also
+covers `src/bin`; each binary checks it first thing and exits 2 naming
+`cargo build --release -p odoo-engine-py --bins`, which `install_engine.sh`
+runs as well.
+
+```
+edit                      rustorm   engine_py   engine-py binaries
+kernel/src, Cargo.lock    stale     stale       stale
+server/src, server/build  stale     fresh       fresh
+engine-py/src (lib)       fresh     stale       stale
+engine-py/src/bin         fresh     fresh       stale
+README, kernel/tests      fresh     fresh       fresh
+```
 
 ## Routed `web_search_read` redacted many2one targets `web_read` keeps
 

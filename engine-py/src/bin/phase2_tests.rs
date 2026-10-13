@@ -176,6 +176,10 @@ fn compare() -> Result<()> {
 
 fn main() -> Result<()> {
     engine_py::logbridge::install_stderr();
+    odoo_kernel::freshness::ENGINE_PY_BINS.exit_if_stale(
+        env!("ENGINE_PY_BINS_SOURCE_CRC"),
+        env!("CARGO_MANIFEST_DIR"),
+    );
     if std::env::var_os("PHASE2_MODE").is_none() {
         return compare();
     }

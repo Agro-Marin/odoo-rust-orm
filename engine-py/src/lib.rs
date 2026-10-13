@@ -101,3 +101,23 @@ fn install_shims(py: Python<'_>) -> PyResult<(Py<PyModule>, Py<PyModule>)> {
 fn install_backend(py: Python<'_>) -> PyResult<Py<PyModule>> {
     Ok(install_backend_py(py)?.unbind())
 }
+
+#[cfg(test)]
+mod tests {
+    use odoo_kernel::freshness::{ENGINE_PY, ENGINE_PY_BINS};
+
+    #[test]
+    fn the_build_stamps_are_the_checkouts_checksums() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("engine-py sits in the workspace root");
+        assert_eq!(
+            env!("ENGINE_PY_SOURCE_CRC"),
+            ENGINE_PY.source_crc(root).expect("checksum")
+        );
+        assert_eq!(
+            env!("ENGINE_PY_BINS_SOURCE_CRC"),
+            ENGINE_PY_BINS.source_crc(root).expect("checksum")
+        );
+    }
+}

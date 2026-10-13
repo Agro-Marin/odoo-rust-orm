@@ -363,6 +363,10 @@ def run(reg, orm_shim, originals):
 
 fn main() -> Result<()> {
     engine_py::logbridge::install_stderr();
+    odoo_kernel::freshness::ENGINE_PY_BINS.exit_if_stale(
+        env!("ENGINE_PY_BINS_SOURCE_CRC"),
+        env!("CARGO_MANIFEST_DIR"),
+    );
     unsafe {
         std::env::set_var("ODOO_DISABLE_COPY", "1");
 

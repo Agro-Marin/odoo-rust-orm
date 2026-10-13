@@ -312,6 +312,114 @@ def test_a_run_the_kernel_mostly_declined_is_not_a_pass(tmp_path) -> None:
     assert proc.stdout.startswith("PASS 1/4"), proc.stdout
 
 
+def _write_diff_legs(tmp_path, scenario, supplied, armed_row, control_row, native):
+    def leg(armed, clock, row):
+        model = {
+            "columns": ["invoice_date", "deadline"],
+            "types": ["date", "datetime"],
+            "rows": [row],
+            "supplied": [supplied],
+            "native": native if armed else {},
+        }
+        if scenario:
+            model["scenario"] = scenario
+        return {"armed": armed, "clock": clock, "models": {"x.model": model}}
+
+    paths = []
+    for name, armed, clock, row in (
+        ("armed", True, ["2026-10-12T23:58:30", "2026-10-12T23:59:30"], armed_row),
+        ("control", False, ["2026-10-13T00:00:10", "2026-10-13T00:01:10"], control_row),
+    ):
+        path = tmp_path / ("%s.json" % name)
+        path.write_text(json.dumps(leg(armed, clock, row)))
+        paths.append(str(path))
+    return subprocess.run(  # noqa: PLW1510  the exit code is the assertion
+        [sys.executable, os.path.join(HERE, "write_diff_compare.py"), *paths],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_a_supplied_value_shifted_by_the_leg_gap_is_a_mismatch(tmp_path) -> None:
+    proc = _write_diff_legs(
+        tmp_path,
+        None,
+        ["2000-02-29", "2000-02-29T23:59:59"],
+        ["2000-02-28", "2000-02-29T23:58:59"],
+        ["2000-02-29", "2000-02-29T23:59:59"],
+        {"create_rows": 1},
+    )
+    assert proc.returncode == 1, proc.stdout
+    assert "CLOCK-DERIVED" not in proc.stdout
+    assert "MISMATCH x.model[0] invoice_date" in proc.stdout
+    assert "MISMATCH x.model[0] deadline" in proc.stdout
+
+
+def test_each_legs_own_clock_shifted_by_the_gap_is_excused(tmp_path) -> None:
+    proc = _write_diff_legs(
+        tmp_path,
+        None,
+        ["2000-02-29", "2000-02-29T23:59:59"],
+        ["2026-11-11", "2026-11-11T23:59:00"],
+        ["2026-11-12", "2026-11-12T00:00:40"],
+        {"create_rows": 1},
+    )
+    assert proc.returncode == 0, proc.stdout
+    assert "CLOCK-DERIVED" in proc.stdout
+    assert "x.model.deadline, x.model.invoice_date" in proc.stdout
+
+
+@pytest.mark.parametrize(
+    ("native", "verdict"),
+    [({"update_rows": 2}, 0), ({"create_rows": 1, "search_raw": 4}, 1)],
+)
+def test_an_existing_record_counts_as_native_only_through_its_update(
+    tmp_path, native, verdict
+) -> None:
+    row = ["2026-01-31", "2026-01-31T12:34:56"]
+    proc = _write_diff_legs(tmp_path, "update", [None, None], row, row, native)
+    assert proc.returncode == verdict, proc.stdout
+    assert ("NOT NATIVE" in proc.stdout) is bool(verdict), proc.stdout
+
+
+def test_ab_compare_reads_a_token_secret_only_as_set_or_not() -> None:
+    ab_compare = load("ab_compare")
+
+    class Cursor:
+        def __init__(self) -> None:
+            self.statements = []
+
+        def execute(self, sql, params=None) -> None:
+            self.statements.append((sql, params))
+
+        def fetchall(self):
+            return [
+                ("id", "integer"),
+                ("token_hash", "character varying"),
+                ("token_nonce", "character varying"),
+                ("res_model", "character varying"),
+                ("create_date", "timestamp without time zone"),
+            ]
+
+    cur = Cursor()
+    cols = ab_compare.columns(cur, "access_link")
+    assert cols == ["id", "token_hash", "token_nonce", "res_model"]
+    ab_compare.rows(cur, "access_link", cols, has_id=True)
+    sql, params = cur.statements[-1]
+    assert sql == (
+        'SELECT "id", ("token_hash" IS NULL), ("token_nonce" IS NULL), "res_model" '
+        'FROM "access_link" ORDER BY "id"'
+    )
+    assert params is None
+
+
+def test_a_stale_engine_fails_the_tests_that_need_it(monkeypatch) -> None:
+    pytest.importorskip("engine_py")
+    monkeypatch.setattr(_env, "stale_engine", lambda _engine: "built elsewhere")
+    with pytest.raises(_env.StaleEngineError, match="built elsewhere"):
+        _env.usable_engine()
+
+
 def test_fuzz_families_census() -> None:
     src = pathlib.Path(os.path.join(HERE, "fuzz_corpus.py")).read_text(encoding="utf-8")
     ns = {}
