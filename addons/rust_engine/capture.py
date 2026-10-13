@@ -47,10 +47,4 @@ def arm(path, db_name) -> None:
         return orig_call_kw(model, name, args, kwargs)
 
     service_model.call_kw = call_kw
-    try:
-        from odoo.addons.web.controllers import dataset
-
-        dataset.call_kw = call_kw
-    except ImportError:
-        pass
     _logger.info("rust_engine: capturing read calls on %s to %s", db_name, path)
