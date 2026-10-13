@@ -1096,7 +1096,7 @@ registry, **181 models -> 194**, and then answered `digest.digest` and
 `barcode.rule` — models that did not exist when the kernel was built — at
 `share=0.90, error=0`. Zero stale refusals, zero request exceptions, and the
 answers were correct throughout. Both halves of the mechanism are in place and
-the faster one wins: Odoo's `check_signaling` reloads the registry (which fires
+the faster one wins: Odoo's `refresh_signaling_and_get_registry` reloads the registry (which fires
 the addon's hook) before the kernel's own `RegistryStale` check trips, so in
 practice the kernel is rebuilt rather than ever refusing on a stale map.
 
