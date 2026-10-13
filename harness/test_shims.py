@@ -12,24 +12,36 @@ ROOT = pathlib.Path(HERE).parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT / "engine-py/python"))
 
+from _env import odoo_root, stale_engine
+
 try:
     import engine_py
 except ImportError as exc:
     engine_py = None
     IMPORT_ERROR = exc
+    STALE = None
 else:
     IMPORT_ERROR = None
+    STALE = stale_engine(engine_py)
 
 _SHIMS = None
 _ODOO = None
 
 
-def _shims():
-    global _SHIMS
+def _engine():
     if engine_py is None:
         raise unittest.SkipTest("engine_py is not importable (%s)" % IMPORT_ERROR)
+    if STALE:
+        raise unittest.SkipTest(
+            "the engine_py under test is not this checkout's build: %s" % STALE
+        )
+    return engine_py
+
+
+def _shims():
+    global _SHIMS
     if _SHIMS is None:
-        _SHIMS = engine_py.install_shims()
+        _SHIMS = _engine().install_shims()
     return _SHIMS
 
 
@@ -45,20 +57,18 @@ def _odoo():
     global _ODOO
     if _ODOO is not None:
         return _ODOO
-    odoo_root = os.environ.get("RUSTORM_ODOO_ROOT") or os.path.join(
-        pathlib.Path(ROOT).parent, "odoo"
-    )
-    sys.path.insert(0, odoo_root)
+    root = odoo_root()
+    sys.path.insert(0, root)
     try:
         import odoo.orm.models.base as base_mod
 
         import odoo.addons
 
-        odoo.addons.__path__.append(os.path.join(odoo_root, "addons"))
+        odoo.addons.__path__.append(os.path.join(root, "addons"))
         from odoo.addons.web.models import web_read as web_read_mod
     except ImportError as exc:
         raise unittest.SkipTest(
-            "odoo not importable from %s: %s" % (odoo_root, exc)
+            "odoo not importable from %s: %s" % (root, exc)
         ) from exc
     _ODOO = (base_mod, web_read_mod)
     return _ODOO
@@ -474,6 +484,7 @@ def test_breaker_counts_only_unexpected_errors() -> None:
 
 
 def test_an_error_python_cannot_answer_is_raised_not_fallen_back_from() -> None:
+    _odoo()
     import psycopg
 
     from odoo.exceptions import UserError
@@ -831,6 +842,7 @@ class _StartConfig(dict):
 
 
 def test_routing_opted_in_refuses_to_start_unarmed() -> None:
+    _odoo()
     mod = _addon()
     for mode in ("on", "shadow", "onn"):
         config = _StartConfig(
@@ -1224,6 +1236,7 @@ def test_wire_encoder() -> None:
 
 
 def test_order_fragments() -> None:
+    _odoo()
     from odoo.tools import SQL
 
     orm_shim = _shims()[1]
@@ -2303,7 +2316,7 @@ def test_install_is_idempotent_and_keeps_stamps() -> None:
     first = orm_shim.install()
     second = orm_shim.install()
     check("install returns the same originals on a second call", first is second, True)
-    db2, orm2 = engine_py.install_shims()
+    db2, orm2 = _engine().install_shims()
     check("install_shims hands back the registered modules", orm2 is orm_shim, True)
     check("install_shims hands back the registered db shim", db2 is _shims()[0], True)
     BaseModel = base_mod.BaseModel
@@ -2778,10 +2791,9 @@ def test_the_addon_claims_every_config_key_it_reads() -> None:
 
 
 def _backend():
-    if engine_py is None:
-        raise unittest.SkipTest("engine_py is not importable (%s)" % IMPORT_ERROR)
+    engine = _engine()
     _odoo()
-    return engine_py.install_backend()
+    return engine.install_backend()
 
 
 def _protocol_members():
@@ -3384,13 +3396,12 @@ def test_an_extension_older_than_the_port_does_not_stop_the_engine_arming() -> N
 def test_the_extension_under_test_was_built_from_this_checkout() -> None:
     if engine_py is None:
         raise unittest.SkipTest("engine_py is not importable (%s)" % IMPORT_ERROR)
-    addon = _addon()
+    check("the addon arms this build", STALE, None)
     check(
         "the build's stamp is the checkout's checksum",
         getattr(engine_py, "__source_crc__", None),
-        addon.source_crc(pathlib.Path(ROOT)),
+        _addon().source_crc(pathlib.Path(ROOT)),
     )
-    check("the addon arms this build", addon.stale_extension(engine_py), None)
 
 
 def _checkout_copy(addon, dest: pathlib.Path, *, reverse: bool = False) -> None:
@@ -3560,11 +3571,10 @@ def test_the_extension_includes_no_file_the_stamp_misses() -> None:
 
 
 def test_the_python_half_loads_from_this_checkout() -> None:
-    if engine_py is None:
-        raise unittest.SkipTest("engine_py is not importable (%s)" % IMPORT_ERROR)
+    engine = _engine()
     _odoo()
     python = (pathlib.Path(ROOT) / "engine-py/python").resolve()
-    for module in (*_shims(), engine_py.install_backend()):
+    for module in (*_shims(), engine.install_backend()):
         check(
             "%s is read from %s" % (module.__name__, python),
             pathlib.Path(module.__file__).resolve().parent,

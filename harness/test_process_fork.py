@@ -14,6 +14,7 @@ import sys
 import textwrap
 
 import pytest
+from _env import odoo_root, usable_engine
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -66,7 +67,8 @@ PROBE = textwrap.dedent(
 
 
 def _run(body: str) -> dict:
-    env = dict(os.environ)
+    path = os.pathsep.join(filter(None, (os.environ.get("PYTHONPATH"), odoo_root())))
+    env = dict(os.environ, PYTHONPATH=path)
     out = subprocess.run(
         [sys.executable, "-c", PROBE + textwrap.dedent(body)],
         env=env,
@@ -85,7 +87,9 @@ def dsn():
     value = os.environ.get("RUSTORM_TEST_DSN")
     if not value:
         pytest.skip("RUSTORM_TEST_DSN must name a disposable database")
-    pytest.importorskip("engine_py")
+    _engine, unusable = usable_engine()
+    if unusable:
+        pytest.skip(unusable)
     return value
 
 

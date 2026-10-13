@@ -1,3 +1,4 @@
+import datetime
 import json
 import math
 import pathlib
@@ -21,7 +22,34 @@ def same(t, a, b):
     return a == b
 
 
+def leg_clocks(armed, control):
+    if "clock" not in armed or "clock" not in control:
+        return None
+    return [
+        [datetime.datetime.fromisoformat(stamp) for stamp in leg["clock"]]
+        for leg in (armed, control)
+    ]
+
+
+def clock_shifted(t, a, b, clocks):
+    if clocks is None or a is None or b is None:
+        return False
+    (a0, a1), (c0, c1) = clocks
+    if t == "datetime":
+        parse = datetime.datetime.fromisoformat
+        slack = datetime.timedelta(seconds=1)
+        lo, hi = a0 - c1 - slack, a1 - c0 + slack
+    elif t == "date":
+        parse = datetime.date.fromisoformat
+        lo, hi = a0.date() - c1.date(), a1.date() - c0.date()
+    else:
+        return False
+    return lo <= parse(a) - parse(b) <= hi
+
+
 mismatches = []
+clock_derived = set()
+clocks = leg_clocks(armed, control)
 compared = models = rows_n = 0
 not_native = []
 if not armed.get("armed"):
@@ -57,8 +85,12 @@ for name, m in sorted(armed["models"].items()):
             if col == "parent_path":
                 continue
             compared += 1
-            if not same(t, a, b):
-                mismatches.append((name, k, "%s: armed %r control %r" % (col, a, b)))
+            if same(t, a, b):
+                continue
+            if clock_shifted(t, a, b, clocks):
+                clock_derived.add("%s.%s" % (name, col))
+                continue
+            mismatches.append((name, k, "%s: armed %r control %r" % (col, a, b)))
 
 if expect_fault:
     hit = {
@@ -78,6 +110,11 @@ if expect_fault:
     )
     sys.exit(0 if ok else 1)
 
+if clock_derived:
+    print(
+        "  CLOCK-DERIVED (both legs stored their own clock, shifted by the gap between "
+        "the legs): %s" % ", ".join(sorted(clock_derived))
+    )
 for n, k, msg in mismatches[:20]:
     print("  MISMATCH %s[%s] %s" % (n, k, msg))
 if not_native:

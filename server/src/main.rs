@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+mod freshness;
 mod http;
 
 use anyhow::{Context, Result};
@@ -188,6 +189,19 @@ fn load_corpus(path: &str) -> Result<Vec<Request>> {
     Ok(serde_json::from_str(&text)?)
 }
 
+fn stale_build() -> Option<String> {
+    if std::env::var_os(freshness::SKIP_ENV).is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    let binary = std::env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "rustorm".into());
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("server sits in the workspace root");
+    freshness::stale_build(env!("RUSTORM_SOURCE_CRC"), root, &binary)
+}
+
 fn init_logging() {
     let default = if std::env::var_os("POC_TRACE").is_some() {
         "warn,odoo_kernel::sql=debug"
@@ -215,6 +229,10 @@ fn init_logging() {
 async fn main() -> Result<()> {
     init_logging();
     let cli = Cli::parse();
+    if let Some(message) = stale_build() {
+        eprintln!("{message}");
+        std::process::exit(2);
+    }
     match cli.cmd {
         Cmd::Inspect { model } => {
             let client = connect(&cli.db).await?;

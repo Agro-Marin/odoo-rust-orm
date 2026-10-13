@@ -3170,6 +3170,21 @@ asks the addon's own check whether the installed build is fresh and prints the
 stamp. A change to the Rust sources needs it, or servers on the venv serve
 from Python; a change to the shims needs only a server restart.
 
+### The `rustorm` binary carries the same stamp
+
+`target/release/rustorm` had no stamp, and the battery runs whatever binary
+is there. One built on 2026-09-24 still queried `ir_access.for_read`, a column
+the fork no longer has, so every kernel lane died with `column a.for_read does
+not exist` -- a database error that reads like a kernel defect.
+`server/build.rs` stamps the binary with the same checksum over the crates it
+links (the workspace `Cargo.toml` and `Cargo.lock`; `kernel` and `server`, each
+`Cargo.toml`, `build.rs` and `src/**/*.rs` outside `src/bin`), and every
+subcommand compares it with its checkout before connecting: a mismatch exits 2
+naming both checksums and the rebuild, `cargo build --release -p odoo-server`.
+A binary whose checkout is gone is not checked; `RUSTORM_SKIP_FRESHNESS_CHECK=1`
+bypasses it. A binary built before the stamp existed cannot refuse, so the
+first rebuild is by hand.
+
 ## Routed `web_search_read` redacted many2one targets `web_read` keeps
 
 `read()` and `web_read` answer a many2one whose target the user may not read

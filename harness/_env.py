@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import pathlib
 import tempfile
@@ -20,6 +21,29 @@ def root_dir():
 
 def workspace():
     return _var("RUSTORM_WORKSPACE") or pathlib.Path(root_dir()).parent
+
+
+def odoo_root():
+    return _var("RUSTORM_ODOO_ROOT") or os.path.join(workspace(), "odoo")
+
+
+def stale_engine(engine_py):
+    path = os.path.join(root_dir(), "addons", "rust_engine", "__init__.py")
+    spec = importlib.util.spec_from_file_location("rust_engine_freshness", path)
+    addon = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(addon)
+    return addon.stale_extension(engine_py, pathlib.Path(root_dir()))
+
+
+def usable_engine():
+    try:
+        import engine_py
+    except ImportError as exc:
+        return None, "engine_py is not importable (%s)" % exc
+    stale = stale_engine(engine_py)
+    if stale:
+        return None, "the engine_py under test is not this checkout's build: %s" % stale
+    return engine_py, None
 
 
 def engine_python_dir():

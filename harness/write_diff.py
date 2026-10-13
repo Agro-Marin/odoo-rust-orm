@@ -564,7 +564,11 @@ def rewrite_rows(env, recs, fields, dropped) -> None:
 
 def diff_model(env, model, fields, bases, stats):
     before = dict(stats["native"]) if stats else {}
+    env.cr.execute("SELECT COALESCE(max(id), 0) FROM %s" % model._table)
+    last = env.cr.fetchone()[0]
     recs = create_or_minimal(model, fields, bases, row_vals(fields, bases))
+    if all(i <= last for i in recs.ids):
+        raise _NothingInserted
     env.flush_all()
     dropped = unwritable(env, recs[0], fields)
     if dropped:
@@ -607,8 +611,16 @@ def run_models(env, result, stats) -> None:
                 raise _Rollback
         except _Rollback:
             done += 1
+        except _NothingInserted:
+            result["skipped"][name] = (
+                "create inserted no row: the model writes an existing record instead"
+            )
         except Exception as e:
             result["skipped"][name] = "%s: %s" % (type(e).__name__, str(e)[:120])
+
+
+def utcnow():
+    return datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
 
 
 def main(env):
@@ -622,9 +634,11 @@ def main(env):
     if stats is not None:
         stats["native"].clear()
     result = {"models": {}, "skipped": {}, "fault": FAULT, "armed": ARMED}
+    started = utcnow()
     run_models(env, result, stats)
     if not ONLY or any(o.startswith("scenario") for o in ONLY):
         run_scenarios(env, result, stats)
+    result["clock"] = [started.isoformat(), utcnow().isoformat()]
     env.cr.rollback()
     with pathlib.Path(OUT).open("w", encoding="utf-8") as fh:
         json.dump(result, fh, indent=1, default=str)
@@ -635,6 +649,10 @@ def main(env):
 
 
 class _Rollback(Exception):
+    pass
+
+
+class _NothingInserted(Exception):
     pass
 
 

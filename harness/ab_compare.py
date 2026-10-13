@@ -5,8 +5,9 @@
 Every base table in `public` of A is read in both, ordered by `id` (or by
 every column when there is none), with the volatile columns left out:
 `create_date`, `write_date`, every timestamp column (a workload's clock is
-not the same on two runs), and the tables that record a process rather than
-a business fact. Exit 0 when every remaining cell agrees.
+not the same on two runs), the random secrets a table draws per row
+(`VOLATILE_COLUMNS`), and the tables that record a process rather than a
+business fact. Exit 0 when every remaining cell agrees.
 """
 
 import argparse
@@ -40,6 +41,9 @@ SKIP_COLUMNS = {
     "access_token",
     "html_field_history",
 }
+VOLATILE_COLUMNS = {
+    "access_link": {"token_hash", "token_nonce", "token_hint"},
+}
 
 
 def columns(cur, table):
@@ -48,10 +52,9 @@ def columns(cur, table):
         "WHERE table_schema = 'public' AND table_name = %s ORDER BY ordinal_position",
         (table,),
     )
+    skip = SKIP_COLUMNS | VOLATILE_COLUMNS.get(table, set())
     return [
-        c
-        for c, t in cur.fetchall()
-        if c not in SKIP_COLUMNS and not t.startswith("timestamp")
+        c for c, t in cur.fetchall() if c not in skip and not t.startswith("timestamp")
     ]
 
 

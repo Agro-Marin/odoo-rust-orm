@@ -316,16 +316,19 @@ def seed_archived_company_user(env, su):
     company = Company.search([("name", "=", TAG + " archived co")], limit=1)
     if not company:
         company = Company.create({"name": TAG + " archived co"})
+    home = su.ref("base.main_company")
+    companies = {"company_id": home.id, "company_ids": [(6, 0, [home.id, company.id])]}
     user = Users.search([("login", "=", "rustorm_sweep_archived_co")])
     if not user:
         user = Users.create(
             {
                 "login": "rustorm_sweep_archived_co",
                 "name": TAG + " archived-company user",
-                "company_id": company.id,
-                "company_ids": [(6, 0, [company.id])],
+                **companies,
             }
         )
+    elif user.company_id != home or user.company_ids != home + company:
+        user.write(companies)
     if company.active:
         try:
             with env.cr.savepoint():

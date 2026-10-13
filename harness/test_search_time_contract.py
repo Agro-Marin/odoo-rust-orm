@@ -11,8 +11,16 @@ import os
 from types import SimpleNamespace
 
 import pytest
+from _env import usable_engine
 
 _logger = logging.getLogger(__name__)
+
+
+def _engine():
+    engine, unusable = usable_engine()
+    if unusable:
+        pytest.skip(unusable)
+    return engine
 
 
 @pytest.mark.parametrize("name", ["missing_field", "missing_field.name"])
@@ -31,7 +39,7 @@ _logger = logging.getLogger(__name__)
 def test_unknown_fields_are_validated_before_leaf_folding(name, operator, value):
     from odoo.orm.domain import Domain
 
-    model = SimpleNamespace(_name="audit.model", _fields={})
+    model = SimpleNamespace(_name="audit.model", _fields={}, _legacy_field_names={})
     term = [name, operator, value]
     _logger.debug("Python missing-field validation term=%r", term)
     with pytest.raises(ValueError, match=r"Invalid field audit\.model\.missing_field"):
@@ -122,7 +130,7 @@ def port(monkeypatch):
     dsn = os.environ.get("RUSTORM_TEST_DSN")
     if not dsn:
         pytest.skip("RUSTORM_TEST_DSN must name a disposable database")
-    engine = pytest.importorskip("engine_py")
+    engine = _engine()
     backend = engine.install_backend()
     import rust_orm_shim
 
@@ -281,7 +289,7 @@ def test_search_reads_the_rows_visible_when_it_executes(port, scenario):
 
 @pytest.mark.parametrize("method", ["search", "search_raw"])
 def test_refusal_counts_the_method_that_was_called(monkeypatch, method):
-    engine = pytest.importorskip("engine_py")
+    engine = _engine()
     backend = engine.install_backend()
     from odoo.orm.domain import Domain
 
