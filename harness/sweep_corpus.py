@@ -340,63 +340,56 @@ def seed_archived_company_user(env, su):
     return user.id
 
 
-def probes(model, uid):
-    fields = model._fields
-    out = []
+def _stored(f):
+    return f.store and f.name != "id"
 
+
+def _first_names(fields, keep, count=1):
+    return sorted(f.name for f in fields.values() if keep(f))[:count]
+
+
+def _collector(model, uid, into, ordered):
     def add(**kw) -> None:
         kw["model"] = model._name
         if uid is not None:
             kw["uid"] = uid
         if (
-            kw.get("method") == "search_read"
+            ordered
+            and kw.get("method") == "search_read"
             and kw.get("limit")
             and not kw.get("order")
         ):
             terms = [t.strip().split()[0] for t in model._order.split(",") if t.strip()]
             kw["order"] = model._order if "id" in terms else model._order + ", id"
-        out.append(kw)
+        into.append(kw)
 
-    def stored(f):
-        return f.store and f.name != "id"
+    return add
 
-    scalars = sorted(
-        (
-            f.name
-            for f in fields.values()
-            if stored(f)
-            and f.type
-            in ("char", "boolean", "integer", "date", "datetime", "selection")
-        ),
-    )[:2]
-    m2o = sorted(f.name for f in fields.values() if stored(f) and f.type == "many2one")[
-        :2
-    ]
-    x2m = sorted(
-        f.name
-        for f in fields.values()
-        if f.store
-        and f.type in ("one2many", "many2many")
-        and f.comodel_name in model.env.registry
-    )[:1]
 
+def read_probes(model, scalars, m2o, x2m, add) -> None:
+    fields = model._fields
     read = scalars + m2o + x2m
     if read:
         add(method="search_read", fields=read, domain=[], limit=5)
     for name in m2o:
         add(method="read_group", groupby=[name], aggregates=["__count"], domain=[])
         cofields = model.env[fields[name].comodel_name]._fields
-        for sub in sorted(
-            f.name
-            for f in cofields.values()
-            if stored(f) and f.type in ("char", "selection", "many2one", "integer")
-        )[:2]:
+        for sub in _first_names(
+            cofields,
+            lambda f: (
+                _stored(f) and f.type in ("char", "selection", "many2one", "integer")
+            ),
+            2,
+        ):
             add(
                 method="read_group",
                 groupby=["%s.%s" % (name, sub)],
                 aggregates=["__count"],
                 domain=[],
             )
+
+
+def name_search_probes(model, m2o, add) -> None:
     if m2o:
         add(
             method="search_read",
@@ -428,20 +421,17 @@ def probes(model, uid):
         )
         add(method="search_count", domain=[["display_name", "!=", False]])
         add(method="search_count", domain=[["display_name", "in", ["a", False]]])
-    chars = sorted(f.name for f in fields.values() if stored(f) and f.type == "char")[
-        :1
-    ]
-    for c in chars:
+
+
+def operator_probes(fields, m2o, x2m, add) -> None:
+    for c in _first_names(fields, lambda f: _stored(f) and f.type == "char"):
         add(method="search_count", domain=[[c, "like", ""]])
         add(method="search_count", domain=[[c, "not like", ""]])
         add(method="search_count", domain=[[c, "=like", ""]])
         add(method="search_count", domain=[[c, "like", "%"]])
-    nums = sorted(
-        f.name
-        for f in fields.values()
-        if stored(f) and f.type in ("integer", "float", "monetary")
-    )[:1]
-    for n in nums:
+    for n in _first_names(
+        fields, lambda f: _stored(f) and f.type in ("integer", "float", "monetary")
+    ):
         add(method="search_count", domain=[[n, "=?", 0]])
         add(method="search_count", domain=[[n, ">", False]])
         add(method="search_count", domain=[[n, "=", "1"]])
@@ -451,10 +441,10 @@ def probes(model, uid):
     for x in x2m:
         add(method="search_count", domain=[[x, "in", [0]]])
         add(method="search_count", domain=[[x, "=", False]])
-    dts = sorted(f.name for f in fields.values() if stored(f) and f.type == "datetime")[
-        :1
-    ]
-    for d in dts:
+
+
+def datetime_probes(fields, add) -> None:
+    for d in _first_names(fields, lambda f: _stored(f) and f.type == "datetime"):
         add(
             method="read_group",
             groupby=[d + ":month"],
@@ -477,51 +467,46 @@ def probes(model, uid):
             domain=[],
             lang="en_US",
         )
-    extra = []
 
-    def add_extra(**kw) -> None:
-        kw["model"] = model._name
-        if uid is not None:
-            kw["uid"] = uid
-        extra.append(kw)
 
+def hierarchy_probes(model, add) -> None:
     parent_field = getattr(model, "_parent_name", None)
-    if parent_field and parent_field in fields:
-        try:
-            roots = model.search([(parent_field, "=", False)], limit=1).ids
-            children = model.search([(parent_field, "!=", False)], limit=1).ids
-            seeds = [i for i in (roots + children) if i]
-        except Exception:
-            seeds = []
-        for seed in seeds[:2]:
-            for op in ("child_of", "parent_of"):
-                add_extra(
-                    method="search_read",
-                    fields=["id"],
-                    domain=[["id", op, seed]],
-                    limit=20,
-                )
-        if len(seeds) > 1:
-            add_extra(
+    if not parent_field or parent_field not in model._fields:
+        return
+    try:
+        roots = model.search([(parent_field, "=", False)], limit=1).ids
+        children = model.search([(parent_field, "!=", False)], limit=1).ids
+        seeds = [i for i in (roots + children) if i]
+    except Exception:
+        seeds = []
+    for seed in seeds[:2]:
+        for op in ("child_of", "parent_of"):
+            add(
                 method="search_read",
                 fields=["id"],
-                domain=[["id", "child_of", seeds]],
+                domain=[["id", op, seed]],
                 limit=20,
             )
-            add_extra(method="search_count", domain=[["id", "parent_of", seeds]])
+    if len(seeds) > 1:
+        add(
+            method="search_read",
+            fields=["id"],
+            domain=[["id", "child_of", seeds]],
+            limit=20,
+        )
+        add(method="search_count", domain=[["id", "parent_of", seeds]])
 
-    numeric = sorted(
-        f.name
-        for f in fields.values()
-        if stored(f) and f.type in ("integer", "float", "monetary")
-    )[:1]
-    groupable = sorted(
-        f.name
-        for f in fields.values()
-        if stored(f) and f.type in ("char", "boolean", "integer", "selection")
-    )[:1]
+
+def aggregate_probes(fields, m2o, add) -> None:
+    numeric = _first_names(
+        fields, lambda f: _stored(f) and f.type in ("integer", "float", "monetary")
+    )
+    groupable = _first_names(
+        fields,
+        lambda f: _stored(f) and f.type in ("char", "boolean", "integer", "selection"),
+    )
     if numeric and groupable:
-        add_extra(
+        add(
             method="read_group",
             groupby=[groupable[0]],
             aggregates=[
@@ -533,64 +518,105 @@ def probes(model, uid):
             domain=[],
         )
     if m2o and groupable:
-        add_extra(
+        add(
             method="read_group",
             groupby=[groupable[0]],
             aggregates=["%s:count_distinct" % m2o[0]],
             domain=[],
         )
 
-    if uid is None:
-        with_falsy = sorted(
-            f.name
-            for f in fields.values()
-            if stored(f) and f.type in ("char", "text", "integer", "float", "monetary")
-        )[:1]
-        without_falsy = sorted(
-            f.name
-            for f in fields.values()
-            if stored(f) and f.type in ("date", "datetime", "selection", "many2one")
-        )[:1]
-        for name in with_falsy:
-            for op in (">", ">="):
-                add_extra(method="search_count", domain=[[name, op, False]])
-        for name in without_falsy:
-            add_extra(method="search_count", domain=[[name, ">", False]])
-        for f in sorted(fields.values(), key=lambda f: f.name):
-            if stored(f) and f.type == "many2one_reference":
-                for op in ("=", "!=", ">="):
-                    add_extra(method="search_count", domain=[[f.name, op, False]])
-        add_extra(method="search_count", domain=[["id", ">", False]])
 
-    bypassing = sorted(
-        f.name
-        for f in fields.values()
-        if getattr(f, "bypass_search_access", False)
-        and f.type in ("many2one", "one2many", "many2many")
-        and f.comodel_name in model.env.registry
-    )[:1]
-    for name in bypassing:
-        add_extra(method="search_count", domain=[["%s.id" % name, ">", 0]])
+def falsy_probes(fields, add) -> None:
+    with_falsy = _first_names(
+        fields,
+        lambda f: (
+            _stored(f) and f.type in ("char", "text", "integer", "float", "monetary")
+        ),
+    )
+    without_falsy = _first_names(
+        fields,
+        lambda f: (
+            _stored(f) and f.type in ("date", "datetime", "selection", "many2one")
+        ),
+    )
+    for name in with_falsy:
+        for op in (">", ">="):
+            add(method="search_count", domain=[[name, op, False]])
+    for name in without_falsy:
+        add(method="search_count", domain=[[name, ">", False]])
+    for f in sorted(fields.values(), key=lambda f: f.name):
+        if _stored(f) and f.type == "many2one_reference":
+            for op in ("=", "!=", ">="):
+                add(method="search_count", domain=[[f.name, op, False]])
+    add(method="search_count", domain=[["id", ">", False]])
 
-    binary = sorted(
-        f.name
-        for f in fields.values()
-        if stored(f) and f.type == "binary" and not getattr(f, "attachment", False)
-    )[:1]
-    for name in binary:
-        add_extra(method="search_count", domain=[[name, "=", False]])
-        add_extra(method="search_count", domain=[[name, "!=", False]])
 
+def edge_probes(model, x2m, add) -> None:
+    fields = model._fields
+    for name in _first_names(
+        fields,
+        lambda f: (
+            getattr(f, "bypass_search_access", False)
+            and f.type in ("many2one", "one2many", "many2many")
+            and f.comodel_name in model.env.registry
+        ),
+    ):
+        add(method="search_count", domain=[["%s.id" % name, ">", 0]])
+    for name in _first_names(
+        fields,
+        lambda f: (
+            _stored(f) and f.type == "binary" and not getattr(f, "attachment", False)
+        ),
+    ):
+        add(method="search_count", domain=[[name, "=", False]])
+        add(method="search_count", domain=[[name, "!=", False]])
     if x2m:
-        add_extra(
+        add(
             method="search_read", fields=["id"], domain=[[x2m[0], "!=", False]], limit=5
         )
-        add_extra(
+        add(
             method="search_read",
             fields=["id"],
             domain=[[x2m[0] + ".id", ">", 0]],
             limit=5,
         )
+
+
+def probes(model, uid):
+    fields = model._fields
+    scalars = _first_names(
+        fields,
+        lambda f: (
+            _stored(f)
+            and f.type
+            in ("char", "boolean", "integer", "date", "datetime", "selection")
+        ),
+        2,
+    )
+    m2o = _first_names(fields, lambda f: _stored(f) and f.type == "many2one", 2)
+    x2m = _first_names(
+        fields,
+        lambda f: (
+            f.store
+            and f.type in ("one2many", "many2many")
+            and f.comodel_name in model.env.registry
+        ),
+    )
+
+    out = []
+    add = _collector(model, uid, out, ordered=True)
+    read_probes(model, scalars, m2o, x2m, add)
+    name_search_probes(model, m2o, add)
+    operator_probes(fields, m2o, x2m, add)
+    datetime_probes(fields, add)
+
+    extra = []
+    add_extra = _collector(model, uid, extra, ordered=False)
+    hierarchy_probes(model, add_extra)
+    aggregate_probes(fields, m2o, add_extra)
+    if uid is None:
+        falsy_probes(fields, add_extra)
+    edge_probes(model, x2m, add_extra)
     add_extra(method="search_count", domain=[], limit=3)
     return out[:PER_MODEL] + extra
 

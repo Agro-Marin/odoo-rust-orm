@@ -415,11 +415,7 @@ def run_scenarios(env, result, stats):
                     "unlinked": [],
                     "dropped": [],
                     "scenario": kind,
-                    "native": {
-                        k: v - before.get(k, 0)
-                        for k, v in (stats["native"].items() if stats else [])
-                        if v - before.get(k, 0)
-                    },
+                    "native": native_delta(stats, before),
                 }
                 raise _Rollback
         except _Rollback:
@@ -495,17 +491,103 @@ def arm_port():
     return port
 
 
-def main(env):
-    port = arm_port() if ARMED else None
-    if ARMED and (port is None or port.installed() is None):
-        print("WRITE DIFF SKIP: the port could not be installed in this process")
-        sys.exit(3)
-    if FAULT:
-        arm_fault()
-    stats = port.STATS if port is not None else None
-    if stats is not None:
-        stats["native"].clear()
-    result = {"models": {}, "skipped": {}, "fault": FAULT, "armed": ARMED}
+def native_delta(stats, before):
+    return {
+        k: v - before.get(k, 0)
+        for k, v in (stats["native"].items() if stats else [])
+        if v - before.get(k, 0)
+    }
+
+
+def row_vals(fields, bases):
+    vals_list = [
+        dict(bases[i], **{f.name: case(f, i) for f in fields}) for i in range(ROWS)
+    ]
+    for i, v in enumerate(vals_list):
+        for f in fields:
+            if f.required and v.get(f.name) in (False, None, ""):
+                v[f.name] = (
+                    True
+                    if f.type == "boolean"
+                    else "%s req %d" % (f.name, i)
+                    if f.type in ("char", "text", "html")
+                    else case(f, 0)
+                )
+    return vals_list
+
+
+def create_or_minimal(model, fields, bases, vals_list):
+    try:
+        return create_rows(model, fields, vals_list)
+    except _CONSTRAINED as first:
+        minimal = [
+            dict(
+                bases[i],
+                **{f.name: v[f.name] for f in fields if f.required and f.name in v},
+            )
+            for i, v in enumerate(vals_list)
+        ]
+        try:
+            return create_rows(model, fields, minimal)
+        except Exception:
+            raise first from None
+
+
+def unwritable(env, rec, fields):
+    dropped = []
+    for f in fields:
+        try:
+            with env.cr.savepoint():
+                rec.write({f.name: case(f, 3)})
+                env.flush_all()
+        except _CONSTRAINED:
+            dropped.append(f.name)
+    return dropped
+
+
+def rewrite_rows(env, recs, fields, dropped) -> None:
+    uniform = [f for f in fields if f.type not in ("char", "text", "html")]
+    if uniform:
+        write_or_drop(env, recs, {f.name: case(f, 4) for f in uniform}, dropped)
+    for k, rec in enumerate(recs):
+        write_or_drop(
+            env,
+            rec,
+            {
+                f.name: case(f, 4) if k == 0 else "%s row %d" % (f.name, k)
+                for f in fields
+                if f.type in ("char", "text", "html")
+            },
+            dropped,
+        )
+
+
+def diff_model(env, model, fields, bases, stats):
+    before = dict(stats["native"]) if stats else {}
+    recs = create_or_minimal(model, fields, bases, row_vals(fields, bases))
+    env.flush_all()
+    dropped = unwritable(env, recs[0], fields)
+    if dropped:
+        fields = [f for f in fields if f.name not in dropped]
+    if len(recs) > 1:
+        rewrite_rows(env, recs[1:], fields, dropped)
+        fields = [f for f in fields if f.name not in dropped]
+    env.flush_all()
+    ids = list(recs.ids)
+    recs[1::2].unlink()
+    env.flush_all()
+    columns, types, rows = readback(env, model, ids, fields)
+    return {
+        "columns": columns,
+        "types": types,
+        "rows": rows,
+        "unlinked": [k for k in range(len(ids)) if k % 2 == 1],
+        "dropped": sorted(dropped),
+        "native": native_delta(stats, before),
+    }
+
+
+def run_models(env, result, stats) -> None:
     done = 0
     for name in candidates(env):
         if done >= LIMIT:
@@ -519,99 +601,28 @@ def main(env):
         if any(b is None for b in bases):
             result["skipped"][name] = "a required field the generator cannot fill"
             continue
-        before = dict(stats["native"]) if stats else {}
         try:
             with env.cr.savepoint():
-                vals_list = [
-                    dict(bases[i], **{f.name: case(f, i) for f in fields})
-                    for i in range(ROWS)
-                ]
-                for i, v in enumerate(vals_list):
-                    for f in fields:
-                        if f.required and v.get(f.name) in (False, None, ""):
-                            v[f.name] = (
-                                True
-                                if f.type == "boolean"
-                                else "%s req %d" % (f.name, i)
-                                if f.type in ("char", "text", "html")
-                                else case(f, 0)
-                            )
-                try:
-                    recs = create_rows(model, fields, vals_list)
-                except _CONSTRAINED as first:
-                    minimal = [
-                        dict(
-                            bases[i],
-                            **{
-                                f.name: v[f.name]
-                                for f in fields
-                                if f.required and f.name in v
-                            },
-                        )
-                        for i, v in enumerate(vals_list)
-                    ]
-                    try:
-                        recs = create_rows(model, fields, minimal)
-                    except Exception:
-                        raise first from None
-                env.flush_all()
-                dropped = []
-                for f in fields:
-                    try:
-                        with env.cr.savepoint():
-                            recs[0].write({f.name: case(f, 3)})
-                            env.flush_all()
-                    except _CONSTRAINED:
-                        dropped.append(f.name)
-                if dropped:
-                    fields = [f for f in fields if f.name not in dropped]
-                if len(recs) > 1:
-                    uniform = [
-                        f for f in fields if f.type not in ("char", "text", "html")
-                    ]
-                    if uniform:
-                        write_or_drop(
-                            env,
-                            recs[1:],
-                            {f.name: case(f, 4) for f in uniform},
-                            dropped,
-                        )
-                    for k, rec in enumerate(recs[1:]):
-                        write_or_drop(
-                            env,
-                            rec,
-                            {
-                                f.name: case(f, 4)
-                                if k == 0
-                                else "%s row %d" % (f.name, k)
-                                for f in fields
-                                if f.type in ("char", "text", "html")
-                            },
-                            dropped,
-                        )
-                    fields = [f for f in fields if f.name not in dropped]
-                env.flush_all()
-                ids = list(recs.ids)
-                recs[1::2].unlink()
-                env.flush_all()
-                columns, types, rows = readback(env, model, ids, fields)
-                result["models"][name] = {
-                    "columns": columns,
-                    "types": types,
-                    "rows": rows,
-                    "unlinked": [k for k in range(len(ids)) if k % 2 == 1],
-                    "dropped": sorted(dropped),
-                    "native": {
-                        k: v - before.get(k, 0)
-                        for k, v in (stats["native"].items() if stats else [])
-                        if v - before.get(k, 0)
-                    },
-                }
+                result["models"][name] = diff_model(env, model, fields, bases, stats)
                 raise _Rollback
         except _Rollback:
             done += 1
         except Exception as e:
             result["skipped"][name] = "%s: %s" % (type(e).__name__, str(e)[:120])
+
+
+def main(env):
+    port = arm_port() if ARMED else None
+    if ARMED and (port is None or port.installed() is None):
+        print("WRITE DIFF SKIP: the port could not be installed in this process")
+        sys.exit(3)
+    if FAULT:
+        arm_fault()
+    stats = port.STATS if port is not None else None
+    if stats is not None:
+        stats["native"].clear()
+    result = {"models": {}, "skipped": {}, "fault": FAULT, "armed": ARMED}
+    run_models(env, result, stats)
     if not ONLY or any(o.startswith("scenario") for o in ONLY):
         run_scenarios(env, result, stats)
     env.cr.rollback()

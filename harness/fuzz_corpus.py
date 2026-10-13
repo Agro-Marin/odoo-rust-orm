@@ -293,6 +293,184 @@ class Gen:
         return self.tree(model, depth, budget)
 
 
+class CaseBuilder:
+    def __init__(self, gen, base, langs, company_choices, identities) -> None:
+        self.gen = gen
+        self.rng = gen.rng
+        self.base = base
+        self.langs = langs
+        self.company_choices = company_choices
+        self.identities = identities
+
+    def build(self, name, want=None):
+        rng = self.rng
+        model = self.base.get(name)
+        if model is None:
+            return None
+        dom = self.domain(model, want)
+        if dom is None:
+            return None
+        uid = rng.choice(self.identities)
+        method = rng.choice(
+            ["search_read", "search_read", "search_count", "read_group"]
+        )
+        if want in ("nulls", "offset"):
+            method = "search_read"
+        elif want in (
+            "granularity",
+            "tz",
+            "two_level_groupby",
+            "count_distinct",
+        ) + tuple(AGGREGATES):
+            method = "read_group"
+        case = {"model": name, "domain": dom}
+        if method == "search_read":
+            if not self.fill_search_read(case, model, want):
+                return None
+        elif method == "search_count":
+            case["method"] = "search_count"
+            if rng.random() < 0.3:
+                case["limit"] = rng.choice([1, 10])
+        elif not self.fill_read_group(case, model, want):
+            return None
+        self.fill_identity(case, uid)
+        return case
+
+    def domain(self, model, want):
+        rng = self.rng
+        fields = model._fields
+        if want == "child_of":
+            if model._parent_name not in fields:
+                return None
+            ids = self.gen.samples(model, "id") or [1]
+            return [["id", rng.choice(["child_of", "parent_of"]), rng.choice(ids)]]
+        if want == "=?":
+            scalars = [
+                f
+                for f in fields.values()
+                if f.store
+                and f.type in ("char", "integer", "float", "many2one", "boolean")
+            ]
+            if not scalars:
+                return None
+            field = rng.choice(scalars)
+            return [[field.name, "=?", self.gen.value_for(model, field, "=")]]
+        return self.gen.domain(model)
+
+    def fill_search_read(self, case, model, want):
+        rng = self.rng
+        fields = model._fields
+        names = sorted(
+            f.name
+            for f in fields.values()
+            if f.store
+            and f.type not in ("binary", "properties", "properties_definition")
+        )
+        orderable = sorted(
+            f.name for f in fields.values() if f.store and f.type not in UNORDERABLE
+        )
+        if not names:
+            return False
+        case["method"] = "search_read"
+        case["fields"] = rng.sample(names, min(len(names), rng.randrange(1, 4)))
+        case["limit"] = rng.choice([1, 5, 20])
+        if want == "offset" or rng.random() < 0.15:
+            case["offset"] = rng.choice([1, 3, 50])
+        if orderable and (want == "nulls" or rng.random() < 0.2):
+            directions = ["", " desc", " asc nulls first", " desc nulls last"]
+            if want == "nulls":
+                directions = directions[2:]
+            case["order"] = rng.choice(orderable) + rng.choice(directions) + ", id"
+        if "order" not in case:
+            terms = [t.strip().split()[0] for t in model._order.split(",") if t.strip()]
+            case["order"] = model._order if "id" in terms else model._order + ", id"
+        return True
+
+    def fill_read_group(self, case, model, want):
+        rng = self.rng
+        fields = model._fields
+        gb = [
+            f.name
+            for f in fields.values()
+            if f.store
+            and f.type
+            in ("many2one", "selection", "boolean", "date", "datetime", "char")
+        ]
+        dates = sorted(
+            f.name
+            for f in fields.values()
+            if f.store and f.type in ("date", "datetime")
+        )
+        if not gb:
+            return False
+        case["method"] = "read_group"
+        groupby = rng.choice(sorted(gb))
+        if want in ("granularity", "tz"):
+            if not dates:
+                return False
+            groupby = rng.choice(dates)
+        if fields[groupby].type in ("date", "datetime") and (
+            want in ("granularity", "tz") or rng.random() < 0.6
+        ):
+            groupby += ":" + rng.choice(GRANULARITIES)
+            case["lang"] = rng.choice(self.langs)
+            if want == "tz" or rng.random() < 0.5:
+                case["tz"] = "America/Mexico_City"
+        groupbys = [groupby]
+        others = sorted(set(gb) - {groupby.split(":")[0]})
+        if want == "two_level_groupby" and not others:
+            return False
+        if others and (want == "two_level_groupby" or rng.random() < 0.3):
+            groupbys.append(rng.choice(others))
+        case["groupby"] = groupbys
+        aggregates = self.aggregates(fields, want)
+        if aggregates is None:
+            return False
+        case["aggregates"] = aggregates
+        if rng.random() < 0.3:
+            term = rng.choice(aggregates + [g.split(":")[0] for g in groupbys])
+            tail = ", ".join(g for g in groupbys if g != term)
+            case["order"] = (
+                term + rng.choice(["", " desc"]) + (", " + tail if tail else "")
+            )
+        return True
+
+    def aggregates(self, fields, want):
+        rng = self.rng
+        aggregates = ["__count"]
+        nums = sorted(
+            f.name
+            for f in fields.values()
+            if f.store and f.type in ("integer", "float", "monetary")
+        )
+        if want in AGGREGATES and not nums:
+            return None
+        if nums and (want in AGGREGATES or rng.random() < 0.4):
+            agg = want if want in AGGREGATES else rng.choice(AGGREGATES)
+            aggregates.append(f"{rng.choice(nums)}:{agg}")
+        m2os = sorted(
+            f.name for f in fields.values() if f.store and f.type == "many2one"
+        )
+        if want == "count_distinct" and not m2os:
+            return None
+        if m2os and (want == "count_distinct" or rng.random() < 0.2):
+            aggregates.append(f"{rng.choice(m2os)}:count_distinct")
+        return aggregates
+
+    def fill_identity(self, case, uid) -> None:
+        rng = self.rng
+        if uid is not None:
+            case["uid"] = uid
+        if "lang" not in case and rng.random() < 0.3:
+            case["lang"] = rng.choice(self.langs)
+        if len(self.company_choices) > 1 and rng.random() < 0.25:
+            case["allowed_company_ids"] = rng.choice(self.company_choices)
+        if rng.random() < 0.15:
+            case["su"] = True
+        if rng.random() < 0.15:
+            case["active_test"] = False
+
+
 def domain_families(domain, found) -> None:
     for item in domain or []:
         if not isinstance(item, list):
@@ -329,10 +507,7 @@ def families(case):
     return found
 
 
-def main(env) -> None:
-    rng = random.Random(SEED)
-    gen = Gen(env, rng)
-    base = base_env(env)
+def fuzzed_models(base, rng):
     models = [
         n
         for n in sorted(base.registry)
@@ -342,8 +517,10 @@ def main(env) -> None:
         and m._auto
     ]
     rng.shuffle(models)
-    models = models[:MAX_MODELS]
+    return models[:MAX_MODELS]
 
+
+def case_builder(gen, base):
     langs = base["res.lang"].sudo().search([("active", "=", True)]).mapped("code") or [
         "en_US"
     ]
@@ -357,160 +534,26 @@ def main(env) -> None:
         .search([("login", "=", "rustorm_sweep_probe")], limit=1)
     )
     identities = [None] + ([probe.id] if probe else [])
+    return CaseBuilder(gen, base, langs, company_choices, identities)
 
-    def build_case(name, want=None):
-        model = base.get(name)
-        if model is None:
-            return None
-        fields = model._fields
-        if want == "child_of":
-            if model._parent_name not in fields:
-                return None
-            ids = gen.samples(model, "id") or [1]
-            dom = [["id", rng.choice(["child_of", "parent_of"]), rng.choice(ids)]]
-        elif want == "=?":
-            scalars = [
-                f
-                for f in fields.values()
-                if f.store
-                and f.type in ("char", "integer", "float", "many2one", "boolean")
-            ]
-            if not scalars:
-                return None
-            field = rng.choice(scalars)
-            dom = [[field.name, "=?", gen.value_for(model, field, "=")]]
-        else:
-            dom = gen.domain(model)
-        uid = rng.choice(identities)
-        method = rng.choice(
-            ["search_read", "search_read", "search_count", "read_group"]
-        )
-        if want in ("nulls", "offset"):
-            method = "search_read"
-        elif want in (
-            "granularity",
-            "tz",
-            "two_level_groupby",
-            "count_distinct",
-        ) + tuple(AGGREGATES):
-            method = "read_group"
-        case = {"model": name, "domain": dom}
-        if method == "search_read":
-            names = sorted(
-                f.name
-                for f in fields.values()
-                if f.store
-                and f.type not in ("binary", "properties", "properties_definition")
-            )
-            orderable = sorted(
-                f.name for f in fields.values() if f.store and f.type not in UNORDERABLE
-            )
-            if not names:
-                return None
-            case["method"] = "search_read"
-            case["fields"] = rng.sample(names, min(len(names), rng.randrange(1, 4)))
-            case["limit"] = rng.choice([1, 5, 20])
-            if want == "offset" or rng.random() < 0.15:
-                case["offset"] = rng.choice([1, 3, 50])
-            if orderable and (want == "nulls" or rng.random() < 0.2):
-                directions = ["", " desc", " asc nulls first", " desc nulls last"]
-                if want == "nulls":
-                    directions = directions[2:]
-                case["order"] = rng.choice(orderable) + rng.choice(directions) + ", id"
-            if "order" not in case:
-                terms = [
-                    t.strip().split()[0] for t in model._order.split(",") if t.strip()
-                ]
-                case["order"] = model._order if "id" in terms else model._order + ", id"
-        elif method == "search_count":
-            case["method"] = "search_count"
-            if rng.random() < 0.3:
-                case["limit"] = rng.choice([1, 10])
-        else:
-            gb = [
-                f.name
-                for f in fields.values()
-                if f.store
-                and f.type
-                in ("many2one", "selection", "boolean", "date", "datetime", "char")
-            ]
-            dates = sorted(
-                f.name
-                for f in fields.values()
-                if f.store and f.type in ("date", "datetime")
-            )
-            if not gb:
-                return None
-            case["method"] = "read_group"
-            groupby = rng.choice(sorted(gb))
-            if want in ("granularity", "tz"):
-                if not dates:
-                    return None
-                groupby = rng.choice(dates)
-            if fields[groupby].type in ("date", "datetime") and (
-                want in ("granularity", "tz") or rng.random() < 0.6
-            ):
-                groupby += ":" + rng.choice(GRANULARITIES)
-                case["lang"] = rng.choice(langs)
-                if want == "tz" or rng.random() < 0.5:
-                    case["tz"] = "America/Mexico_City"
-            groupbys = [groupby]
-            others = sorted(set(gb) - {groupby.split(":")[0]})
-            if want == "two_level_groupby" and not others:
-                return None
-            if others and (want == "two_level_groupby" or rng.random() < 0.3):
-                groupbys.append(rng.choice(others))
-            case["groupby"] = groupbys
-            aggregates = ["__count"]
-            nums = sorted(
-                f.name
-                for f in fields.values()
-                if f.store and f.type in ("integer", "float", "monetary")
-            )
-            if want in AGGREGATES and not nums:
-                return None
-            if nums and (want in AGGREGATES or rng.random() < 0.4):
-                agg = want if want in AGGREGATES else rng.choice(AGGREGATES)
-                aggregates.append(f"{rng.choice(nums)}:{agg}")
-            m2os = sorted(
-                f.name for f in fields.values() if f.store and f.type == "many2one"
-            )
-            if want == "count_distinct" and not m2os:
-                return None
-            if m2os and (want == "count_distinct" or rng.random() < 0.2):
-                aggregates.append(f"{rng.choice(m2os)}:count_distinct")
-            case["aggregates"] = aggregates
-            if rng.random() < 0.3:
-                term = rng.choice(aggregates + [g.split(":")[0] for g in groupbys])
-                tail = ", ".join(g for g in groupbys if g != term)
-                case["order"] = (
-                    term + rng.choice(["", " desc"]) + (", " + tail if tail else "")
-                )
-        if uid is not None:
-            case["uid"] = uid
-        if "lang" not in case and rng.random() < 0.3:
-            case["lang"] = rng.choice(langs)
-        if len(company_choices) > 1 and rng.random() < 0.25:
-            case["allowed_company_ids"] = rng.choice(company_choices)
-        if rng.random() < 0.15:
-            case["su"] = True
-        if rng.random() < 0.15:
-            case["active_test"] = False
-        return case
 
+def random_cases(builder, models):
     cases = []
     while len(cases) < CASES and models:
-        case = build_case(rng.choice(models))
+        case = builder.build(builder.rng.choice(models))
         if case is not None:
             cases.append(case)
+    return cases
 
+
+def cover_families(builder, models, cases):
     emitted = set()
     for case in cases:
         emitted |= families(case)
     parents = [
         n
         for n in models
-        if (m := base.get(n)) is not None and m._parent_name in m._fields
+        if (m := builder.base.get(n)) is not None and m._parent_name in m._fields
     ]
     for family in FAMILIES:
         if family in emitted:
@@ -519,22 +562,38 @@ def main(env) -> None:
         for _ in range(200):
             if not pool:
                 break
-            case = build_case(rng.choice(pool), want=family)
+            case = builder.build(builder.rng.choice(pool), want=family)
             if case is not None and family in families(case):
                 cases.append(case)
                 emitted.add(family)
                 break
+    return emitted
+
+
+def numbered(cases):
     for i, case in enumerate(cases):
         case["id"] = "f%05d" % i
-    cases = [
+    return [
         dict(id=c["id"], **{k: v for k, v in c.items() if k != "id"}) for c in cases
     ]
+
+
+def main(env) -> None:
+    rng = random.Random(SEED)
+    gen = Gen(env, rng)
+    base = base_env(env)
+    models = fuzzed_models(base, rng)
+    builder = case_builder(gen, base)
+
+    cases = random_cases(builder, models)
+    emitted = cover_families(builder, models, cases)
+    cases = numbered(cases)
 
     with pathlib.Path(OUT).open("w", encoding="utf-8") as f:
         json.dump(cases, f, indent=1)
     print(
         "wrote %d fuzz cases to %s (seed=%d, %d models, identities=%s)"
-        % (len(cases), OUT, SEED, len(models), identities)
+        % (len(cases), OUT, SEED, len(models), builder.identities)
     )
     missing = [f for f in FAMILIES if f not in emitted]
     counts = {f: sum(f in families(c) for c in cases) for f in FAMILIES}
