@@ -296,7 +296,7 @@ pub struct Model {
     pub access_guard_pure: bool,
 
     /// The field a grant limited to some companies compiles against
-    /// (`_access_company_anchor`): `id` for res.company, else a company
+    /// (`_get_company_anchor_path`): `id` for res.company, else a company
     /// many2one/many2many; `None` for a model whose records belong to no
     /// company, which takes such a grant's rows whole.
     pub access_company_anchor: Option<String>,
@@ -405,7 +405,7 @@ pub struct Security {
 
     pub user_companies: HashMap<i32, Vec<i32>>,
 
-    /// Each model's `_access_company_anchor`, for the models that have one.
+    /// Each model's `_get_company_anchor_path`, for the models that have one.
     pub anchors: HashMap<String, String>,
 
     /// The users holding a live or scheduled grant that is limited to some

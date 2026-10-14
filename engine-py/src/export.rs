@@ -240,7 +240,7 @@ def export_registry(reg):
             "check_access_pure": bool(check_access_pure),
             "access_guard_pure": bool(access_guard_pure),
             # the field a grant limited to some companies compiles against
-            "access_company_anchor": _s(m._access_company_anchor()),
+            "access_company_anchor": _s(m._get_company_anchor_path()),
             "access_anchors": _access_anchors(reg, name),
             "display_name_default": bool(dn_default),
             "table": _s(m._table),

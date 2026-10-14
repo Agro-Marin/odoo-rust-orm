@@ -99,7 +99,7 @@ refusal list is the replacement backlog.
   companies in use and the environment's privileges already applied. A row
   whose group a grant limits to some companies is narrowed as
   `ir.access._scoped` narrows it, through the model's exported
-  `_access_company_anchor`: a permission to those companies' records and the
+  `_get_company_anchor_path`: a permission to those companies' records and the
   shared ones, a members guard to binding there only. A request without that
   state (the standalone server) reads the memberships, and is refused for a
   user holding a grant limited to some companies or dated, which the
