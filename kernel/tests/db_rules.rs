@@ -693,3 +693,121 @@ async fn a_reach_row_keeps_its_rung_and_anchor_and_hr_or_a_predicate_is_refused(
     assert_eq!(security.access["x.reached"], vec![7, 7, 7, 8]);
     drop_schema(&client, schema).await;
 }
+
+#[tokio::test]
+#[ignore = "needs RUSTORM_TEST_DSN"]
+async fn two_fields_walking_the_same_hierarchy_each_keep_their_own_leaf() {
+    use odoo_kernel::db::StmtCache;
+    use odoo_kernel::orm::{Caches, Orm, Request};
+    use odoo_kernel::registry::FieldType;
+    use serde_json::json;
+    use support::{field, model, registry};
+
+    let schema = "rustorm_t_shared_hierarchy";
+    let client = connect(schema).await;
+    client
+        .batch_execute(
+            "CREATE TABLE res_partner (id int PRIMARY KEY, tz varchar);
+             CREATE TABLE res_users (id int PRIMARY KEY, company_id int, partner_id int);
+             CREATE TABLE stock_location (id int PRIMARY KEY, location_id int,
+                                          parent_path varchar);
+             CREATE TABLE stock_move (id int PRIMARY KEY, location_id int,
+                                      location_dest_id int);
+             INSERT INTO res_partner VALUES (3, NULL);
+             INSERT INTO res_users VALUES (2, 1, 3);
+             INSERT INTO stock_location VALUES (1, NULL, '1/'), (2, 1, '1/2/'), (3, NULL, '3/');
+             INSERT INTO stock_move VALUES (10, 2, 3), (11, 2, 2), (12, 3, 2);",
+        )
+        .await
+        .unwrap();
+    let m2o = |name: &str| {
+        let mut f = field(name, FieldType::Many2one);
+        f.relation = Some("stock.location".into());
+        f
+    };
+    for parent_store in [true, false] {
+        let mut location = model(
+            "stock.location",
+            "id",
+            vec![
+                field("id", FieldType::Integer),
+                m2o("location_id"),
+                field("parent_path", FieldType::Char),
+            ],
+        );
+        location.parent_name = Some("location_id".into());
+        location.parent_store = parent_store;
+        let reg = registry(vec![
+            location,
+            model(
+                "stock.move",
+                "id",
+                vec![
+                    field("id", FieldType::Integer),
+                    m2o("location_id"),
+                    m2o("location_dest_id"),
+                ],
+            ),
+        ]);
+        let stmts = StmtCache::default();
+        let orm = Orm::new(
+            &reg,
+            &client,
+            std::sync::Arc::new(Caches::default()),
+            &stmts,
+        );
+        for (domain, expected) in [
+            (
+                json!([
+                    "&",
+                    ["location_id", "child_of", [1]],
+                    "!",
+                    ["location_dest_id", "child_of", [1]]
+                ]),
+                vec![10],
+            ),
+            (
+                json!([
+                    "&",
+                    "!",
+                    ["location_dest_id", "child_of", [1]],
+                    ["location_id", "child_of", [1]]
+                ]),
+                vec![10],
+            ),
+            (
+                json!([
+                    "&",
+                    "!",
+                    ["location_id", "child_of", [1]],
+                    ["location_dest_id", "child_of", [1]]
+                ]),
+                vec![12],
+            ),
+        ] {
+            let req: Request = serde_json::from_value(json!({
+                "model": "stock.move",
+                "method": "search_read",
+                "domain": domain,
+                "fields": ["id"],
+                "su": true,
+            }))
+            .unwrap();
+            let raw = orm
+                .dispatch_with(&req, Some(reg.dynamic()))
+                .await
+                .unwrap()
+                .0;
+            let ids: Vec<i64> = serde_json::from_str::<serde_json::Value>(&raw)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_i64().unwrap())
+                .collect();
+            tracing::debug!(parent_store, %domain, ?ids, "each child_of leaf renders on its own field");
+            assert_eq!(ids, expected, "parent_store={parent_store} {domain}");
+        }
+    }
+    drop_schema(&client, schema).await;
+}

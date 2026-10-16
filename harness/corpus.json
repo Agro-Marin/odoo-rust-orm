@@ -6597,5 +6597,259 @@
    "login"
   ],
   "order": "id"
+ },
+ {
+  "id": "ch_hier_shared_out",
+  "model": "stock.move",
+  "method": "read_group",
+  "groupby": [
+   "state"
+  ],
+  "aggregates": [
+   "product_qty:sum",
+   "__count"
+  ],
+  "domain": [
+   "&",
+   [
+    "location_id",
+    "child_of",
+    [
+     4
+    ]
+   ],
+   "!",
+   [
+    "location_dest_id",
+    "child_of",
+    [
+     4
+    ]
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_hier_shared_in",
+  "model": "stock.move",
+  "method": "read_group",
+  "groupby": [
+   "state"
+  ],
+  "aggregates": [
+   "product_qty:sum",
+   "__count"
+  ],
+  "domain": [
+   "&",
+   "!",
+   [
+    "location_id",
+    "child_of",
+    [
+     4
+    ]
+   ],
+   [
+    "location_dest_id",
+    "child_of",
+    [
+     4
+    ]
+   ]
+  ],
+  "su": true
+ },
+ {
+  "id": "ch_hier_shared_todo_out",
+  "model": "stock.move",
+  "method": "read_group",
+  "groupby": [
+   "state"
+  ],
+  "aggregates": [
+   "product_qty:sum",
+   "__count"
+  ],
+  "domain": [
+   "&",
+   "&",
+   [
+    "state",
+    "in",
+    [
+     "waiting",
+     "confirmed",
+     "assigned",
+     "partially_available"
+    ]
+   ],
+   [
+    "location_id",
+    "child_of",
+    [
+     4
+    ]
+   ],
+   "|",
+   "&",
+   [
+    "state",
+    "=",
+    "done"
+   ],
+   "!",
+   [
+    "location_dest_id",
+    "child_of",
+    [
+     4
+    ]
+   ],
+   "&",
+   "&",
+   [
+    "state",
+    "!=",
+    "done"
+   ],
+   "|",
+   "!",
+   [
+    "location_final_id",
+    "!=",
+    false
+   ],
+   "!",
+   [
+    "location_final_id",
+    "child_of",
+    [
+     4
+    ]
+   ],
+   "|",
+   "!",
+   [
+    "location_final_id",
+    "=",
+    false
+   ],
+   "!",
+   [
+    "location_dest_id",
+    "child_of",
+    [
+     4
+    ]
+   ]
+  ]
+ },
+ {
+  "id": "ch_hier_shared_todo_out_count",
+  "model": "stock.move",
+  "method": "search_count",
+  "domain": [
+   "&",
+   "&",
+   [
+    "state",
+    "in",
+    [
+     "waiting",
+     "confirmed",
+     "assigned",
+     "partially_available"
+    ]
+   ],
+   [
+    "location_id",
+    "child_of",
+    [
+     4
+    ]
+   ],
+   "|",
+   "&",
+   [
+    "state",
+    "=",
+    "done"
+   ],
+   "!",
+   [
+    "location_dest_id",
+    "child_of",
+    [
+     4
+    ]
+   ],
+   "&",
+   "&",
+   [
+    "state",
+    "!=",
+    "done"
+   ],
+   "|",
+   "!",
+   [
+    "location_final_id",
+    "!=",
+    false
+   ],
+   "!",
+   [
+    "location_final_id",
+    "child_of",
+    [
+     4
+    ]
+   ],
+   "|",
+   "!",
+   [
+    "location_final_id",
+    "=",
+    false
+   ],
+   "!",
+   [
+    "location_dest_id",
+    "child_of",
+    [
+     4
+    ]
+   ]
+  ]
+ },
+ {
+  "id": "ch_hier_shared_read",
+  "model": "stock.move",
+  "method": "search_read",
+  "domain": [
+   "&",
+   "!",
+   [
+    "location_id",
+    "child_of",
+    [
+     4
+    ]
+   ],
+   [
+    "location_dest_id",
+    "child_of",
+    [
+     4
+    ]
+   ]
+  ],
+  "fields": [
+   "state",
+   "product_qty"
+  ],
+  "order": "id",
+  "su": true
  }
 ]

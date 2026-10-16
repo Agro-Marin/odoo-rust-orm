@@ -48,7 +48,34 @@ type EnvValue = (
     Option<String>,
 );
 
-type HierMemo = HashMap<(String, String, bool, Vec<i32>), Vec<Json>>;
+#[derive(Clone)]
+enum Walked {
+    Prefixes(Vec<String>),
+    Ids(Vec<i64>),
+}
+
+impl Walked {
+    fn terms(&self, key_field: &str) -> Vec<Json> {
+        match self {
+            Walked::Prefixes(prefixes) => {
+                let or_domain = security::or_leaves(
+                    prefixes
+                        .iter()
+                        .map(|p| json!(["parent_path", "=like", p]))
+                        .collect(),
+                );
+                if key_field == "id" {
+                    or_domain
+                } else {
+                    vec![json!([key_field, "any!", or_domain])]
+                }
+            }
+            Walked::Ids(ids) => vec![json!([key_field, "in", ids])],
+        }
+    }
+}
+
+type HierMemo = HashMap<(String, String, bool, Vec<i32>), Walked>;
 
 fn hierarchy_seeds(raw: &[Json]) -> Result<(Vec<i32>, Vec<Json>)> {
     let mut seeds = Vec::new();
@@ -1094,7 +1121,7 @@ impl<'a> Orm<'a> {
                         key_field = %key_field,
                         "resolving a hierarchy leaf"
                     );
-                    let terms = match memo.get(&key) {
+                    let walked = match memo.get(&key) {
                         Some(hit) => {
                             tracing::trace!(
                                 target: "odoo_kernel::hierarchy",
@@ -1104,7 +1131,7 @@ impl<'a> Orm<'a> {
                             hit.clone()
                         }
                         None => {
-                            let terms =
+                            let walked =
                                 if down && self.can_use_parent_path(target_model, &parent_link) {
                                     let prefixes =
                                         self.parent_path_prefixes(target_model, &seeds).await?;
@@ -1115,16 +1142,7 @@ impl<'a> Orm<'a> {
                                         "using parent_path: the descendants stay a prefix match \
                                          in the query instead of being materialised"
                                     );
-                                    let leaves: Vec<Json> = prefixes
-                                        .iter()
-                                        .map(|p| json!(["parent_path", "=like", p]))
-                                        .collect();
-                                    let or_domain = security::or_leaves(leaves);
-                                    if key_field == "id" {
-                                        or_domain
-                                    } else {
-                                        vec![json!([key_field, "any!", or_domain])]
-                                    }
+                                    Walked::Prefixes(prefixes)
                                 } else {
                                     let ids = if down {
                                         self.descendants(target_model, &parent_link, &seeds).await?
@@ -1138,12 +1156,13 @@ impl<'a> Orm<'a> {
                                         resolved = ids.len(),
                                         "walked the hierarchy row by row"
                                     );
-                                    vec![json!([key_field, "in", ids])]
+                                    Walked::Ids(ids)
                                 };
-                            memo.insert(key, terms.clone());
-                            terms
+                            memo.insert(key, walked.clone());
+                            walked
                         }
                     };
+                    let terms = walked.terms(&key_field);
                     out.extend(terms);
                 }
                 "any" | "not any" | "any!" | "not any!"

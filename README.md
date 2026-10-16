@@ -152,7 +152,7 @@ refusal list is the replacement backlog.
 
 ## Correctness: shadow-diff harness
 
-`harness/corpus.json`: 425 cases across 29 models (255 `search_read`, 90 `search_count`, 80 `read_group`;
+`harness/corpus.json`: 430 cases across 30 models (256 `search_read`, 91 `search_count`, 83 `read_group`;
 `harness/corpus_stats.py` counts the file, which is where every figure about it
 should come from) — every operator family,
 all M1 features, security-sensitive models (`res.partner`, `ir.filters`,
@@ -190,6 +190,23 @@ in the query as `parent_path =like` prefixes since 2026-09-10 (as
 the other direction and the non-stored case still walk the tree in
 `resolve_hierarchy` and rewrite the leaf as an `in`, so a walk that stops one
 level early returns a plausible row set.
+
+**One walk, two fields.** A request walks each hierarchy once: until
+2026-10-16 the memo kept the RENDERED leaf, keyed by the comodel, its parent
+link, the direction and the seeds, but not by the field the leaf names. Two
+fields walking the same hierarchy in one domain — stock's outgoing-quantity
+domain on `stock.move` names `location_id`, `location_dest_id` and
+`location_final_id` all `child_of` the warehouse — therefore all became the
+first one's leaf, `!(location_dest_id child_of WH)` read
+`!(location_id child_of WH)`, and every unreserved outgoing move dropped out
+of the forecast (`qty_outgoing` 0 for 4). The record rules of one identity
+share one memo across models too. The memo now keeps the walk (the
+`parent_path` prefixes or the ids) and each leaf renders it on its own field;
+`ch_hier_shared_*` in the corpus and
+`two_fields_walking_the_same_hierarchy_each_keep_their_own_leaf` hold it. It
+stayed hidden because `stock_barcode`, auto-installed until then, overrides
+`stock.location._search`, so the kernel refused every read whose domain
+reaches `stock.location`.
 
 `diff.py` reports three things a plain pass count hides. A kernel **refusal**
 is separated from a **wrong answer**: A refusal is
@@ -385,7 +402,7 @@ non-admin identity runs on any database — a hardcoded uid that does not exist
 makes both sides error, i.e. passes vacuously.
 
 **Result: 275/275 with nothing failing** (the corpus of the time; it holds
-425 cases today), re-verified 2026-08-28 against THREE
+430 cases today), re-verified 2026-08-28 against THREE
 databases built from this workspace's `tpl_p314o19marin` template — base-only;
 base+mail+account+uom; and **agromarin + enterprise** (129 modules, 790 models,
 222 ruled models, 15,674 fields). All runs use a live-registry export.
@@ -487,7 +504,7 @@ rest of the battery does it now too.
 | fork contract | every Odoo symbol the shims, the addon and the harness import or patch still exists in the checkout -- no database, no extension, seconds |
 | shim units | the two Python shims, with no database: dsn parsing, the kill switch, datetime round trips |
 | registry export | the export describes this database (it refuses to write one that does not) |
-| shadow corpus | 425 cases byte-equal to the Python ORM, across identities and contexts |
+| shadow corpus | 430 cases byte-equal to the Python ORM, across identities and contexts |
 | kernel sweep | every model, kernel-DIRECT, on a fixture it seeds itself |
 | fuzz | seeded random domains, values sampled from the columns |
 | registry sweep | every model, every identity, ~25k query shapes |
@@ -994,7 +1011,7 @@ this layout, and nothing noticed because no test had ever looked at a default.
 
 ## Performance
 
-267 cases (the corpus of the time; it holds 425 today), 20 iterations per run, on **agromarin + enterprise** — 129 modules,
+267 cases (the corpus of the time; it holds 430 today), 20 iterations per run, on **agromarin + enterprise** — 129 modules,
 790 models, and real volume (172k `res.partner`, 164k `mail.message`, 314 MB).
 Python timed at the ORM layer (warm caches, `invalidate_all()` between
 iterations); Rust timings include full JSON serialization. Both sides run the
