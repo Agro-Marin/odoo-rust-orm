@@ -220,6 +220,7 @@ def export_registry(reg):
             if getattr(f, "group_by_sql", None)
             or getattr(f, "order_by_sql", None)
             or getattr(f, "value_sql", None)
+            or getattr(f, "aggregate_sql", None)
         )
         # a field composing its own groupby or order SQL through a hook is
         # read through code no column expresses, as a transparent override is
