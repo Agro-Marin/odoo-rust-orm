@@ -8,6 +8,13 @@ cargo build --release --manifest-path "$ROOT/Cargo.toml" -p odoo-engine-py
 site="$("$PY" -c 'import sysconfig; print(sysconfig.get_paths()["platlib"])')"
 cp "$ROOT/target/release/libengine_py.so" "$site/.engine_py.so.new"
 mv -f "$site/.engine_py.so.new" "$site/engine_py.so"
+if [ -d "$site/engine_py" ]; then
+    for built in "$site"/engine_py/engine_py.*.so; do
+        [ -e "$built" ] || continue
+        cp "$ROOT/target/release/libengine_py.so" "$built.new"
+        mv -f "$built.new" "$built"
+    done
+fi
 
 "$PY" - "$ROOT" <<'PYEOF'
 import importlib.util
