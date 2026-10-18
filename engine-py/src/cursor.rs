@@ -1567,14 +1567,75 @@ fn leading_keyword(sql: &str) -> String {
 }
 
 fn returns_rows(sql: &str) -> bool {
-    if matches!(
-        leading_keyword(sql).as_str(),
-        "SELECT" | "WITH" | "SHOW" | "VALUES" | "TABLE" | "EXPLAIN" | "FETCH"
+    match leading_keyword(sql).as_str() {
+        "SELECT" | "SHOW" | "VALUES" | "TABLE" | "EXPLAIN" | "FETCH" => true,
+        "WITH" => with_statement_returns_rows(sql),
+        _ => has_bare_keyword(sql, "RETURNING"),
+    }
+}
+
+/// A `WITH` statement returns rows unless its primary statement -- the first
+/// keyword after the common table expressions, at the depth `WITH` sits at -- is
+/// a data-modifying one without its own `RETURNING`. Taking every `WITH` for a
+/// query sent `WITH ... UPDATE` through the query path, whose `rowcount` counts
+/// the rows returned (none) instead of the rows the command affected.
+fn with_statement_returns_rows(sql: &str) -> bool {
+    let words = statement_level_keywords(sql);
+    let Some(primary) = words.iter().skip(1).position(|word| {
+        matches!(
+            word.as_str(),
+            "SELECT" | "VALUES" | "TABLE" | "INSERT" | "UPDATE" | "DELETE" | "MERGE"
+        )
+    }) else {
+        return true;
+    };
+    let primary = primary + 1;
+    if !matches!(
+        words[primary].as_str(),
+        "INSERT" | "UPDATE" | "DELETE" | "MERGE"
     ) {
         return true;
     }
+    words[primary + 1..].iter().any(|word| word == "RETURNING")
+}
 
-    has_bare_keyword(sql, "RETURNING")
+/// The keywords at the nesting depth of the statement's leading keyword: those
+/// inside a common table expression's or a subquery's parentheses, a string, a
+/// quoted identifier or a comment are not the statement's own.
+fn statement_level_keywords(sql: &str) -> Vec<String> {
+    let bytes = sql.as_bytes();
+    let mut words = Vec::new();
+    let mut depth = 0usize;
+    let mut level = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some(end) = skip_opaque(bytes, i) {
+            i = end;
+            continue;
+        }
+        match bytes[i] {
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            byte if is_ident_byte(byte) => {
+                let start = i;
+                while i < bytes.len() && is_ident_byte(bytes[i]) {
+                    i += 1;
+                }
+                let level = *level.get_or_insert(depth);
+                if depth == level {
+                    words.push(sql[start..i].to_ascii_uppercase());
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    words
 }
 
 fn has_bare_keyword(sql: &str, keyword: &str) -> bool {
@@ -2195,6 +2256,35 @@ mod tests {
         let (sql, _) = translate_placeholders("SELECT $1 FROM t WHERE a = %s");
         assert_eq!(sql, "SELECT $1 FROM t WHERE a = $1");
         assert!(has_bare_keyword("SELECT a$b RETURNING", "RETURNING"));
+    }
+
+    #[test]
+    fn a_with_statement_returns_rows_as_its_primary_statement_does() {
+        assert!(returns_rows("WITH s AS (SELECT 1) SELECT * FROM s"));
+        assert!(returns_rows("with recursive s(n) as (select 1) table s"));
+        assert!(!returns_rows(
+            "WITH s AS (SELECT id FROM t) UPDATE t SET v = 2 FROM s WHERE s.id = t.id"
+        ));
+        assert!(!returns_rows(
+            "WITH s AS (SELECT id FROM t) DELETE FROM t USING s WHERE s.id = t.id"
+        ));
+        assert!(!returns_rows(
+            "WITH s AS (SELECT 7 AS id) INSERT INTO t SELECT id, 9 FROM s"
+        ));
+        assert!(returns_rows(
+            "WITH s AS (SELECT id FROM t) UPDATE t SET v = 2 FROM s WHERE s.id = t.id RETURNING t.id"
+        ));
+        assert!(returns_rows(
+            "WITH u AS (UPDATE t SET v = 4 RETURNING id) SELECT count(*) FROM u"
+        ));
+        assert!(!returns_rows(
+            "WITH u AS (DELETE FROM t RETURNING id) UPDATE x SET n = (SELECT count(*) FROM u)"
+        ));
+        assert!(!returns_rows(
+            "WITH s AS MATERIALIZED (SELECT 1) UPDATE t SET note = 'RETURNING SELECT' WHERE a IN (SELECT * FROM s)"
+        ));
+        assert!(returns_rows("(WITH s AS (SELECT 1) SELECT * FROM s)"));
+        assert!(!returns_rows("(WITH s AS (SELECT 1) UPDATE t SET a = 1)"));
     }
 
     #[test]
