@@ -488,6 +488,7 @@ def _search_native(
 
     from odoo.libs.json import loads as json_loads
     from odoo.libs.sql.builder import SQL
+    from odoo.orm.runtime._backend_pg_read import _total_order
     from odoo.orm.runtime._search_flush import _DependencyCollector
     from odoo.tools.query import Query
 
@@ -586,9 +587,7 @@ def _search_native(
     if fragment != "TRUE":
         query.add_where(SQL(fragment, *_revive(payload["params"]), to_flush=to_flush))
     if order:
-        query.order = model._order_to_sql(order, query) or SQL.identifier(
-            model._table, "id"
-        )
+        query.order = _total_order(model, order, model._order_to_sql(order, query))
     if limit is not None and limit is not False:
         query.limit = 1 if limit is True else limit
     if offset is not None and offset is not False:

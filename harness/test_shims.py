@@ -3890,6 +3890,69 @@ def test_search_delegates_once_the_transaction_wrote_security() -> None:
         backend.KERNEL_FOR = None
 
 
+def test_a_native_search_breaks_ties_of_its_order_by_id() -> None:
+    backend = _backend()
+    orm_shim = _shims()[1]
+    _odoo()
+    from odoo.libs.sql.builder import SQL
+    from odoo.orm.domain import Domain
+
+    class _Cursor:
+        statements_observed = False
+
+    class _Registry:
+        registry_sequence = 1
+
+    class _Env:
+        su = True
+        uid = 1
+        context: dict = {}
+        cr = _Cursor()
+        registry = _Registry()
+
+    class _Model:
+        _name = "probe.tied"
+        _table = "probe_tied"
+        _table_sql = None
+        env = _Env()
+
+        @staticmethod
+        def _order_to_sql(order, _query):
+            return SQL.identifier("probe_tied", order.split()[0])
+
+    class _Kernel:
+        registry_sequence = 1
+
+        @staticmethod
+        def search_where(_conn, _request, **_kwargs):
+            return ("TRUE", '{"touched": [], "params": []}')
+
+    def order_of(order):
+        query = backend._search_native(
+            _Model(), Domain("id", "in", [1]), 0, None, order, True
+        )
+        return query.order.code if query is not None else None
+
+    saved = (orm_shim._INSTALLED, orm_shim._rust_conn)
+    backend.KERNEL_FOR = lambda _env: _Kernel()
+    try:
+        orm_shim._INSTALLED = {"installed": True}
+        orm_shim._rust_conn = lambda _env: object()
+        check(
+            "an order that does not name id ends on it, as python's search does",
+            order_of("name"),
+            '"probe_tied"."name", "probe_tied"."id"',
+        )
+        check(
+            "an order that already names id gets no second one",
+            order_of("id desc"),
+            '"probe_tied"."id"',
+        )
+    finally:
+        orm_shim._INSTALLED, orm_shim._rust_conn = saved
+        backend.KERNEL_FOR = None
+
+
 def _observable_cursor():
     import threading
 
