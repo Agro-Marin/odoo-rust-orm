@@ -1396,6 +1396,84 @@ def test_web_spec_plan() -> None:
     check("forget_gates empties the verdicts", dict(orm_shim._GATE_CACHE), {})
 
 
+def test_rows_ir_access_does_not_hold_send_the_read_to_python() -> None:
+    from types import SimpleNamespace
+
+    from odoo.addons.base.models.access_link import (
+        LINK_FILES_PREDICATE,
+        LINK_SURFACE_PREDICATE,
+    )
+
+    shim = _shims()[1]
+
+    class _Env(dict):
+        su = False
+        context: dict = {}
+        registry = SimpleNamespace(db_name="test_rows_outside_the_table")
+
+    surface = SimpleNamespace(id=-7, predicate=LINK_SURFACE_PREDICATE)
+    files = SimpleNamespace(id=-8, predicate=LINK_FILES_PREDICATE)
+    stored = SimpleNamespace(id=12, predicate=("", "", "", ""))
+    access = SimpleNamespace(
+        _get_all_access=lambda: {
+            "linked": (stored, surface),
+            "ir.attachment": (stored, files),
+            "child": (stored,),
+        }
+    )
+    env = _Env(
+        {
+            "ir.access": access,
+            "linked": SimpleNamespace(_inherits_rules=False, _inherits={}),
+            "child": SimpleNamespace(_inherits_rules=True, _inherits={"plain": "x"}),
+            "plain": SimpleNamespace(_inherits_rules=False, _inherits={}),
+            "ir.attachment": SimpleNamespace(_inherits_rules=False, _inherits={}),
+        }
+    )
+    walked = []
+
+    def reached(*names):
+        def names_reached():
+            walked.append(names)
+            return set(names)
+
+        return names_reached
+
+    check(
+        "a link's rows grant nothing without links: the kernel's rules hold",
+        shim.access_the_kernel_lacks(env, reached("linked", "ir.attachment", "child")),
+        None,
+    )
+    check(
+        "with only link-gated rows outside the table, nothing is walked",
+        walked,
+        [],
+    )
+    env.context = {"access_link_ids": [3]}
+    check(
+        "with links in the context, python answers whatever the call reaches",
+        shim.access_the_kernel_lacks(env, reached("plain")),
+        "the context presents links, whose grants the kernel cannot open",
+    )
+    access._get_all_access = lambda: {
+        "plain": (SimpleNamespace(id=-1, predicate=("x.other", "", "", "")),),
+        "child": (stored,),
+    }
+    env.context = {}
+    check(
+        "any other row the table does not hold sends the read to python, "
+        "through an _inherits_rules child",
+        shim.access_the_kernel_lacks(env, reached("child")),
+        "plain: an access row ir_access does not hold",
+    )
+    env.su = True
+    check(
+        "a superuser reads past the rules",
+        shim.access_the_kernel_lacks(env, reached("plain")),
+        None,
+    )
+
+
 def test_dynamic_reach_rules_resolve_even_when_the_domain_is_true() -> None:
     import logging
     from types import SimpleNamespace

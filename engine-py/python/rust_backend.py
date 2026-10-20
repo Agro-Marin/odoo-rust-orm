@@ -481,8 +481,11 @@ def _search_native(
 ):
     import json
 
+    import rust_orm_shim
+
     from odoo.libs.json import loads as json_loads
     from odoo.libs.sql.builder import SQL
+    from odoo.orm.runtime._search_flush import _DependencyCollector
     from odoo.tools.query import Query
 
     env = model.env
@@ -494,6 +497,15 @@ def _search_native(
     )
     if why:
         _delegated(method, why)
+        return None
+
+    def reached():
+        collector = _DependencyCollector()
+        collector.collect_domain(model, domain)
+        return {model._name, *collector.fields_by_model}
+
+    if lacked := rust_orm_shim.access_the_kernel_lacks(env, reached):
+        _delegated(method, lacked)
         return None
     kernel = _kernel(env)
     if kernel is None:
@@ -510,8 +522,6 @@ def _search_native(
     except _NoWireForm as exc:
         _delegated(method, "the domain carries %s" % exc)
         return None
-
-    import rust_orm_shim
 
     context = env.context
     envelope = {

@@ -651,6 +651,76 @@ def _unaccent_overridden(registry) -> bool:
     return getattr(registry, "unaccent", probed) is not probed
 
 
+def _link_gated(row, link_predicates):
+    return bool(row.predicate) and row.predicate[0] in link_predicates
+
+
+_OUTSIDE_THE_TABLE = {}
+
+
+def _models_granted_outside_the_table(env):
+    rows = env["ir.access"]._get_all_access()
+    held = _OUTSIDE_THE_TABLE.get(env.registry.db_name)
+    if held is None or held[0] is not rows:
+        from odoo.addons.base.models.access_link import (
+            LINK_FILES_PREDICATE,
+            LINK_SURFACE_PREDICATE,
+        )
+
+        link_predicates = {LINK_SURFACE_PREDICATE[0], LINK_FILES_PREDICATE[0]}
+        held = (
+            rows,
+            frozenset(
+                name
+                for name, infos in rows.items()
+                if any(
+                    row.id <= 0 and not _link_gated(row, link_predicates)
+                    for row in infos
+                )
+            ),
+        )
+        _OUTSIDE_THE_TABLE[env.registry.db_name] = held
+    return held[1]
+
+
+def access_the_kernel_lacks(env, reached):
+    if env.su:
+        return None
+    from odoo.orm.constants import ACCESS_LINKS_KEY
+
+    if env.context.get(ACCESS_LINKS_KEY):
+        return "the context presents links, whose grants the kernel cannot open"
+    outside = _models_granted_outside_the_table(env)
+    if not outside:
+        return None
+    pending, seen = sorted(reached()), set()
+    while pending:
+        current = pending.pop()
+        if current in seen or current not in env:
+            continue
+        seen.add(current)
+        if current in outside:
+            return f"{current}: an access row ir_access does not hold"
+        model = env[current]
+        if model._inherits_rules:
+            pending.extend(model._inherits)
+    return None
+
+
+def _reached_models(model, fields):
+    reached = {model._name}
+    for spec in fields or ():
+        fname = spec.split(":")[0]
+        _holder, f = (
+            _path_field(model, fname)
+            if "." in fname
+            else (model, model._fields.get(fname))
+        )
+        if f is not None and f.relational:
+            reached.add(f.comodel_name)
+    return reached
+
+
 def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: ARG001  order and domain are the routed call shape, kept for the reasons log
     if not _policy_allows(model._name):
         return False
@@ -669,6 +739,10 @@ def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: AR
         return _refuse(STATEMENTS_OBSERVED)
     if not _clean_model(model, method):
         return _refuse("read path overridden in python")
+    if lacked := access_the_kernel_lacks(
+        model.env, lambda: _reached_models(model, fields)
+    ):
+        return _refuse(lacked)
     if method == "read" and (through := _rules_read_through_x2many(model, fields)):
         return _refuse(
             f"{through}: the record rules read it under sudo before the fetch, "
