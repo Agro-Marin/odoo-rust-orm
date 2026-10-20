@@ -27,6 +27,7 @@ PROTOCOL_METHODS = (
     "read_group_rows",
     "get_existing_ids",
     "lock_for_update",
+    "key_share_existing_ids",
     "try_lock_for_update",
     "unlink_rows",
     "link_m2m_pairs",
@@ -196,6 +197,8 @@ class RustBackend:
     get_existing_ids = _forward("get_existing_ids")
 
     lock_for_update = _forward("lock_for_update")
+
+    key_share_existing_ids = _forward("key_share_existing_ids")
 
     try_lock_for_update = _forward("try_lock_for_update")
 

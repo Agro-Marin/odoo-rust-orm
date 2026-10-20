@@ -3076,6 +3076,7 @@ def test_an_unarmed_port_is_its_delegate() -> None:
         ),
         "get_existing_ids": (("model", [1, 2]), {}),
         "lock_for_update": (("model",), {"allow_referencing": True}),
+        "key_share_existing_ids": (("model", {4, 5}), {}),
         "try_lock_for_update": (("model",), {"allow_referencing": True, "limit": 3}),
         "unlink_rows": (("model", (1,), "Defaults", "Attachment"), {}),
         "link_m2m_pairs": (("model", "rel", "c1", "c2", [(1, 2)]), {}),
