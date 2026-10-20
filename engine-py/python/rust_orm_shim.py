@@ -881,7 +881,7 @@ def _label_dependencies(model, fields, deps):
     return deps
 
 
-def _read_dependencies(model, domain, order, fields):
+def _read_dependencies(model, domain, order, fields, labels=True):
     from odoo.fields import Domain
     from odoo.orm.runtime._search_flush import _DependencyCollector
 
@@ -905,16 +905,20 @@ def _read_dependencies(model, domain, order, fields):
             if comodel._active_name:
                 collector.fields_by_model[comodel._name].add(comodel._active_name)
             collector.collect_order(comodel, comodel._order)
+    if not labels:
+        return collector.fields_by_model
     return _label_dependencies(model, fields, collector.fields_by_model)
 
 
-def _flush_if_needed(env, model, domain=None, order=None, fields=None) -> bool | None:
+def _flush_if_needed(
+    env, model, domain=None, order=None, fields=None, labels=True
+) -> bool | None:
     if not _is_flush_required(env):
         return True
     started = time.monotonic()
     try:
         try:
-            deps = _read_dependencies(model, domain, order, fields)
+            deps = _read_dependencies(model, domain, order, fields, labels)
         except Exception as e:
             _logger.debug("flushing everything: %s", e)
             env.flush_all()
@@ -2009,13 +2013,17 @@ def _wrap_read_group(orig_read_group):
                     self.env,
                     self,
                     domain,
-                    order,
+                    order
+                    or ", ".join(
+                        dict.fromkeys(g.split(":")[0] for g in groupby if "." not in g)
+                    ),
                     [g.split(":")[0].split(".")[0] for g in groupby]
                     + [
                         a.rsplit(":", 1)[0]
                         for a in (*aggregates, *_having_specs(having))
                         if a != "__count"
                     ],
+                    labels=False,
                 ):
                     raise KernelRefused("flush failed; not routing")
                 for g in groupby:

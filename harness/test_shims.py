@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import collections
+import contextlib
 import datetime as _dt
 import importlib.util
 import json
@@ -2105,6 +2107,103 @@ def test_the_read_gates_see_fetch_and_read_group_overrides() -> None:
         {"analytic_distribution"},
     )
     orm_shim.forget_gates()
+
+
+def test_a_routed_read_group_flushes_no_label_it_does_not_return() -> None:
+    orm_shim = _shims()[1]
+    _odoo()
+    import odoo.orm.runtime._search_flush as search_flush
+
+    class _Collector:
+        def __init__(self) -> None:
+            self.fields_by_model = collections.defaultdict(set)
+
+        def collect_domain(self, _model, _domain) -> None:
+            return None
+
+        def collect_order(self, _model, _order) -> None:
+            return None
+
+        def collect_field(self, model, fname) -> None:
+            self.fields_by_model[model._name].add(fname)
+
+    class Partner:
+        _name = "res.partner"
+        _rec_name = "name"
+        _rec_names_search = None
+        _fields = {"name": F("char")}
+
+    class Line:
+        _name = "probe.line"
+        _active_name = None
+        _order = "id"
+        _fields = {"partner_id": F("many2one", comodel_name="res.partner")}
+
+    registry = {"res.partner": Partner(), "probe.line": Line()}
+
+    class Env:
+        su = True
+
+        def __getitem__(self, name):
+            return registry[name]
+
+    for model in registry.values():
+        model.env = Env()
+
+    class _Stop(BaseException):
+        pass
+
+    flushed = []
+
+    def flush_if_needed(_env, _model, _domain, order, _fields, labels=True):
+        flushed.append((order, labels))
+        return True
+
+    def dispatch(*_args, **_kwargs):
+        raise _Stop
+
+    saved = {
+        name: getattr(orm_shim, name)
+        for name in ("_bad_aggregate", "_gate", "_flush_if_needed", "_dispatch")
+    }
+    collector = search_flush._DependencyCollector
+    search_flush._DependencyCollector = _Collector
+    try:
+        line = registry["probe.line"]
+        check(
+            "a read with labels flushes the many2one's label",
+            dict(orm_shim._read_dependencies(line, [], None, ["partner_id"])),
+            {"probe.line": {"partner_id"}, "res.partner": {"name"}},
+        )
+        check(
+            "a read without labels flushes only what it reads",
+            dict(
+                orm_shim._read_dependencies(
+                    line, [], None, ["partner_id"], labels=False
+                )
+            ),
+            {"probe.line": {"partner_id"}},
+        )
+        orm_shim._bad_aggregate = lambda _model, _aggregates: None
+        orm_shim._gate = lambda *_args, **_kwargs: True
+        orm_shim._flush_if_needed = flush_if_needed
+        orm_shim._dispatch = dispatch
+        with contextlib.suppress(_Stop):
+            orm_shim._wrap_read_group(None)(line, [], ["partner_id"], ["__count"])
+        with contextlib.suppress(_Stop):
+            orm_shim._wrap_read_group(None)(
+                line, [], ["partner_id"], ["__count"], order="id desc"
+            )
+        check(
+            "_read_group returns records, so its flush asks for no label, and "
+            "it flushes the order its groups are sorted by, the groupby by default",
+            flushed,
+            [("partner_id", False), ("id desc", False)],
+        )
+    finally:
+        search_flush._DependencyCollector = collector
+        for name, value in saved.items():
+            setattr(orm_shim, name, value)
 
 
 def test_a_constraint_raised_by_the_pre_route_flush_reaches_the_caller() -> None:
