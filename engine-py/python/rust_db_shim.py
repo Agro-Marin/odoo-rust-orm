@@ -30,6 +30,9 @@ RUST_DB = None
 CONNINFO = None
 PSYCOPG_CONNINFO = None
 _ADAPT = None
+_KERNEL_ISOLATION_LEVELS = frozenset(
+    {None, psycopg.IsolationLevel.REPEATABLE_READ, psycopg.IsolationLevel.SERIALIZABLE}
+)
 
 ACTIVE = False
 
@@ -335,6 +338,14 @@ class FakeConnection:
 
     @isolation_level.setter
     def isolation_level(self, value) -> None:
+        if value not in _KERNEL_ISOLATION_LEVELS:
+            raise psycopg.NotSupportedError(
+                f"the rust connection runs REPEATABLE READ or SERIALIZABLE, not {value!r}"
+            )
+        try:
+            self._rust.set_serializable(value == psycopg.IsolationLevel.SERIALIZABLE)
+        except RuntimeError as e:
+            _raise_pg(e)
         self._isolation = value
 
     @property

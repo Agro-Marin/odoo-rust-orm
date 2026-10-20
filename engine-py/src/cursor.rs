@@ -1190,6 +1190,7 @@ pub struct RustConn {
     signals_checked: std::sync::Mutex<Option<(u64, u64, Arc<odoo_kernel::registry::Dynamic>)>>,
     autocommit: AtomicBool,
     pub readonly: AtomicBool,
+    serializable: AtomicBool,
     closed: AtomicBool,
     fault: odoo_kernel::connect::FaultSlot,
     driver: std::sync::Mutex<Option<odoo_kernel::connect::Driver>>,
@@ -1310,6 +1311,7 @@ impl RustConn {
             signals_checked: std::sync::Mutex::new(None),
             autocommit: AtomicBool::new(false),
             readonly: AtomicBool::new(false),
+            serializable: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             fault: Arc::new(std::sync::Mutex::new(Default::default())),
             driver: std::sync::Mutex::new(None),
@@ -1363,10 +1365,11 @@ impl RustConn {
         if !self.in_tx.swap(true, Ordering::SeqCst) {
             self.tx_serial.fetch_add(1, Ordering::SeqCst);
             let readonly = self.readonly.load(Ordering::SeqCst);
-            let begin = if readonly {
-                "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"
-            } else {
-                "BEGIN ISOLATION LEVEL REPEATABLE READ"
+            let begin = match (self.serializable.load(Ordering::SeqCst), readonly) {
+                (false, true) => "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
+                (false, false) => "BEGIN ISOLATION LEVEL REPEATABLE READ",
+                (true, true) => "BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY",
+                (true, false) => "BEGIN ISOLATION LEVEL SERIALIZABLE",
             };
             tracing::trace!(
                 target: "odoo_kernel::cursor",
@@ -2085,6 +2088,7 @@ impl RustConn {
             self.clear_prepared();
         }
         self.readonly.store(false, Ordering::SeqCst);
+        self.serializable.store(false, Ordering::SeqCst);
         Ok(())
     }
 
@@ -2118,6 +2122,14 @@ impl RustConn {
 
     fn set_readonly(&self, value: bool) {
         self.readonly.store(value, Ordering::SeqCst);
+    }
+
+    fn set_serializable(&self, value: bool) -> PyResult<()> {
+        if self.in_tx.load(Ordering::SeqCst) {
+            return Err(rerr("cannot change the isolation level inside a transaction"));
+        }
+        self.serializable.store(value, Ordering::SeqCst);
+        Ok(())
     }
 
     pub fn close(&self, py: Python<'_>) -> PyResult<()> {
