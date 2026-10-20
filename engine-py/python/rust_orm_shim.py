@@ -655,6 +655,7 @@ def _link_gated(row, link_predicates):
     return bool(row.predicate) and row.predicate[0] in link_predicates
 
 
+_LINK_PREDICATES = ("LINK_SURFACE_PREDICATE", "LINK_FILES_PREDICATE")
 _OUTSIDE_THE_TABLE = {}
 
 
@@ -662,12 +663,15 @@ def _models_granted_outside_the_table(env):
     rows = env["ir.access"]._get_all_access()
     held = _OUTSIDE_THE_TABLE.get(env.registry.db_name)
     if held is None or held[0] is not rows:
-        from odoo.addons.base.models.access_link import (
-            LINK_FILES_PREDICATE,
-            LINK_SURFACE_PREDICATE,
-        )
-
-        link_predicates = {LINK_SURFACE_PREDICATE[0], LINK_FILES_PREDICATE[0]}
+        try:
+            from odoo.addons.base.models import access_link
+        except ImportError:
+            access_link = None
+        link_predicates = {
+            predicate[0]
+            for name in _LINK_PREDICATES
+            if (predicate := getattr(access_link, name, None))
+        }
         held = (
             rows,
             frozenset(
@@ -686,9 +690,9 @@ def _models_granted_outside_the_table(env):
 def access_the_kernel_lacks(env, reached):
     if env.su:
         return None
-    from odoo.orm.constants import ACCESS_LINKS_KEY
+    from odoo.orm import constants
 
-    if env.context.get(ACCESS_LINKS_KEY):
+    if env.context.get(getattr(constants, "ACCESS_LINKS_KEY", "access_link_ids")):
         return "the context presents links, whose grants the kernel cannot open"
     outside = _models_granted_outside_the_table(env)
     if not outside:
