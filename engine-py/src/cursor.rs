@@ -959,6 +959,20 @@ fn is_postgis_wkb(ty: &Type) -> bool {
     matches!(ty.name(), "geometry" | "geography")
 }
 
+const UPPER_HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
+
+fn hex_text(prefix: &str, bytes: &[u8], digits: &[u8; 16]) -> String {
+    let mut out = Vec::with_capacity(prefix.len() + bytes.len() * 2);
+    out.extend_from_slice(prefix.as_bytes());
+    for &b in bytes {
+        out.push(digits[usize::from(b >> 4)]);
+        out.push(digits[usize::from(b & 0x0F)]);
+    }
+    String::from_utf8(out).expect("hex digits are ascii")
+}
+
 fn vector_to_text(v: &[f32]) -> String {
     let mut out = String::from("[");
     for (i, f) in v.iter().enumerate() {
@@ -1121,13 +1135,7 @@ fn cell_to_py(py: Python<'_>, row: &tokio_postgres::Row, i: usize) -> PyResult<P
             }
             if is_postgis_wkb(ty) {
                 return match row.try_get::<_, Option<RawBytes>>(i).map_err(rerr)? {
-                    Some(raw) => {
-                        let mut hex = String::with_capacity(raw.0.len() * 2);
-                        for b in &raw.0 {
-                            hex.push_str(&format!("{b:02X}"));
-                        }
-                        hex.into_py_any(py)
-                    }
+                    Some(raw) => hex_text("", &raw.0, UPPER_HEX).into_py_any(py),
                     None => Ok(py.None()),
                 };
             }
@@ -2126,7 +2134,9 @@ impl RustConn {
 
     fn set_serializable(&self, value: bool) -> PyResult<()> {
         if self.in_tx.load(Ordering::SeqCst) {
-            return Err(rerr("cannot change the isolation level inside a transaction"));
+            return Err(rerr(
+                "cannot change the isolation level inside a transaction",
+            ));
         }
         self.serializable.store(value, Ordering::SeqCst);
         Ok(())
@@ -2182,9 +2192,19 @@ impl RustConn {
 #[cfg(test)]
 mod tests {
     use super::{
-        has_bare_keyword, has_multiple_statements, leading_keyword, numeric_binary_to_text,
-        returns_rows, translate_placeholders,
+        LOWER_HEX, UPPER_HEX, has_bare_keyword, has_multiple_statements, hex_text, leading_keyword,
+        numeric_binary_to_text, returns_rows, translate_placeholders,
     };
+
+    #[test]
+    fn hex_text_spells_every_byte_as_format_does() {
+        let every: Vec<u8> = (0..=255).collect();
+        let upper: String = every.iter().map(|b| format!("{b:02X}")).collect();
+        let lower: String = every.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex_text("", &every, UPPER_HEX), upper);
+        assert_eq!(hex_text("\\x", &every, LOWER_HEX), format!("\\x{lower}"));
+        assert_eq!(hex_text("\\x", &[], LOWER_HEX), "\\x");
+    }
 
     fn numeric(ndigits: &[u16], weight: i16, sign: u16, dscale: u16) -> Vec<u8> {
         let mut raw = Vec::new();
@@ -2459,13 +2479,8 @@ fn py_to_copy_text(v: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
         ));
     }
     if v.is_instance_of::<PyBytes>() {
-        let raw = v.extract::<Vec<u8>>()?;
-        let mut out = String::with_capacity(raw.len() * 2 + 2);
-        out.push_str("\\x");
-        for b in raw {
-            out.push_str(&format!("{b:02x}"));
-        }
-        return Ok(Some(out));
+        let raw = v.cast::<PyBytes>()?;
+        return Ok(Some(hex_text("\\x", raw.as_bytes(), LOWER_HEX)));
     }
     if v.is_instance_of::<PyInt>()
         || v.is_instance_of::<PyFloat>()
