@@ -2117,6 +2117,7 @@ def test_a_routed_read_group_flushes_no_label_it_does_not_return() -> None:
     class _Collector:
         def __init__(self) -> None:
             self.fields_by_model = collections.defaultdict(set)
+            self.opaque = False
 
         def collect_domain(self, _model, _domain) -> None:
             return None
@@ -2155,8 +2156,10 @@ def test_a_routed_read_group_flushes_no_label_it_does_not_return() -> None:
 
     flushed = []
 
-    def flush_if_needed(_env, _model, _domain, order, _fields, labels=True):
-        flushed.append((order, labels))
+    def flush_if_needed(
+        _env, _model, _domain, order, _fields, labels=True, groupby=None
+    ):
+        flushed.append((order, labels, tuple(groupby)))
         return True
 
     def dispatch(*_args, **_kwargs):
@@ -2196,14 +2199,66 @@ def test_a_routed_read_group_flushes_no_label_it_does_not_return() -> None:
             )
         check(
             "_read_group returns records, so its flush asks for no label, and "
-            "it flushes the order its groups are sorted by, the groupby by default",
+            "hands over the order its groups are sorted by with the groupby",
             flushed,
-            [("partner_id", False), ("id desc", False)],
+            [(None, False, ("partner_id",)), ("id desc", False, ("partner_id",))],
         )
     finally:
         search_flush._DependencyCollector = collector
         for name, value in saved.items():
             setattr(orm_shim, name, value)
+
+
+def test_a_read_group_order_flushes_the_fields_its_terms_name() -> None:
+    orm_shim = _shims()[1]
+    _odoo()
+    fields_of = orm_shim._read_group_order_fields
+    check(
+        "an aggregate or a granularity names the field it reads",
+        fields_of("dayofweek,hour_from:min desc, date:month", ["dayofweek"]),
+        "dayofweek, hour_from, date",
+    )
+    check(
+        "the count reads no field, and no order is the groupby's",
+        (fields_of("__count desc", ["x"]), fields_of(None, ["date:week", "a.b", "c"])),
+        ("", "date, c"),
+    )
+    for order in ("partner_id.name", "props.key:day", "id,"):
+        try:
+            fields_of(order, ["partner_id"])
+        except ValueError:
+            continue
+        check(f"{order!r} is refused, not under-flushed", "accepted", "ValueError")
+
+
+def test_a_flush_whose_reads_are_unknown_refuses_routing_and_flushes_nothing() -> None:
+    orm_shim = _shims()[1]
+    _odoo()
+
+    class Env:
+        flushed_all = 0
+
+        def flush_all(self):
+            Env.flushed_all += 1
+
+    class Model:
+        _name = "probe.attendance"
+
+    def unknown(*_args):
+        raise ValueError("Invalid order")
+
+    saved = orm_shim._read_dependencies
+    orm_shim._read_dependencies = unknown
+    try:
+        env = Env()
+        check(
+            "what to flush is unknown: the call is not routed",
+            orm_shim._flush_if_needed(env, Model(), [], "hour_from:min"),
+            False,
+        )
+        check("and nothing is flushed mid-compute", Env.flushed_all, 0)
+    finally:
+        orm_shim._read_dependencies = saved
 
 
 def test_a_constraint_raised_by_the_pre_route_flush_reaches_the_caller() -> None:
@@ -2223,12 +2278,16 @@ def test_a_constraint_raised_by_the_pre_route_flush_reaches_the_caller() -> None
             return True
 
     def env_raising(exc):
+        class _Flushing:
+            @staticmethod
+            def flush_model(_fnames):
+                raise exc
+
         class _Env:
             core = _Core()
 
-            @staticmethod
-            def flush_all():
-                raise exc
+            def __getitem__(self, _name):
+                return _Flushing()
 
         return _Env()
 
@@ -2236,12 +2295,14 @@ def test_a_constraint_raised_by_the_pre_route_flush_reaches_the_caller() -> None
         _name = "probe.model"
 
     def run(exc):
+        saved = orm_shim._read_dependencies
+        orm_shim._read_dependencies = lambda *_args: {"probe.model": {"x"}}
         try:
-            return orm_shim._flush_if_needed(
-                env_raising(exc), _Model(), domain=object()
-            )
+            return orm_shim._flush_if_needed(env_raising(exc), _Model())
         except Exception as raised:
             return raised
+        finally:
+            orm_shim._read_dependencies = saved
 
     got = run(psycopg.errors.CheckViolation("chk"))
     check("a database error propagates", type(got).__name__, "CheckViolation")

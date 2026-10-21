@@ -881,7 +881,7 @@ def _label_dependencies(model, fields, deps):
     return deps
 
 
-def _read_dependencies(model, domain, order, fields, labels=True):
+def _read_dependencies(model, domain, order, fields, labels=True, groupby=None):
     from odoo.fields import Domain
     from odoo.orm.runtime._search_flush import _DependencyCollector
 
@@ -891,6 +891,10 @@ def _read_dependencies(model, domain, order, fields, labels=True):
         dom &= model._access_domain("read")
     collector = _DependencyCollector()
     collector.collect_domain(model, dom)
+    if collector.opaque:
+        raise ValueError("a custom domain hides what it reads")
+    if groupby is not None:
+        order = _read_group_order_fields(order, groupby)
     collector.collect_order(model, order or model._order)
     own = collector.fields_by_model[model._name]
     if model._active_name:
@@ -910,24 +914,38 @@ def _read_dependencies(model, domain, order, fields, labels=True):
     return _label_dependencies(model, fields, collector.fields_by_model)
 
 
+def _read_group_order_fields(order, groupby) -> str:
+    from odoo.orm.parsing import parse_read_group_spec
+
+    if not order:
+        return ", ".join(
+            dict.fromkeys(g.split(":")[0] for g in groupby if "." not in g)
+        )
+    names = []
+    for part in order.split(","):
+        spec = part.split()[0] if part.strip() else part
+        if spec == "__count":
+            continue
+        fname, path, _ = parse_read_group_spec(spec)
+        if path:
+            raise ValueError(f"the order term {spec!r} reads through {fname}")
+        names.append(fname)
+    return ", ".join(dict.fromkeys(names))
+
+
 def _flush_if_needed(
-    env, model, domain=None, order=None, fields=None, labels=True
+    env, model, domain=None, order=None, fields=None, labels=True, groupby=None
 ) -> bool | None:
     if not _is_flush_required(env):
         return True
     started = time.monotonic()
     try:
         try:
-            deps = _read_dependencies(model, domain, order, fields, labels)
+            deps = _read_dependencies(model, domain, order, fields, labels, groupby)
         except Exception as e:
-            _logger.debug("flushing everything: %s", e)
-            env.flush_all()
-            _call_logger.debug(
-                "%s: flushed everything in %.1f ms before routing",
-                model._name,
-                (time.monotonic() - started) * 1000,
-            )
-            return True
+            STATS["fallback_flush"] += 1
+            _logger.debug("not routing: what to flush is unknown: %s", e)
+            return False
         for mname, fnames in deps.items():
             env[mname].flush_model(fnames)
         _call_logger.debug(
@@ -2013,10 +2031,7 @@ def _wrap_read_group(orig_read_group):
                     self.env,
                     self,
                     domain,
-                    order
-                    or ", ".join(
-                        dict.fromkeys(g.split(":")[0] for g in groupby if "." not in g)
-                    ),
+                    order,
                     [g.split(":")[0].split(".")[0] for g in groupby]
                     + [
                         a.rsplit(":", 1)[0]
@@ -2024,6 +2039,7 @@ def _wrap_read_group(orig_read_group):
                         if a != "__count"
                     ],
                     labels=False,
+                    groupby=groupby,
                 ):
                     raise KernelRefused("flush failed; not routing")
                 for g in groupby:
