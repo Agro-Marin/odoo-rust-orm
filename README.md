@@ -72,7 +72,8 @@ refusal list is the replacement backlog.
 - **Security**: `ir.access` read rows, as `_access_domain("read")` combines
   them: the OR of the read permissions the principal's groups hold (FALSE
   when it holds none), AND every guard binding it (all principals, or the
-  members of the guard's group), AND each delegated parent's access, with a
+  members of the guard's group) but those whose `exempt_group_ids` it holds,
+  a privilege of the environment included, AND each delegated parent's access, with a
   table-inheritance root's rows binding the models under it. The model-level
   check denies where Python's `_access_allowed` would: no permission held
   whose domain is not `[(0, '=', 1)]`, a guard of that domain binding the

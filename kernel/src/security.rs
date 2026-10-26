@@ -1064,6 +1064,10 @@ async fn rules_domain_inner(
             skipped += 1;
             continue;
         }
+        if rule.restrict && rule.exempt.iter().any(|g| user_groups.contains(g)) {
+            skipped += 1;
+            continue;
+        }
         any_applied = true;
         let mut dom = match &rule.parsed {
             Some(Ok(parsed)) => eval_py(parsed, registry, db, user).await?,
@@ -1151,8 +1155,11 @@ fn check_read_access_inner(
     }
     let anchored = security.anchors.contains_key(model);
     if let Some(guards) = security.denying_guards.get(model)
-        && guards.iter().any(|g| {
-            g.is_none_or(|gid| groups.contains(&gid) && !(anchored && scopes.contains_key(&gid)))
+        && guards.iter().any(|(g, exempt)| {
+            !exempt.iter().any(|e| groups.contains(e))
+                && g.is_none_or(|gid| {
+                    groups.contains(&gid) && !(anchored && scopes.contains_key(&gid))
+                })
         })
     {
         deny_access!("access denied on {model} for uid {uid}: a guard binding it admits nothing");
@@ -1239,7 +1246,7 @@ mod tests {
         security.access.insert("x.guarded".into(), vec![1]);
         security
             .denying_guards
-            .insert("x.guarded".into(), vec![Some(3)]);
+            .insert("x.guarded".into(), vec![(Some(3), Vec::new())]);
         security
             .parents
             .insert("x.child".into(), vec!["x.parent".into()]);
@@ -1286,6 +1293,26 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn a_denying_guard_spares_whoever_holds_an_exempt_group() {
+        let mut security = access_security();
+        security
+            .denying_guards
+            .insert("x.guarded".into(), vec![(None, vec![4])]);
+        let read = |groups: &[i32]| {
+            check_read_access_inner(
+                &security,
+                "x.guarded",
+                1,
+                &held(groups),
+                &GroupScopes::new(),
+                0,
+            )
+        };
+        assert!(read(&[1]).is_err());
+        assert!(read(&[1, 4]).is_ok());
     }
 
     #[test]
@@ -1337,7 +1364,7 @@ mod tests {
         let mut everyone = access_security();
         everyone
             .denying_guards
-            .insert("x.guarded".into(), vec![None]);
+            .insert("x.guarded".into(), vec![(None, Vec::new())]);
         assert!(
             check_read_access_inner(
                 &everyone,

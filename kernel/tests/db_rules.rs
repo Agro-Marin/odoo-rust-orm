@@ -619,8 +619,39 @@ async fn a_permission_that_admits_nothing_grants_no_access_and_such_a_guard_deni
         "its only permission is [(0, '=', 1)]: {:?}",
         security.access.get("x.never")
     );
-    assert_eq!(security.denying_guards["x.root"], vec![None]);
+    assert_eq!(security.denying_guards["x.root"], vec![(None, Vec::new())]);
     assert!(!security.denying_guards.contains_key("x.thing"));
+    drop_schema(&client, schema).await;
+}
+
+#[tokio::test]
+#[ignore = "needs RUSTORM_TEST_DSN"]
+async fn a_guard_carries_the_groups_it_spares() {
+    let schema = "rustorm_t_access_exempt";
+    let client = connect(schema).await;
+    mini_access_schema(&client).await;
+    client
+        .batch_execute(
+            "CREATE TABLE ir_access_exempt_group_rel (access_id int, group_id int);
+             INSERT INTO ir_access_exempt_group_rel VALUES (11, 3), (21, 3), (21, 2);",
+        )
+        .await
+        .expect("the exemptions");
+
+    let security = Registry::load_security(&client, &AccessTopology::default())
+        .await
+        .expect("loads");
+    let exempt: Vec<(Vec<i32>, Vec<i32>)> = security.rules["x.thing"]
+        .iter()
+        .map(|rule| (rule.groups.clone(), rule.exempt.clone()))
+        .collect();
+    assert!(exempt.contains(&(vec![8], vec![3])), "{exempt:?}");
+    assert!(
+        exempt
+            .iter()
+            .all(|(groups, spared)| groups == &vec![8] || spared.is_empty())
+    );
+    assert_eq!(security.denying_guards["x.root"], vec![(None, vec![3, 2])]);
     drop_schema(&client, schema).await;
 }
 
@@ -640,7 +671,7 @@ async fn a_model_under_a_table_root_is_bound_by_the_roots_rows_too() {
         .await
         .expect("loads");
     assert_eq!(security.access["x.thing"], vec![7, 5]);
-    assert_eq!(security.denying_guards["x.thing"], vec![None]);
+    assert_eq!(security.denying_guards["x.thing"], vec![(None, Vec::new())]);
     assert_eq!(security.rules["x.thing"].len(), 6);
     assert_eq!(security.parents["x.thing"], vec!["x.root".to_string()]);
     drop_schema(&client, schema).await;

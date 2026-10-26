@@ -378,7 +378,14 @@ pub struct Rule {
     pub parsed: Option<std::result::Result<crate::security::PyExpr, String>>,
     /// The row's reach, ANDed with its fixed filter (`parsed`).
     pub reach: Option<Reach>,
+    /// On a guard: whoever holds one of these groups or privileges is not
+    /// bound by it (`ir.access.exempt_group_ids`).
+    pub exempt: Vec<i32>,
 }
+
+/// A read guard whose domain is literally FALSE: the group whose members it
+/// binds (`None`: everyone), and the groups whose holders it spares.
+pub type DenyingGuard = (Option<i32>, Vec<i32>);
 
 #[derive(Debug, Default, Clone)]
 pub struct Security {
@@ -395,8 +402,9 @@ pub struct Security {
     pub access: HashMap<String, Vec<i32>>,
 
     /// Read guards whose domain is literally FALSE: `None` binds everyone,
-    /// `Some(g)` the members of `g`. Bound by one, the model is refused.
-    pub denying_guards: HashMap<String, Vec<Option<i32>>>,
+    /// `Some(g)` the members of `g`, both but whoever holds one of the
+    /// exempt groups beside it. Bound by one, the model is refused.
+    pub denying_guards: HashMap<String, Vec<DenyingGuard>>,
 
     /// The delegated parents whose read access the model's access needs.
     pub parents: HashMap<String, Vec<String>>,
@@ -1687,6 +1695,26 @@ impl Registry {
                 .or_default()
                 .push(row.get(1));
         }
+        let mut exemptions: HashMap<i32, Vec<i32>> = HashMap::new();
+        let has_exemptions: bool = client
+            .query_one(
+                "SELECT to_regclass(format('%I.ir_access_exempt_group_rel', \
+                                            current_schema())) IS NOT NULL",
+                &[],
+            )
+            .await?
+            .get(0);
+        if has_exemptions {
+            for row in client
+                .query(
+                    "SELECT access_id, group_id FROM ir_access_exempt_group_rel",
+                    &[],
+                )
+                .await?
+            {
+                exemptions.entry(row.get(0)).or_default().push(row.get(1));
+            }
+        }
         let mut rows = 0usize;
         for row in client
             .query(
@@ -1724,13 +1752,18 @@ impl Registry {
                 );
             }
             let never = domain_force.as_deref().is_some_and(is_literally_false);
+            let exempt = if guard {
+                exemptions.remove(&aid).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             if guard {
                 if never {
                     security
                         .denying_guards
                         .entry(model.clone())
                         .or_default()
-                        .push(members_only.then_some(group));
+                        .push((members_only.then_some(group), exempt.clone()));
                 }
             } else if !never {
                 security
@@ -1781,6 +1814,7 @@ impl Registry {
                 domain_force,
                 parsed,
                 reach: row_reach,
+                exempt,
             });
         }
         for (model, owners) in &topology.bound_by {
