@@ -42,6 +42,8 @@ PROTOCOL_METHODS = (
     "has_rows_beyond",
     "has_cycle",
     "increment_columns_skip_locked",
+    "changed_columns",
+    "filestore",
 )
 
 STATS = {
@@ -231,6 +233,10 @@ class RustBackend:
     has_cycle = _forward("has_cycle")
 
     increment_columns_skip_locked = _forward("increment_columns_skip_locked")
+
+    changed_columns = _forward("changed_columns")
+
+    filestore = _forward("filestore")
 
 
 KERNEL_FOR = None

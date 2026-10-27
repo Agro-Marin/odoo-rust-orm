@@ -3226,6 +3226,8 @@ def test_an_unarmed_port_is_its_delegate() -> None:
     calls = {
         "create_rows": (("model", ["stored"], ["col"], ["field"]), {}),
         "update_rows": (("model", ("name",), [(1, "x")]), {}),
+        "changed_columns": (("model", ("name",), [(1, "x")]), {}),
+        "filestore": (("env",), {}),
         "fetch": (("model", "query", ["a"], ["b"]), {}),
         "search": (
             ("model", "domain", 0, None, None),
@@ -4038,10 +4040,12 @@ def _observable_cursor():
 
     _odoo()
     from odoo.db import metrics
+    from odoo.libs.worker_thread import get_work
 
     class _Cursor(metrics._MetricsMixin):
         def __init__(self) -> None:
             self._thread = threading.current_thread()
+            self._work = get_work(self._thread)
 
     return _Cursor()
 
@@ -4050,6 +4054,7 @@ def _observations(cursor):
     import threading
 
     from odoo.db import observing_statements
+    from odoo.libs.worker_thread import get_work
 
     yield "unobserved", False
     with observing_statements():
@@ -4058,14 +4063,15 @@ def _observations(cursor):
             yield "inside a nested observing_statements()", True
         yield "back in the outer observing_statements()", True
     yield "after observing_statements()", False
-    thread = threading.current_thread()
-    thread.query_hooks = [lambda *_args: None]
+    work = get_work(threading.current_thread())
+    saved = work.query_hooks
+    work.query_hooks = [lambda *_args: None]
     try:
         yield "with a query hook on the cursor's thread", True
-        thread.query_hooks = []
+        work.query_hooks = []
         yield "with an emptied query hook list", False
     finally:
-        del thread.query_hooks
+        work.query_hooks = saved
     check("the cursor ends unobserved", cursor.statements_observed, False)
 
 
