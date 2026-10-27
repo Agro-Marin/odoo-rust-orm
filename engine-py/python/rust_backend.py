@@ -44,6 +44,7 @@ PROTOCOL_METHODS = (
     "increment_columns_skip_locked",
     "changed_columns",
     "filestore",
+    "company_dependent_referrers",
 )
 
 STATS = {
@@ -237,6 +238,8 @@ class RustBackend:
     changed_columns = _forward("changed_columns")
 
     filestore = _forward("filestore")
+
+    company_dependent_referrers = _forward("company_dependent_referrers")
 
 
 KERNEL_FOR = None

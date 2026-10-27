@@ -3286,6 +3286,7 @@ def test_an_unarmed_port_is_its_delegate() -> None:
         "update_rows": (("model", ("name",), [(1, "x")]), {}),
         "changed_columns": (("model", ("name",), [(1, "x")]), {}),
         "filestore": (("env",), {}),
+        "company_dependent_referrers": (("model", "field", [1], [2]), {}),
         "fetch": (("model", "query", ["a"], ["b"]), {}),
         "search": (
             ("model", "domain", 0, None, None),
