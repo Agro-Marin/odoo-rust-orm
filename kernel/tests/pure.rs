@@ -414,7 +414,7 @@ fn an_inequality_on_html_is_refused() {
 #[test]
 fn an_inequality_on_a_boolean_is_refused() {
     let reg = base_registry();
-    let err = compile_res(&reg, serde_json::json!([["active", "<=", true]])).unwrap_err();
+    let err = compile_res(&reg, serde_json::json!([["active", "<=", false]])).unwrap_err();
     assert!(format!("{err:#}").contains("boolean"), "{err:#}");
 }
 
@@ -4169,4 +4169,231 @@ fn an_order_term_python_resolved_orders_by_its_fragment_in_place() {
     assert!(parse_order(&ctx, m, "p2", "$0").is_err());
     let without_nonce = ExprCtx::new(&reg, "en_US", 1);
     assert!(parse_order(&without_nonce, m, "res_partner", "$0").is_err());
+}
+
+fn related_paths_registry(detail_one2one: Option<bool>) -> Registry {
+    let mut detail = o2m("detail_id", "d.detail", "item_id");
+    detail.one2one = detail_one2one;
+    registry(vec![
+        model(
+            "d.item",
+            "id",
+            vec![
+                field("id", FieldType::Integer),
+                field("name", FieldType::Char),
+                field("amount", FieldType::Float),
+                m2o("partner_id", "d.partner"),
+                m2m("tag_ids", "d.tag", "d_item_tag_rel", "item_id", "tag_id"),
+                o2m("line_ids", "d.line", "item_id"),
+                detail,
+                related("partner_rank", "partner_id.rank", FieldType::Integer),
+                related("partner_name", "partner_id.name", FieldType::Char),
+                related("tag_name", "tag_ids.name", FieldType::Char),
+                related("line_qty", "line_ids.qty", FieldType::Integer),
+                related("detail_label", "detail_id.label", FieldType::Char),
+            ],
+        ),
+        model(
+            "d.partner",
+            "id",
+            vec![
+                field("id", FieldType::Integer),
+                field("name", FieldType::Char),
+                field("rank", FieldType::Integer),
+            ],
+        ),
+        model(
+            "d.tag",
+            "id",
+            vec![
+                field("id", FieldType::Integer),
+                field("name", FieldType::Char),
+            ],
+        ),
+        model(
+            "d.line",
+            "id",
+            vec![
+                field("id", FieldType::Integer),
+                m2o("item_id", "d.item"),
+                field("qty", FieldType::Integer),
+            ],
+        ),
+        model(
+            "d.detail",
+            "id",
+            vec![
+                field("id", FieldType::Integer),
+                m2o("item_id", "d.item"),
+                field("label", FieldType::Char),
+            ],
+        ),
+    ])
+}
+
+fn item_sql(dom: serde_json::Value) -> String {
+    count_sql_on(&related_paths_registry(Some(true)), "d.item", dom)
+}
+
+fn item_refusal(dom: serde_json::Value) -> String {
+    let reg = related_paths_registry(Some(true));
+    let ctx = ExprCtx::new(&reg, "en_US", 1);
+    let rules = RuleSet::default();
+    let c = Compiler::root(&ctx, reg.get("d.item").unwrap(), &rules, true);
+    let err = c
+        .compile(&domain::parse(&dom).unwrap())
+        .expect_err("the kernel refuses what Python raises on");
+    assert!(
+        err.is::<odoo_kernel::error::Refusal>(),
+        "a refusal, not an error: {err:#}"
+    );
+    format!("{err:#}")
+}
+
+#[test]
+fn an_inequality_the_falsy_value_satisfies_also_matches_an_unset_hop() {
+    let below = item_sql(json!([["partner_rank", "<", 5]]));
+    assert!(
+        below.contains(r#""d_item"."partner_id" IS NULL"#),
+        "0 < 5 holds where no partner is reached: {below}"
+    );
+    let above = item_sql(json!([["partner_rank", ">", 5]]));
+    assert!(
+        !above.contains(r#""partner_id" IS NULL"#),
+        "0 > 5 does not: {above}"
+    );
+    let text = item_sql(json!([["partner_name", "<", "r"]]));
+    assert!(
+        text.contains(r#""d_item"."partner_id" IS NULL"#),
+        "'' < 'r' holds: {text}"
+    );
+    let zero = item_sql(json!([["partner_rank", ">", 0]]));
+    assert!(
+        !zero.contains(r#""partner_id" IS NULL"#),
+        "a comparand equal to the falsy value is not a null test: {zero}"
+    );
+}
+
+#[test]
+fn an_unset_value_through_an_x2many_also_matches_the_records_it_reaches_nothing_of() {
+    let unset = item_sql(json!([["tag_name", "=", false]]));
+    assert!(
+        unset.contains(r#"NOT "d_item"."id" IN (SELECT "d_item_tag_rel"."item_id""#),
+        "an untagged record holds no tag name: {unset}"
+    );
+    let lines = item_sql(json!([["line_qty", "in", [false]]]));
+    assert!(
+        lines.contains(r#"NOT "d_item"."id" IN (SELECT "s0_d_line"."item_id""#),
+        "a record without lines holds no quantity: {lines}"
+    );
+    let set = item_sql(json!([["tag_name", "=", "aa"]]));
+    assert!(
+        !set.contains("NOT "),
+        "a set value needs a reached tag: {set}"
+    );
+}
+
+#[test]
+fn a_negation_through_an_x2many_is_the_complement_of_the_positive_condition() {
+    let negative = item_sql(json!([["tag_name", "!=", false]]));
+    assert!(
+        negative.contains(r#"(NOT "d_item"."id" IN (SELECT"#)
+            && negative.contains(r#""name" IN ('') OR "s0_d_tag"."name" IS NULL"#)
+            && negative.contains(r#"AND "d_item"."id" IN (SELECT"#),
+        "`!=` is a tag and no unnamed tag, the complement of `=`: {negative}"
+    );
+    assert!(
+        !negative.contains("NOT IN ('')"),
+        "never `!=` on each tag: {negative}"
+    );
+    for op in ["<", "<=", ">", ">="] {
+        let sql = item_sql(json!(["!", ["tag_name", op, "b"]]));
+        assert!(
+            sql.contains("IS NOT TRUE"),
+            "{op}: no inverse inequality holds on a set of tags: {sql}"
+        );
+    }
+    let one = item_sql(json!(["!", ["partner_rank", "<", 5]]));
+    assert!(
+        !one.contains("IS NOT TRUE") && one.contains(r#""rank" >= 5"#),
+        "a single-valued path inverts the inequality: {one}"
+    );
+}
+
+#[test]
+fn a_one2one_hop_is_single_valued_and_an_unknown_one_is_refused() {
+    let sql = item_sql(json!([["detail_label", "not in", [false]]]));
+    let body = sql.split_once("WHERE ").unwrap().1;
+    assert!(
+        body.starts_with(r#""d_item"."id" IN (SELECT"#) && body.contains("IS NOT NULL"),
+        "a one2one negates by operator, inside the hop: {sql}"
+    );
+    let many = item_sql(json!([["tag_name", "not in", [false]]]));
+    assert!(
+        many.contains(r#"NOT "d_item"."id" IN (SELECT"#),
+        "where a tag set negates by complement: {many}"
+    );
+    let reg = related_paths_registry(None);
+    let ctx = ExprCtx::new(&reg, "en_US", 1);
+    let rules = RuleSet::default();
+    let c = Compiler::root(&ctx, reg.get("d.item").unwrap(), &rules, true);
+    let err = c
+        .compile(&domain::parse(&json!([["detail_label", "not in", [false]]])).unwrap())
+        .expect_err("an export without one2one");
+    assert!(format!("{err:#}").contains("holds one record"), "{err:#}");
+}
+
+#[test]
+fn a_numeric_like_pattern_is_its_text_never_an_empty_pattern() {
+    let sql = item_sql(json!([["name", "like", 0]]));
+    assert!(sql.contains(r#""name" LIKE '%0%'"#), "{sql}");
+    let sql = item_sql(json!([["name", "not ilike", 0]]));
+    assert!(sql.contains("NOT ILIKE '%0%'"), "{sql}");
+    let sql = item_sql(json!([["amount", "like", 0.0]]));
+    assert!(
+        sql.contains(r#"(trim_scale("d_item"."amount"::float8::numeric)::text) LIKE '%0%'"#),
+        "a float matches its pattern text the way Python renders it: {sql}"
+    );
+    let sql = item_sql(json!([["partner_id", "like", 0]]));
+    assert!(
+        sql.contains("LIKE '%0%'") && sql.contains(r#""partner_id" IN (SELECT"#),
+        "a many2one searches the name '0': {sql}"
+    );
+    let sql = item_sql(json!([["partner_id.name", "like", 0]]));
+    assert!(sql.contains("LIKE '%0%'"), "{sql}");
+    for op in ["=like", "=ilike", "not =like"] {
+        let err = item_refusal(json!([["name", op, 0]]));
+        assert!(err.contains("must be a string"), "{op}: {err}");
+    }
+    let err = item_refusal(json!([["amount", "like", 1.5]]));
+    assert!(err.contains("Python's formatting"), "{err}");
+}
+
+#[test]
+fn what_python_refuses_to_compare_the_kernel_refuses_too() {
+    for (dom, why) in [
+        (json!([["name", "<", true]]), "single value"),
+        (json!([["partner_rank", ">=", true]]), "single value"),
+        (json!([["name", "<", ["a"]]]), "single value"),
+        (json!([["partner_id", ">", "pp"]]), "single record id"),
+        (json!([["partner_id", "=", true]]), "record ids or names"),
+        (
+            json!([["tag_ids", "not in", [1, true]]]),
+            "record ids or names",
+        ),
+    ] {
+        let err = item_refusal(dom.clone());
+        assert!(err.contains(why), "{dom}: {err}");
+    }
+}
+
+#[test]
+fn a_many2one_ordered_against_id_zero_compares_the_column() {
+    let sql = item_sql(json!([["partner_id", ">", 0]]));
+    assert!(sql.contains(r#""d_item"."partner_id" > 0"#), "{sql}");
+    let sql = item_sql(json!([["partner_id", "in", [0]]]));
+    assert!(
+        sql.contains(r#""partner_id" IS NULL"#),
+        "in [0] is still the unset id: {sql}"
+    );
 }

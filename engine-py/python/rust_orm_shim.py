@@ -1049,6 +1049,51 @@ def _resolve_display_name_exact(model, domain):
     return out
 
 
+# the wire carries a date as its ISO text, and these read the two apart: a
+# boolean takes a date as true and the text through str2bool, a relational
+# field refuses a date and searches the text as a name, and an `=like`
+# pattern must be a string
+_DATE_TEXT_DIFFERS = frozenset(("boolean", "many2one", "one2many", "many2many"))
+_PATTERN_OPERATORS = frozenset(("=like", "=ilike", "not =like", "not =ilike"))
+
+
+def _date_comparand_reads_as_text(model, domain, depth: int = 0) -> bool:
+    if depth > 8:
+        return False
+    if not isinstance(domain, (list, tuple)):
+        from odoo.fields import Domain
+
+        if not isinstance(domain, Domain):
+            return False
+        domain = list(domain)
+    for item in domain:
+        if not isinstance(item, (list, tuple)) or len(item) != 3:
+            continue
+        path, operator, value = item
+        if not isinstance(path, str):
+            continue
+        current, field = model, None
+        for name in path.split("."):
+            field = getattr(current, "_fields", {}).get(name)
+            if field is None:
+                break
+            current = model.env[field.comodel_name] if field.relational else None
+        if field is None:
+            continue
+        if operator in ("any", "not any", "any!", "not any!"):
+            if current is not None and _date_comparand_reads_as_text(
+                current, value, depth + 1
+            ):
+                return True
+            continue
+        values = value if isinstance(value, (list, tuple, set, frozenset)) else (value,)
+        if (field.type in _DATE_TEXT_DIFFERS or operator in _PATTERN_OPERATORS) and any(
+            isinstance(v, datetime.date) for v in values
+        ):
+            return True
+    return False
+
+
 def _has_python_search_field_in_terms(model, domain, depth: int = 0) -> bool:
     if depth > 4 or not isinstance(domain, (list, tuple)):
         return False
@@ -1326,6 +1371,11 @@ def _request(model, method, **kw):
 
             kw["domain"] = list(Domain(kw["domain"]))
         kw["domain"] = _resolve_display_name_exact(model, kw["domain"])
+        if _date_comparand_reads_as_text(model, kw["domain"]):
+            raise KernelRefused(
+                "a date compared with a boolean or relational field would reach "
+                "the kernel as its text"
+            )
         if _has_python_search_field_in_terms(model, kw["domain"]):
             from odoo.fields import Domain
 

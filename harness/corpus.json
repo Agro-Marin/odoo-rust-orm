@@ -6851,5 +6851,87 @@
   ],
   "order": "id",
   "su": true
+ },
+ {
+  "id": "ch_related_unset_hop_lt",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   [
+    "country_code",
+    "<",
+    "M"
+   ]
+  ],
+  "fields": [
+   "name",
+   "country_code"
+  ],
+  "order": "id",
+  "active_test": false
+ },
+ {
+  "id": "ch_related_unset_hop_lt_neg",
+  "model": "res.partner",
+  "method": "search_read",
+  "domain": [
+   "!",
+   [
+    "country_code",
+    "<",
+    "M"
+   ]
+  ],
+  "fields": [
+   "name",
+   "country_code"
+  ],
+  "order": "id",
+  "active_test": false
+ },
+ {
+  "id": "ch_related_unset_hop_gt_count",
+  "model": "res.partner",
+  "method": "search_count",
+  "domain": [
+   [
+    "parent_name",
+    ">",
+    ""
+   ]
+  ],
+  "active_test": false
+ },
+ {
+  "id": "ch_like_number_pattern",
+  "model": "res.partner",
+  "method": "search_count",
+  "domain": [
+   "|",
+   [
+    "name",
+    "like",
+    0
+   ],
+   [
+    "ref",
+    "not ilike",
+    1
+   ]
+  ],
+  "active_test": false
+ },
+ {
+  "id": "ch_m2o_ordered_against_zero",
+  "model": "res.partner",
+  "method": "search_count",
+  "domain": [
+   [
+    "parent_id",
+    ">",
+    0
+   ]
+  ],
+  "active_test": false
  }
 ]

@@ -94,6 +94,9 @@ pub struct Field {
     pub column2: Option<String>,
 
     pub relation_field: Option<String>,
+    /// A one2many holding at most one record: `None` where the registry
+    /// source cannot tell it from a plain one2many.
+    pub one2one: Option<bool>,
     pub company_dependent: bool,
 
     pub has_column: bool,
@@ -1119,6 +1122,7 @@ impl Registry {
                     column1: row.get(5),
                     column2: row.get(6),
                     relation_field: row.get(7),
+                    one2one: (ttype != FieldType::One2many).then_some(false),
                     company_dependent,
                     has_column: col_info.is_some(),
                     stored: store,
@@ -1229,6 +1233,10 @@ impl Registry {
                         column1: ef["column1"].as_str().map(str::to_string),
                         column2: ef["column2"].as_str().map(str::to_string),
                         relation_field: ef["inverse_name"].as_str().map(str::to_string),
+                        one2one: match ttype {
+                            FieldType::One2many => ef["one2one"].as_bool(),
+                            _ => Some(false),
+                        },
                         company_dependent,
                         has_column: col_info.is_some(),
                         stored: store,

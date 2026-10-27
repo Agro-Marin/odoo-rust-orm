@@ -440,6 +440,15 @@ fn to_value(f: &Field, v: &Json) -> Result<Value> {
 
 const IN_TO_ANY_THRESHOLD: usize = 100;
 
+/// `_float_to_pattern_text`, for the values whose `.15g` rendering is their
+/// integer digits; any other float is left to Python's formatting.
+fn float_pattern_text(number: &serde_json::Number) -> Result<String> {
+    match number.as_f64() {
+        Some(x) if x.fract() == 0.0 && x.abs() < 1e15 => Ok(format!("{}", x as i64)),
+        _ => refuse!("the float pattern {number} needs Python's formatting"),
+    }
+}
+
 fn number_as_python_text(number: &serde_json::Number) -> Result<String> {
     if number.is_i64() || number.is_u64() {
         return Ok(number.to_string());
@@ -641,7 +650,13 @@ impl<'a> Compiler<'a> {
                 c
             }
 
-            Node::Not(child) => self.compile(&self.negate(child)?)?,
+            Node::Not(child) => match self.negate(child)? {
+                Node::Not(kept) => Cond::all().add(Expr::cust_with_exprs(
+                    "($1) IS NOT TRUE",
+                    [Expr::expr(self.compile(&kept)?)],
+                )),
+                negated => self.compile(&negated)?,
+            },
             Node::Leaf(leaf) => Cond::all().add(self.compile_leaf(leaf)?),
         })
     }
@@ -699,12 +714,27 @@ impl<'a> Compiler<'a> {
                 _ => return None,
             })
         };
+        // what Python's `DomainCondition._negate` cannot rewrite it keeps as
+        // `NOT (...) IS NOT TRUE`: the complement of the rows the leaf selects
+        let complement = || Ok(Node::Not(Box::new(Node::Leaf(leaf.clone()))));
+        let own = self.model.fields.get(&leaf.field);
         if let Some(op) = flipped(&leaf.op) {
+            if let Some(f) = own
+                && !self.negates_by_operator(f)?
+            {
+                return complement();
+            }
             return Ok(Node::Leaf(Leaf {
                 field: leaf.field.clone(),
                 op: op.to_string(),
                 value: leaf.value.clone(),
             }));
+        }
+        if let Some(f) = own
+            && matches!(leaf.op.as_str(), "<" | ">" | "<=" | ">=")
+            && !self.searches_one_value(self.model, f)?
+        {
+            return complement();
         }
         let inverse_inequality = match leaf.op.as_str() {
             "<" => ">=",
@@ -866,6 +896,12 @@ impl<'a> Compiler<'a> {
         let op = l.op.as_str();
         let v = &l.value;
 
+        if matches!(op, "<" | ">" | "<=" | ">=") && (v.is_array() || *v == Json::Bool(true)) {
+            refuse!(
+                "{} {op} {v}: an ordering comparison takes a single value of the field",
+                l.field
+            );
+        }
         if op == "=?" {
             let head_relational = matches!(
                 ttype,
@@ -913,12 +949,20 @@ impl<'a> Compiler<'a> {
         if op.ends_with("like") {
             let negative = op.starts_with("not ");
             let equal_form = op.contains('=');
-            let empty = is_py_falsy(v);
+            let falsy = is_py_falsy(v);
             let only_wildcards =
                 matches!(v, Json::String(s) if !s.is_empty() && s.chars().all(|c| c == '%'));
-            if (empty || only_wildcards) && dotted {
+            if dotted && (falsy || only_wildcards || v.is_number()) {
                 return Ok(None);
             }
+            if relational
+                && let Some(f) = field
+                && (falsy || only_wildcards)
+                && !self.negates_by_operator(f)?
+            {
+                return Ok(None);
+            }
+            let empty = falsy && !v.is_number();
             if empty || only_wildcards {
                 let result = if empty {
                     negative == equal_form
@@ -937,11 +981,11 @@ impl<'a> Compiler<'a> {
                 if equal_form {
                     refuse!("the pattern for {op} on {} must be a string", l.field);
                 }
-                return Ok(Some(leaf(
-                    &l.field,
-                    op,
-                    Json::String(number_as_python_text(n)?),
-                )));
+                let pattern = match ttype {
+                    Some(FieldType::Float | FieldType::Monetary) => float_pattern_text(n)?,
+                    _ => number_as_python_text(n)?,
+                };
+                return Ok(Some(leaf(&l.field, op, Json::String(pattern))));
             }
         }
 
@@ -981,17 +1025,31 @@ impl<'a> Compiler<'a> {
             return Ok(Some(node));
         }
 
-        let m2o_ref_inequality =
-            ttype == Some(FieldType::Many2oneReference) && !matches!(op, "in" | "not in");
         if !dotted
-            && relational
-            && !m2o_ref_inequality
-            && matches!(op, "in" | "not in" | ">" | "<" | ">=" | "<=")
+            && let Some(f) = field
+            && matches!(
+                f.ttype,
+                FieldType::Many2one | FieldType::One2many | FieldType::Many2many
+            )
         {
-            let m2o = matches!(
-                ttype,
-                Some(FieldType::Many2one | FieldType::Many2oneReference)
-            );
+            if matches!(op, "<" | ">" | "<=" | ">=") && v.is_string() {
+                refuse!(
+                    "{} {op} {v}: a relational field orders against a single record id",
+                    l.field
+                );
+            }
+            let names_true = match v {
+                Json::Array(items) => items.contains(&Json::Bool(true)),
+                other => *other == Json::Bool(true),
+            };
+            if matches!(op, "in" | "not in") && f.stored && !f.custom_search && names_true {
+                refuse!(
+                    "{} {op} {v}: a relational field compares with record ids or names",
+                    l.field
+                );
+            }
+        }
+        if !dotted && relational && matches!(op, "in" | "not in") {
             match v {
                 Json::Array(items) if items.iter().any(is_falsy_id) => {
                     let mapped: Vec<Json> = items
@@ -1006,12 +1064,12 @@ impl<'a> Compiler<'a> {
                         .collect();
                     return Ok(Some(leaf(&l.field, op, Json::Array(mapped))));
                 }
-                _ if is_falsy_id(v) && (m2o || matches!(op, "in" | "not in")) => {
+                _ if is_falsy_id(v) => {
                     return Ok(Some(leaf(&l.field, op, Json::Bool(false))));
                 }
                 _ => {}
             }
-            if let (Json::Array(items), true) = (v, matches!(op, "in" | "not in"))
+            if let Json::Array(items) = v
                 && items.iter().any(Json::is_string)
             {
                 let (strs, others): (Vec<Json>, Vec<Json>) =
@@ -1315,33 +1373,31 @@ impl<'a> Compiler<'a> {
     }
 
     fn related_search(&self, f: &Field, rel: &str, op: &str, value: &Json) -> Result<Expr> {
-        let falsy = f.falsy_json();
-        let nullish = |v: &Json| is_null_like(v) || falsy.as_ref().is_some_and(|fv| json_eq(fv, v));
-        let value_is_null = match value {
-            Json::Array(items) => items.iter().any(nullish),
-            other => nullish(other),
-        };
+        let hops = self.related_hops(f, rel)?;
+        let mut multivalued = false;
+        for hop in &hops {
+            multivalued |= Self::multivalued_hop(hop)?;
+        }
+        let can_be_null = holds_on_missing_step(f, op, value);
         if let Some(positive) = positive_operator(op)
-            && !value_is_null
+            && (can_be_null || multivalued)
         {
-            let node = self.related_domain(f, rel, positive, value, false)?;
+            let node = self.related_domain(
+                f,
+                rel,
+                positive,
+                value,
+                holds_on_missing_step(f, positive, value),
+            )?;
             return Ok(Expr::expr(self.compile(&Node::Not(Box::new(node)))?));
         }
-        let can_be_null = positive_operator(op).is_none() == value_is_null;
         let node = self.related_domain(f, rel, op, value, can_be_null)?;
         Ok(Expr::expr(self.compile(&node)?))
     }
 
-    fn related_domain(
-        &self,
-        f: &Field,
-        rel: &str,
-        op: &str,
-        value: &Json,
-        can_be_null: bool,
-    ) -> Result<Node> {
+    fn related_hops(&self, f: &Field, rel: &str) -> Result<Vec<&'a Field>> {
         let steps: Vec<&str> = rel.split('.').collect();
-        let mut hops: Vec<&Field> = Vec::with_capacity(steps.len());
+        let mut hops: Vec<&'a Field> = Vec::with_capacity(steps.len());
         let mut m = self.model;
         for step in &steps[..steps.len() - 1] {
             let hop = m.fields.get(*step).ok_or_else(|| {
@@ -1354,14 +1410,90 @@ impl<'a> Compiler<'a> {
             hops.push(hop);
             m = self.ctx.registry.get(hop.comodel()?)?;
         }
-        let any_op = if f.compute_sudo { "any!" } else { "any" };
+        Ok(hops)
+    }
+
+    fn multivalued_hop(hop: &Field) -> Result<bool> {
+        Ok(match hop.ttype {
+            FieldType::Many2many => true,
+            FieldType::One2many => !hop.one2one.ok_or_else(|| {
+                refusal!(
+                    "whether the one2many {} holds one record is unknown to this registry; \
+                     regenerate the live Python registry export",
+                    hop.name
+                )
+            })?,
+            _ => false,
+        })
+    }
+
+    /// `_negates_by_operator`: a field related through a multivalued hop
+    /// reads its negation as a complement, never as the negated operator.
+    fn negates_by_operator(&self, f: &Field) -> Result<bool> {
+        let Some(rel) = f.related.as_deref() else {
+            return Ok(true);
+        };
+        for hop in self.related_hops(f, rel)? {
+            if Self::multivalued_hop(hop)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn searches_one_value(&self, model: &Model, f: &Field) -> Result<bool> {
+        if matches!(f.ttype, FieldType::One2many | FieldType::Many2many) {
+            return Ok(false);
+        }
+        if f.stored {
+            return Ok(true);
+        }
+        let Some(rel) = f.related.as_deref() else {
+            return Ok(false);
+        };
+        let steps: Vec<&str> = rel.split('.').collect();
+        let mut m = model;
+        for (i, step) in steps.iter().enumerate() {
+            let step_field = m.fields.get(*step).ok_or_else(|| {
+                refusal!("related {}.{} names unknown {step}", model.name, f.name)
+            })?;
+            if !self.searches_one_value(m, step_field)? {
+                return Ok(false);
+            }
+            if i + 1 < steps.len() {
+                m = self.ctx.registry.get(step_field.comodel()?)?;
+            }
+        }
+        Ok(true)
+    }
+
+    fn related_domain(
+        &self,
+        f: &Field,
+        rel: &str,
+        op: &str,
+        value: &Json,
+        can_be_null: bool,
+    ) -> Result<Node> {
+        let steps: Vec<&str> = rel.split('.').collect();
+        let hops = self.related_hops(f, rel)?;
+        let (any_op, not_any_op) = if f.compute_sudo {
+            ("any!", "not any!")
+        } else {
+            ("any", "not any")
+        };
         let mut domain = serde_json::json!([[steps[steps.len() - 1], op, value]]);
         for (i, step) in steps[..steps.len() - 1].iter().enumerate().rev() {
             let hop = hops[i];
-            domain = if can_be_null && hop.ttype == FieldType::Many2one && !hop.required {
-                serde_json::json!(["|", [step, any_op, domain], [step, "=", false]])
-            } else {
-                serde_json::json!([[step, any_op, domain]])
+            let reached = serde_json::json!([step, any_op, domain]);
+            domain = match hop.ttype {
+                FieldType::One2many | FieldType::Many2many if can_be_null => {
+                    serde_json::json!(["|", reached, [step, not_any_op, []]])
+                }
+                FieldType::Many2one if can_be_null && !hop.required => {
+                    serde_json::json!(["|", reached, [step, "=", false]])
+                }
+                _ => serde_json::json!([reached]),
             };
         }
         crate::domain::parse(&domain)
@@ -2228,10 +2360,12 @@ impl<'a> Compiler<'a> {
             Json::String(s) => s.clone(),
             other => refuse!("invalid value for {op}: {other}"),
         };
-        let sql_left = if field.ttype.is_text() {
-            sql_field.clone()
-        } else {
-            sql_field.clone().cast_as("text")
+        let sql_left = match field.ttype {
+            t if t.is_text() => sql_field.clone(),
+            FieldType::Float | FieldType::Monetary => {
+                Expr::cust_with_exprs("trim_scale($1::float8::numeric)::text", [sql_field.clone()])
+            }
+            _ => sql_field.clone().cast_as("text"),
         };
         let need_wildcard = !op.contains('=');
         let pattern = if need_wildcard {
@@ -2314,6 +2448,38 @@ impl<'a> Compiler<'a> {
         }
         Ok(sql)
     }
+}
+
+/// Python's `==` between two comparands: `False == 0` and `1 == 1.0`.
+fn py_eq(a: &Json, b: &Json) -> bool {
+    let number = |v: &Json| match v {
+        Json::Bool(b) => Some(f64::from(u8::from(*b))),
+        other => other.as_f64(),
+    };
+    match (number(a), number(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => a == b,
+    }
+}
+
+/// `_holds_on_missing_step`: whether the condition holds for a record that a
+/// related field reaches no value of, whose value reads as the falsy one.
+fn holds_on_missing_step(f: &Field, op: &str, value: &Json) -> bool {
+    let positive = positive_operator(op).unwrap_or(op);
+    let falsy = f.falsy_json();
+    let holds = if matches!(positive, "<" | ">" | "<=" | ">=") {
+        falsy.is_some_and(|falsy| {
+            let comparand = if is_null_like(value) { &falsy } else { value };
+            json_cmp_op(&falsy, comparand, positive).unwrap_or(false)
+        })
+    } else {
+        let unset = |v: &Json| is_null_like(v) || falsy.as_ref().is_some_and(|fv| py_eq(v, fv));
+        match value {
+            Json::Array(items) => items.iter().any(unset),
+            other => unset(other),
+        }
+    };
+    if positive == op { holds } else { !holds }
 }
 
 fn json_cmp_op(a: &Json, b: &Json, op: &str) -> Option<bool> {

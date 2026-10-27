@@ -1160,6 +1160,64 @@ def test_a_domain_through_a_python_search_method_is_resolved_first() -> None:
     )
 
 
+def test_a_date_whose_text_reads_otherwise_is_refused() -> None:
+    orm_shim = _shims()[1]
+
+    class Field:
+        def __init__(self, type_, comodel=None):
+            self.type, self.comodel_name = type_, comodel
+            self.relational = type_ in ("many2one", "one2many", "many2many")
+
+    class Env(dict):
+        pass
+
+    env = Env()
+
+    class Model:
+        def __init__(self, fields) -> None:
+            self._fields, self.env = fields, env
+
+    env["partner"] = Model({"since": Field("date"), "active": Field("boolean")})
+    env["item"] = Model(
+        {
+            "name": Field("char"),
+            "day": Field("date"),
+            "flag": Field("boolean"),
+            "partner_id": Field("many2one", comodel="partner"),
+            "tag_ids": Field("many2many", comodel="partner"),
+        }
+    )
+    day = _dt.date(2024, 1, 1)
+    reads = orm_shim._date_comparand_reads_as_text
+    item = env["item"]
+    check("a date field takes a date", reads(item, [("day", "=", day)]), False)
+    check("a char field reads it as text", reads(item, [("name", "=", day)]), False)
+    check("...and so does a like", reads(item, [("name", "like", day)]), False)
+    check("a boolean reads a date as true", reads(item, [("flag", "=", day)]), True)
+    check("...in a list too", reads(item, [("flag", "in", [False, day])]), True)
+    check("a many2one refuses it", reads(item, [("partner_id", "=", day)]), True)
+    check("an x2many refuses it", reads(item, [("tag_ids", "not in", day)]), True)
+    check("an =like pattern must be text", reads(item, [("name", "=like", day)]), True)
+    check(
+        "a dotted path reaches the date field",
+        reads(item, [("partner_id.since", "=", day)]),
+        False,
+    )
+    check(
+        "...and the boolean one",
+        reads(item, ["&", ("name", "=", "a"), ("partner_id.active", "=", day)]),
+        True,
+    )
+    check(
+        "inside an any",
+        reads(item, [("tag_ids", "any", [("active", "in", [day])])]),
+        True,
+    )
+    check(
+        "no date, nothing to refuse", reads(item, [("flag", "=", "2024-01-01")]), False
+    )
+
+
 def test_web_length() -> None:
     orm_shim = _shims()[1]
 

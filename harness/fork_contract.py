@@ -58,6 +58,7 @@ SEAMS = [
             "search",
             "groups",
             "index",
+            "is_one2one",
         ],
     ),
     ("odoo.fields", "Many2many", ["relation", "column1", "column2"]),

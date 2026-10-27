@@ -532,6 +532,9 @@ def _search_native(
     except _NoWireForm as exc:
         _delegated(method, "the domain carries %s" % exc)
         return None
+    if rust_orm_shim._date_comparand_reads_as_text(model, domain):
+        _delegated(method, "a date compared where its text reads otherwise")
+        return None
 
     context = env.context
     envelope = {

@@ -153,7 +153,7 @@ refusal list is the replacement backlog.
 
 ## Correctness: shadow-diff harness
 
-`harness/corpus.json`: 430 cases across 30 models (256 `search_read`, 91 `search_count`, 83 `read_group`;
+`harness/corpus.json`: 435 cases across 30 models (258 `search_read`, 94 `search_count`, 83 `read_group`;
 `harness/corpus_stats.py` counts the file, which is where every figure about it
 should come from) — every operator family,
 all M1 features, security-sensitive models (`res.partner`, `ir.filters`,
@@ -403,7 +403,7 @@ non-admin identity runs on any database — a hardcoded uid that does not exist
 makes both sides error, i.e. passes vacuously.
 
 **Result: 275/275 with nothing failing** (the corpus of the time; it holds
-430 cases today), re-verified 2026-08-28 against THREE
+435 cases today), re-verified 2026-08-28 against THREE
 databases built from this workspace's `tpl_p314o19marin` template — base-only;
 base+mail+account+uom; and **agromarin + enterprise** (129 modules, 790 models,
 222 ruled models, 15,674 fields). All runs use a live-registry export.
@@ -1012,7 +1012,7 @@ this layout, and nothing noticed because no test had ever looked at a default.
 
 ## Performance
 
-267 cases (the corpus of the time; it holds 430 today), 20 iterations per run, on **agromarin + enterprise** — 129 modules,
+267 cases (the corpus of the time; it holds 435 today), 20 iterations per run, on **agromarin + enterprise** — 129 modules,
 790 models, and real volume (172k `res.partner`, 164k `mail.message`, 314 MB).
 Python timed at the ORM layer (warm caches, `invalidate_all()` between
 iterations); Rust timings include full JSON serialization. Both sides run the
@@ -4548,6 +4548,49 @@ declare and a registry without anchors still refuse.
     every user        compared 27,038 over 9 users -> 49,903 over 14 users
     grant scopes      routed 20 calls (one principal) -> 180 (all five), 0 mismatches
     web tours         routed 108 -> 118, divergences 0
+
+## Related fields, numeric patterns and refused comparands, from a domain fuzz
+
+On 2026-10-27 a fuzz of 18 fields x 15 operators x 23 values on
+`test_orm.domain.item`, comparing `search` with `filtered_domain` and with
+the complement of the negation, read 647 disagreements of 4,374 checks with
+the kernel routing and none of 4,222 without it. Every one was the kernel's:
+
+- **A related field read the unset hop from the value alone.**
+  `_holds_on_missing_step` asks whether the condition holds on the falsy
+  value, so `('partner_rank', '<', 5)` also matches a record without a
+  partner (`0 < 5`) and `('partner_rank', '>', 0)` does not; the kernel added
+  the `partner_id = False` branch only for a falsy comparand. Through an
+  x2many the branch is `not any []`, which the kernel never added:
+  `('tag_name', '=', False)` dropped the untagged records. A negative
+  operator through an x2many is the complement of the positive condition,
+  as `search_related` answers it, never the negated operator on each tag.
+- **A field related through an x2many negates by complement.**
+  `DomainCondition._negate` flips the operator only where
+  `_negates_by_operator` and inverts an inequality only where
+  `_searches_one_value`; anything else stays `NOT (...)`, compiled as
+  Python's `(...) IS NOT TRUE`. A one2many hop is single-valued when it is a
+  one2one: the export carries `one2one`, and a registry without it refuses
+  that negation rather than guess.
+- **A numeric `like` pattern is its text.** `is_py_falsy(0)` made
+  `('name', 'like', 0)` the empty pattern (every row) where
+  `_optimize_like_str` matches `'0'`; `=like` a number is Python's
+  TypeError and refuses. A float field matches `trim_scale(x::float8::numeric)::text`
+  as `_float_pattern_text_to_sql` writes it, against `_float_to_pattern_text`.
+- **What Python refuses to compare refuses.** An ordering comparison against
+  `True` or a list, a relational field ordered against a string or compared
+  with `True`, and a date where its wire text reads otherwise (a boolean takes
+  a date as true and the text through `str2bool`, a relational field refuses
+  the date and searches the text, an `=like` pattern must be a string; the shim
+  and the port refuse those before the kernel sees text). `('partner_id', '>', 0)`
+  compares the column: the falsy-id rewrite is `in`'s only.
+
+After: 21 disagreements of 4,222, all `('name', '=', [0, False])` and its
+negation on char, text and selection fields, where Python's
+`_optimize_equal_as_in` builds an `OrderedSet` that keeps `0` and drops the
+equal `False` (`[False, 0]` keeps `False`), so the answer depends on the
+list's order and differs from `in` with the same list. The kernel answers
+`in`'s; that one is Python's to fix.
 
 ## The road to replacement (M2, then M3)
 

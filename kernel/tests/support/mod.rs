@@ -10,6 +10,7 @@ pub fn field(name: &str, ttype: FieldType) -> Field {
         column1: None,
         column2: None,
         relation_field: None,
+        one2one: Some(false),
         company_dependent: false,
         has_column: true,
         stored: true,

@@ -122,6 +122,7 @@ def export_registry(reg):
                 "column1": _s(getattr(f, "column1", None)) if f.type == "many2many" else None,
                 "column2": _s(getattr(f, "column2", None)) if f.type == "many2many" else None,
                 "inverse_name": _s(getattr(f, "inverse_name", None)) if f.type == "one2many" else None,
+                "one2one": bool(getattr(f, "is_one2one", False)),
                 "domain": domain,
                 "model_field": _s(getattr(f, "model_field", None)),
                 "custom_search": bool(getattr(f, "search", None)),
