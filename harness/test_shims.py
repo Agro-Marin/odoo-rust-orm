@@ -1542,6 +1542,25 @@ def test_web_search_read_preserves_record_verb_specification() -> None:
     check("the original sees the complete specification", seen, [spec])
 
 
+def test_web_search_read_preserves_checksum_specifications() -> None:
+    from types import SimpleNamespace
+
+    shim = _shims()[1]
+    for spec in (
+        {"image_128": {}, "__checksums": {}},
+        {"line_ids": {"fields": {"image_128": {}, "__checksums": {}}}},
+    ):
+        seen = []
+
+        def original(_model, _domain, specification, seen=seen, **_kwargs):
+            seen.append(specification)
+            return {"length": 0, "records": []}
+
+        wrapped = shim._wrap_web_search_read(None, original)
+        wrapped(SimpleNamespace(_name="probe.checksums"), [], spec)
+        check("the original sees the checksums asked for", seen, [spec])
+
+
 def test_dispatch_debug_timing_includes_preparation_and_decoding() -> None:
     from types import SimpleNamespace
     from unittest.mock import Mock, patch

@@ -1600,6 +1600,16 @@ def _web_field_in_python(model, f, name, spec):
     return None
 
 
+def _web_pseudo_fields(specification):
+    found = set()
+    for name, spec in (specification or {}).items():
+        if name.startswith("__"):
+            found.add(name)
+        elif isinstance(spec, dict) and isinstance(spec.get("fields"), dict):
+            found |= _web_pseudo_fields(spec["fields"])
+    return found
+
+
 def _web_screened_plan(model, specification):
     screened = model._screen_fields_spec(specification)
     if screened != specification:
@@ -2246,10 +2256,10 @@ def _wrap_web_search_read(orig_web_read, orig_web_search_read):
         count_limit=None,
     ):
         plan = None
-        if "__verbs" in specification:
-            # Screening removes this pseudo-field, but web_read must compute
-            # its per-record authority response before returning the records.
-            _refuse("record verbs are computed in python")
+        if pseudo := _web_pseudo_fields(specification):
+            # screening drops web_read's pseudo-fields (__verbs, __checksums),
+            # which it computes per record before returning them
+            _refuse(f"pseudo-fields {sorted(pseudo)} are computed in python")
         elif not _web_clean(self):
             _refuse("web read hooks overridden in python")
         elif not specification:
