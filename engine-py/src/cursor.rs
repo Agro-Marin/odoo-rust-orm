@@ -16,6 +16,37 @@ fn rerr(e: impl std::fmt::Display) -> PyErr {
     PyRuntimeError::new_err(format!("{e}"))
 }
 
+const NUL_IN_TEXT: &str = "PostgreSQL text fields cannot contain NUL (0x00) bytes";
+
+/// A text parameter holding a NUL, which psycopg refuses before sending and
+/// PostgreSQL would refuse as an encoding error; lists are walked as psycopg
+/// dumps them, element by element.
+fn holds_nul_text(v: &Bound<'_, PyAny>) -> PyResult<bool> {
+    if let Ok(s) = v.cast::<pyo3::types::PyString>() {
+        return Ok(s.to_str().is_ok_and(|text| text.contains('\0')));
+    }
+    if v.is_instance_of::<PyList>() || v.is_instance_of::<PyTuple>() {
+        for item in v.try_iter()? {
+            if holds_nul_text(&item?)? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// psycopg's own error for it, so a caller reading the message (odoo's import
+/// reports it per field) sees what it sees without the engine.
+fn refuse_nul_text(py: Python<'_>, values: &[Bound<'_, PyAny>]) -> PyResult<()> {
+    for v in values {
+        if holds_nul_text(v)? {
+            let data_error = py.import("psycopg")?.getattr("DataError")?;
+            return Err(PyErr::from_value(data_error.call1((NUL_IN_TEXT,))?));
+        }
+    }
+    Ok(())
+}
+
 fn db_err(e: tokio_postgres::Error) -> PyErr {
     let code = e
         .as_db_error()
@@ -1785,6 +1816,7 @@ impl RustConn {
                     }
                     values = seq;
                 }
+                refuse_nul_text(py, &values)?;
 
                 let types: Vec<Type> = values.iter().map(declared_type).collect();
                 let key = format!(
@@ -2192,9 +2224,31 @@ impl RustConn {
 #[cfg(test)]
 mod tests {
     use super::{
-        LOWER_HEX, UPPER_HEX, has_bare_keyword, has_multiple_statements, hex_text, leading_keyword,
-        numeric_binary_to_text, returns_rows, translate_placeholders,
+        LOWER_HEX, UPPER_HEX, has_bare_keyword, has_multiple_statements, hex_text, holds_nul_text,
+        leading_keyword, numeric_binary_to_text, returns_rows, translate_placeholders,
     };
+
+    #[test]
+    fn a_nul_in_text_is_found_where_psycopg_dumps_text() {
+        use pyo3::prelude::*;
+        Python::attach(|py| {
+            let holds = |code: &str| {
+                let value = py
+                    .eval(&std::ffi::CString::new(code).unwrap(), None, None)
+                    .unwrap();
+                holds_nul_text(&value).unwrap()
+            };
+            assert!(holds("'a\\x00b'"));
+            assert!(holds("['x', ('y', 'a\\x00')]"));
+            assert!(!holds("'a\\\\x00b'"), "an escaped backslash is no NUL");
+            assert!(!holds("b'a\\x00b'"), "bytea carries NUL bytes");
+            assert!(!holds("['x', None, 3]"));
+            assert!(
+                !holds("{'k': 'a\\x00'}"),
+                "a dict is dumped as JSON, escaped"
+            );
+        });
+    }
 
     #[test]
     fn hex_text_spells_every_byte_as_format_does() {
@@ -2696,6 +2750,7 @@ impl RustCopy {
             self.started = true;
         }
         let values: Vec<Bound<'_, PyAny>> = row.try_iter()?.collect::<PyResult<_>>()?;
+        refuse_nul_text(py, &values)?;
         if !self.binary {
             let mut line = String::with_capacity(values.len() * 16);
             for (i, v) in values.iter().enumerate() {

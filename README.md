@@ -3383,6 +3383,19 @@ failing only under routing: the cursor-parity residuals -- two pipeline-mode che
 binary COPY type probe, and a KeyboardInterrupt during connection construction
 ```
 
+## A NUL in a text parameter is psycopg's DataError, raised before sending
+
+psycopg refuses a `str` parameter holding `\x00` client-side, with
+`psycopg.DataError: PostgreSQL text fields cannot contain NUL (0x00) bytes`,
+and the transaction goes on. The rust cursor sent it, and PostgreSQL answered
+`invalid byte sequence for encoding "UTF8": 0x00` (22021) and aborted the
+transaction: `test_import_export`'s `TestInvalidStrings.test_fail_nul`, which
+reads the message odoo's import reports per field, failed with the engine
+armed and only then. `execute` and `Copy.write_row` now refuse such a
+parameter, in a list as in a scalar, with psycopg's class and message before
+anything is sent; bytes and dicts (dumped as JSON) carry NUL as psycopg lets
+them. Pinned by `harness/test_cursor_text.py` (needs `RUSTORM_TEST_DSN`).
+
 ## The cursor parity gate reaches zero, and could not tell a fixed test from a missing one
 
 Odoo's own cursor suite run against both cursors had three tests failing only

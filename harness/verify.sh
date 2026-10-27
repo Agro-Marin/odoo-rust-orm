@@ -208,7 +208,8 @@ if [ -f "$PYMOD/engine_py.so" ]; then
       "${T[@]}" "$PY" -m pytest -q --log-level=DEBUG \
         "$ROOT/harness/test_harness.py" "$ROOT/harness/test_read_probe.py" \
         "$ROOT/harness/test_search_time_contract.py" \
-        "$ROOT/harness/test_process_fork.py" > "$OUT/harness_units.log" 2>&1; rc=$?
+        "$ROOT/harness/test_process_fork.py" "$ROOT/harness/test_cursor_text.py" \
+        > "$OUT/harness_units.log" 2>&1; rc=$?
     if [ "$rc" = 0 ]; then
       stage "harness contracts" OK "$(tail -1 "$OUT/harness_units.log")"
     elif timed_out "$rc"; then stage "harness contracts" FAIL "$expired"
