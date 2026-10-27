@@ -21,7 +21,9 @@ import odoo
 from odoo.modules.registry import Registry
 from odoo.tools import config
 
-config.parse_config(["-c", os.environ["RUSTORM_ODOO_CONF"], "-d", DB, "--no-http"])
+config.parse_config(
+    ["-c", os.environ["RUSTORM_ODOO_CONF"], "-d", DB, "--no-http"], setup_logging=True
+)
 reg = Registry(DB)
 missing_models = {"res.role", "mail.mail"} - reg.models.keys()
 if missing_models:

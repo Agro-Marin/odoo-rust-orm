@@ -155,7 +155,7 @@ def test_the_armed_addon_forks_single_threaded(dsn, monkeypatch) -> None:
         config.parse_config([
             "-c", os.environ["RUSTORM_ODOO_CONF"], "-d", os.environ["FORK_PROBE_DB"],
             "--no-http",
-        ])
+        ], setup_logging=True)
         config["rust_engine_mode"] = "on"
         config["rust_engine_db"] = os.environ["FORK_PROBE_DB"]
         config["rust_engine_report_seconds"] = 3600
