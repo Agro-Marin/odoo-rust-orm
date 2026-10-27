@@ -907,9 +907,6 @@ impl<'a> Compiler<'a> {
             if dotted {
                 return Ok(None);
             }
-            if is_py_falsy(v) {
-                return Ok(Some(if op == "in" { Node::False } else { Node::True }));
-            }
             return Ok(Some(leaf(&l.field, op, Json::Array(vec![v.clone()]))));
         }
 

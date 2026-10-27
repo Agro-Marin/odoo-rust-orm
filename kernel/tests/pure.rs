@@ -1811,17 +1811,17 @@ fn not_over_a_dotted_path_negates_the_traversal_not_the_comparison() {
 }
 
 #[test]
-fn in_with_a_scalar_that_is_falsy_is_the_empty_set() {
+fn in_with_a_scalar_is_the_set_of_that_one_value() {
     let reg = base_registry();
     assert_eq!(
         compile(&reg, serde_json::json!([["name", "in", false]])),
-        compile(&reg, serde_json::json!([["id", "in", []]])),
-        "`in False` is FALSE, as _optimize_in_set makes it"
+        compile(&reg, serde_json::json!([["name", "in", [false]]])),
+        "`in False` is `in [False]`, as _optimize_in_set makes it"
     );
     assert_eq!(
         compile(&reg, serde_json::json!([["name", "not in", 0]])),
-        compile(&reg, serde_json::json!([["id", "not in", []]])),
-        "`not in 0` is TRUE"
+        compile(&reg, serde_json::json!([["name", "not in", [0]]])),
+        "a falsy scalar is wrapped too"
     );
     assert_eq!(
         compile(&reg, serde_json::json!([["name", "in", "x"]])),
@@ -1832,9 +1832,9 @@ fn in_with_a_scalar_that_is_falsy_is_the_empty_set() {
         compile(&reg, serde_json::json!([["country_id.name", "in", false]])),
         compile(
             &reg,
-            serde_json::json!([["country_id", "any", [["id", "in", []]]]])
+            serde_json::json!([["country_id", "any", [["name", "in", [false]]]]])
         ),
-        "through a path the collapse happens in the sub-domain"
+        "through a path the scalar is wrapped in the sub-domain"
     );
     let not_in = compile(
         &reg,
@@ -1844,14 +1844,9 @@ fn in_with_a_scalar_that_is_falsy_is_the_empty_set() {
         not_in,
         compile(
             &reg,
-            serde_json::json!([["country_id", "any", [["id", "not in", []]]]])
+            serde_json::json!([["country_id", "any", [["name", "not in", [false]]]]])
         ),
-        "`head.f not in False` is `head any [TRUE]`, i.e. the head must be set"
-    );
-    assert_ne!(
-        not_in,
-        compile(&reg, serde_json::json!([["id", "not in", []]])),
-        "it is not TRUE: a row with no country does not match"
+        "`head.f not in False` is `head any [f not in [False]]`"
     );
     assert!(not_in.contains("country_id"), "got: {not_in}");
 }
