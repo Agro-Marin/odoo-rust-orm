@@ -12,7 +12,6 @@ def cases(suite):
 
 
 def run(suite, *, only=(), full_traceback=False):
-    import odoo.modules.module
     from odoo.tests.result import OdooTestResult
     from odoo.tests.suite import OdooSuite
 
@@ -51,11 +50,7 @@ def run(suite, *, only=(), full_traceback=False):
     ]
     result = Result()
     result.outcomes = {test.id(): "not run" for test in selected}
-    previous = odoo.modules.module.current_test
-    try:
-        OdooSuite(selected).run(result)
-    finally:
-        odoo.modules.module.current_test = previous
+    OdooSuite(selected).run(result)
     return {
         "run": result.testsRun,
         "failures": result.failures_count,

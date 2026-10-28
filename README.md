@@ -2843,7 +2843,7 @@ above).
 - `phase2_tests` drives the upstream suites through Odoo's own runner --
   `OdooSuite` over the module's `get_module_test_cases`, selected by the
   `standard` tag and ordered by `test_sequence` as `prepare_suite` does, under
-  `current_test` as `run_suite` sets it -- and records each failure's name with
+  the `SuiteRuntime` `OdooSuite.run` installs -- and records each failure's name with
   an `OdooTestResult` subclass. Until 2026-10-05 it used a bare
   `unittest.TextTestRunner`, which left `odoo.modules.module.current_test`
   unset: `test_20_x_active` errored with routing off and on alike, because its
