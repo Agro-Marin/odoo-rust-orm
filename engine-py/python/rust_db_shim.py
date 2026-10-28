@@ -182,7 +182,9 @@ class FakeCursor:
     def description(self):
         if not self._result or not self._result.columns:
             return None
-        return [_Column(name, None) for name in self._result.columns]
+        return list(
+            map(_Column, self._result.columns, self._result.type_codes, strict=True)
+        )
 
     def _rows(self):
         if self._result is None:

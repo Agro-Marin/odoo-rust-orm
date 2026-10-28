@@ -1205,6 +1205,8 @@ pub struct RustResult {
     pub rowcount: i64,
     #[pyo3(get)]
     pub columns: Vec<String>,
+    #[pyo3(get)]
+    pub type_codes: Vec<Option<u32>>,
 
     #[pyo3(get)]
     pub rows: Py<PyList>,
@@ -1497,6 +1499,7 @@ impl RustConn {
         }
         Ok(RustResult {
             rowcount,
+            type_codes: vec![None; columns.len()],
             columns,
             rows: list.unbind(),
         })
@@ -1910,13 +1913,13 @@ impl RustConn {
             }
             .map_err(db_err)?;
 
-            let columns: Vec<String> = match &stmt {
-                Some(st) => st.columns().iter().map(|c| c.name().to_string()).collect(),
-                None => rows
-                    .first()
-                    .map(|r| r.columns().iter().map(|c| c.name().to_string()).collect())
-                    .unwrap_or_default(),
+            let described = match &stmt {
+                Some(st) => st.columns(),
+                None => rows.first().map(|r| r.columns()).unwrap_or_default(),
             };
+            let columns: Vec<String> = described.iter().map(|c| c.name().to_string()).collect();
+            let type_codes: Vec<Option<u32>> =
+                described.iter().map(|c| Some(c.type_().oid())).collect();
             let query_ms = t0.elapsed().as_secs_f64() * 1000.0;
             let list = PyList::empty(py);
             for row in &rows {
@@ -1940,6 +1943,7 @@ impl RustConn {
             Ok(RustResult {
                 rowcount: rows.len() as i64,
                 columns,
+                type_codes,
                 rows: list.unbind(),
             })
         } else {
@@ -1960,6 +1964,7 @@ impl RustConn {
             Ok(RustResult {
                 rowcount: n,
                 columns: vec![],
+                type_codes: vec![],
                 rows: PyList::empty(py).unbind(),
             })
         }

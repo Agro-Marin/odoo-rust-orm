@@ -266,9 +266,12 @@ def test_reset_sql_matches_the_fork() -> None:
 
 
 class _Result:
-    def __init__(self, rows, columns=(), rowcount=None) -> None:
+    def __init__(self, rows, columns=(), rowcount=None, type_codes=None) -> None:
         self.rows = list(rows)
         self.columns = list(columns)
+        self.type_codes = (
+            [None] * len(self.columns) if type_codes is None else list(type_codes)
+        )
         self.rowcount = len(rows) if rowcount is None else rowcount
 
 
@@ -326,10 +329,13 @@ def test_fake_cursor_fetch_semantics() -> None:
     check("rowcount before execute", cur.rowcount, -1)
     check("description before execute", cur.description, None)
 
-    rust = _RustConn([_Result([(1, "a"), (2, "b"), (3, "c")], ["id", "name"])])
+    rust = _RustConn(
+        [_Result([(1, "a"), (2, "b"), (3, "c")], ["id", "name"], type_codes=[23, 1043])]
+    )
     cur = db_shim.FakeConnection(rust).cursor()
     cur.execute("SELECT id, name FROM t")
     check("description names", [c.name for c in cur.description], ["id", "name"])
+    check("description types", [c.type_code for c in cur.description], [23, 1043])
     check("rowcount", cur.rowcount, 3)
     check("fetchone advances", cur.fetchone(), (1, "a"))
     check("fetchmany continues", cur.fetchmany(1), [(2, "b")])
