@@ -347,6 +347,9 @@ fn conv_timestamptz(v: &Bound<'_, PyAny>) -> PyResult<chrono::DateTime<chrono::U
 }
 
 fn conv_json(v: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
+    if let Some(text) = json_wrapper_text(v)? {
+        return serde_json::from_str(&text).map_err(rerr);
+    }
     match v.extract::<String>() {
         Ok(s) => {
             Ok(serde_json::from_str::<serde_json::Value>(&s)
@@ -2229,9 +2232,32 @@ impl RustConn {
 #[cfg(test)]
 mod tests {
     use super::{
-        LOWER_HEX, UPPER_HEX, has_bare_keyword, has_multiple_statements, hex_text, holds_nul_text,
-        leading_keyword, numeric_binary_to_text, returns_rows, translate_placeholders,
+        LOWER_HEX, UPPER_HEX, conv_json, has_bare_keyword, has_multiple_statements, hex_text,
+        holds_nul_text, leading_keyword, numeric_binary_to_text, returns_rows,
+        translate_placeholders,
     };
+
+    #[test]
+    fn an_array_member_wrapped_in_json_is_sent_as_its_document() {
+        use pyo3::prelude::*;
+        Python::attach(|py| {
+            let json = py
+                .import("psycopg.types.json")
+                .unwrap()
+                .getattr("Json")
+                .unwrap();
+            let wrapped = json
+                .call1((pyo3::types::PyDict::from_sequence(
+                    &py.eval(c"[('code', 'TST')]", None, None).unwrap(),
+                )
+                .unwrap(),))
+                .unwrap();
+            assert_eq!(
+                conv_json(&wrapped).unwrap(),
+                serde_json::json!({"code": "TST"})
+            );
+        });
+    }
 
     #[test]
     fn a_nul_in_text_is_found_where_psycopg_dumps_text() {
