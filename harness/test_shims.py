@@ -1532,6 +1532,23 @@ def test_rows_ir_access_does_not_hold_send_the_read_to_python() -> None:
         shim.access_the_kernel_lacks(env, reached("child")),
         "plain: an access row ir_access does not hold",
     )
+    access._get_all_access = lambda: {"plain": (stored,), "child": (stored,)}
+    env.transaction = SimpleNamespace(
+        _privilege_frames=["a block over plain"],
+        privilege_frames=lambda name, _env: ("frame",) if name == "plain" else (),
+    )
+    check(
+        "a model a privileged() block holds sends the read to python, the "
+        "kernel knowing no block",
+        shim.access_the_kernel_lacks(env, reached("child")),
+        "plain: a privileged() block holds it, which the kernel cannot see",
+    )
+    env.transaction = SimpleNamespace(_privilege_frames=[])
+    check(
+        "with no block open, the kernel's rules hold",
+        shim.access_the_kernel_lacks(env, reached("child")),
+        None,
+    )
     env.su = True
     check(
         "a superuser reads past the rules",

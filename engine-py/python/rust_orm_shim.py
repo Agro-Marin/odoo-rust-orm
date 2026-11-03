@@ -695,7 +695,8 @@ def access_the_kernel_lacks(env, reached):
     if env.context.get(getattr(constants, "ACCESS_LINKS_KEY", "access_link_ids")):
         return "the context presents links, whose grants the kernel cannot open"
     outside = _models_granted_outside_the_table(env)
-    if not outside:
+    framed = _privilege_frames_of(env)
+    if not outside and framed is None:
         return None
     pending, seen = sorted(reached()), set()
     while pending:
@@ -703,12 +704,25 @@ def access_the_kernel_lacks(env, reached):
         if current in seen or current not in env:
             continue
         seen.add(current)
+        if framed is not None and framed(current, env):
+            return (
+                f"{current}: a privileged() block holds it, which the kernel cannot see"
+            )
         if current in outside:
             return f"{current}: an access row ir_access does not hold"
         model = env[current]
         if model._inherits_rules:
             pending.extend(model._inherits)
     return None
+
+
+def _privilege_frames_of(env):
+    # the blocks privileged() opens add their grants as python judges the
+    # access, so any read that reaches a model one holds is python's to answer
+    transaction = getattr(env, "transaction", None)
+    if not getattr(transaction, "_privilege_frames", None):
+        return None
+    return transaction.privilege_frames
 
 
 def _reached_models(model, fields):
