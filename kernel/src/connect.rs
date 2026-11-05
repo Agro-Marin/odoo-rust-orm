@@ -182,6 +182,8 @@ impl rustls::client::danger::ServerCertVerifier for EncryptOnly {
 /// connection's task still ends with an error when the server closed the
 /// session first (its idle_session_timeout, a termination): the Terminate it
 /// writes on close meets a closed socket. That is the expected end, not a drop.
+/// A live connection's end is a warning: its owner meets the fault on next use
+/// and judges it there, as Python's driver raises it.
 #[derive(Default)]
 pub struct ConnState {
     pub fault: Option<String>,
@@ -214,7 +216,11 @@ fn note_connection_end(slot: &FaultSlot, e: &tokio_postgres::Error) {
             "a released connection ended on a session the server had already closed"
         );
     } else {
-        tracing::error!(error = %e, "postgres connection dropped");
+        tracing::warn!(
+            target: "odoo_kernel::connect",
+            error = %e,
+            "a live postgres connection ended; its owner meets the fault on next use"
+        );
     }
 }
 
