@@ -279,14 +279,16 @@ class _RustConn:
     def __init__(self, results=None) -> None:
         self.results = list(results or [])
         self.calls = []
+        self.prepares = []
         self.closed = False
         self.in_transaction = False
         self.in_failed_transaction = False
         self.readonly = False
         self.resets = []
 
-    def execute(self, query, params=None):
+    def execute(self, query, params=None, prepare=None):
         self.calls.append((query, params))
+        self.prepares.append(prepare)
         if self.results:
             return self.results.pop(0)
         return _Result([], [], 0)
@@ -342,6 +344,17 @@ def test_fake_cursor_fetch_semantics() -> None:
     check("fetchall drains", cur.fetchall(), [(3, "c")])
     check("fetchone at the end is None", cur.fetchone(), None)
     check("fetchall at the end is empty", cur.fetchall(), [])
+
+    rust = _RustConn()
+    cnx = db_shim.FakeConnection(rust)
+    cnx.cursor().execute("SELECT 1")
+    cnx.cursor().execute("SELECT 1", prepare=False)
+    cnx.execute("SELECT 1", prepare=True)
+    check(
+        "prepare reaches the Rust connection, which keeps an unprepared statement out of its cache",
+        rust.prepares,
+        [None, False, True],
+    )
 
     rust = _RustConn([_Result([], [], 2), _Result([], [], 3)])
     cur = db_shim.FakeConnection(rust).cursor()
@@ -2207,6 +2220,44 @@ def test_the_read_gates_see_fetch_and_read_group_overrides() -> None:
         {"analytic_distribution"},
     )
     orm_shim.forget_gates()
+
+
+def test_an_operation_door_is_judged_by_the_method_beneath_it() -> None:
+    _odoo()
+    import purity
+
+    import odoo.orm.models.base as base_mod
+    from odoo.orm.models.operation_doors import _door
+
+    base = base_mod.BaseModel
+
+    def probe(name, **attrs):
+        return type(
+            name.replace(".", "_"),
+            (base,),
+            {
+                "__module__": "odoo.addons.probe.models",
+                "_register": False,
+                "_name": name,
+            }
+            | attrs,
+        )
+
+    inherited = probe("probe.door_inherited")
+    inherited._search = _door(inherited, "_search", None, None)
+    check(
+        "a door over the inherited _search is no override",
+        purity.transparent(inherited, base, "_search"),
+        (True, ()),
+    )
+
+    own = probe("probe.door_own", _search=lambda *_a, **_k: None)
+    own._search = _door(own, "_search", vars(own)["_search"], None)
+    check(
+        "a door over the class's own _search still overrides it",
+        purity.transparent(own, base, "_search")[0],
+        False,
+    )
 
 
 def test_a_routed_read_group_flushes_no_label_it_does_not_return() -> None:

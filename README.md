@@ -4605,6 +4605,59 @@ equal `False` (`[False, 0]` keeps `False`), so the answer depends on the
 list's order and differs from `in` with the same list. The kernel answers
 `in`'s; that one is Python's to fix.
 
+## `prepare=False` is honoured, and the kernel writes the SQL plans need
+
+Three ways the port's SQL lost a plan Python's kept, found measuring the fork
+against PostgreSQL 18 (`agromarin-knowledge/research/2026-11-07-postgresql-16-19-leverage.md`),
+and why nothing routed while they were found.
+
+**Every model read as overriding its read path.** Since the fork's operation
+doors (`odoo/orm/models/operation_doors.py`, 2026-11-03/05) every concrete
+registry class holds a door for `_search`, `search_read`, `search_fetch`,
+`search_count` and the other `DOOR_METHODS`. `purity.override_keys` counted any
+method in a class's own dict, so all 252 models of a `mail` + `ai` database
+read as impure and the shim routed nothing: the shadow corpus compared 0 of
+435 cases, every-user 0, grant scopes 0. A door over no method of its own class
+calls the next class's, and an active delegation only narrows its arguments
+and filters its result around the call the shim answers beneath it; the walk
+now passes through such a door and judges the method where it is defined. 8 of
+252 models stay impure, each for an override of its own (`res.users.read`,
+`ir.attachment._search`, `mail.*`). The gate's shadow corpus compares 334 again,
+every-user 19,264.
+
+**`prepare=False` never reached the connection.** `FakeCursor.execute` dropped
+it and `RustConn` cached a named statement for every parameterized query, so a
+caller that asks for no prepared statement -- the fork's DDL, `ir_cron`,
+`ir_model`, `ir_model_fields`, `ai.embedding`'s retrieval -- got one. After five
+runs PostgreSQL may switch a prepared statement to its generic plan, and for
+the retrieval query the generic plan cannot order by the HNSW index:
+
+```
+                    run 1-5     run 6-10
+prepared (cached)   1.0-9.6 ms  113-138 ms
+prepare=False       0.5-1.7 ms  0.5-0.6 ms
+```
+
+`RustConn.execute` takes `prepare`; on `False` the statement is prepared to
+learn its parameter types, run once with a custom plan, kept out of the cache
+and closed when dropped.
+
+**One column's OR was two conditions.** The port compiles the raw domain
+(`search_raw`), which Python merges before compiling and the kernel did not:
+`['|', ('id', '=', 1), ('id', '=', 2)]` reached PostgreSQL as
+`id IN ($1) OR id IN ($2)` where Python writes `id IN ($1, $2)`. The kernel now
+merges the `=`/`in` leaves of one stored scalar column under an OR, and leaves
+alone what Odoo reads otherwise: falsy values (unset), names on a many2one (a
+name search), x2many, translated, company-dependent, related and
+custom-search fields.
+
+**A boolean condition hid partial indexes.** The kernel wrote `active IN ($n)`.
+PostgreSQL does not prove `active IS TRUE` from `active = true`, even with the
+value in a custom plan, so `crm_lead._default_order_idx`, `(priority DESC, id
+DESC) WHERE active IS TRUE`, never served the lead list: a full scan and a sort
+where Python's SQL gets an index-only scan. The kernel now writes what
+`Boolean.condition_to_sql` writes: `IS TRUE`, `IS NOT TRUE` or a constant.
+
 ## The road to replacement (M2, then M3)
 
 `M3-PLAN.md` is the plan of record for the end state: the Rust binary as the

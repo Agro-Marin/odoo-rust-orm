@@ -29,13 +29,24 @@ TRANSPARENT_HOOKS = {
 }
 
 
+def _passes_through(member, owner, name):
+    from odoo.orm.delegation import DOOR_ORIGIN
+
+    origin = getattr(member, DOOR_ORIGIN, None)
+    # an operation door over no method of its own class calls the next class's,
+    # which this walk judges where it is defined
+    return origin is not None and origin is getattr(super(owner, owner), name, None)
+
+
 def override_keys(cls, base, name):
     if getattr(cls, name, None) is getattr(base, name, None):
         return []
     return [
         (k.__module__, k.__qualname__, name)
         for k in cls.__mro__
-        if name in vars(k) and k not in base.__mro__
+        if name in vars(k)
+        and k not in base.__mro__
+        and not _passes_through(vars(k)[name], k, name)
     ]
 
 

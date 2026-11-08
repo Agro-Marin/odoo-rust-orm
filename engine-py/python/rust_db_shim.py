@@ -134,12 +134,12 @@ class FakeCursor:
     def connection(self):
         return self._cnx
 
-    def execute(self, query, params=None, *, prepare=None):  # noqa: ARG002  psycopg signature; the rust side always prepares
+    def execute(self, query, params=None, *, prepare=None):
         if isinstance(query, bytes):
             query = _decode_query(query)
         self._rowcount_override = None
         try:
-            self._result = self._cnx._rust.execute(query, params)
+            self._result = self._cnx._rust.execute(query, params, prepare)
         except RuntimeError as e:
             _raise_pg(e)
         self._pos = 0

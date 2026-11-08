@@ -1764,6 +1764,7 @@ impl RustConn {
         py: Python<'_>,
         query: &str,
         params: Option<Bound<'_, PyAny>>,
+        reuse_prepared: bool,
     ) -> PyResult<RustResult> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(rerr("connection is closed"));
@@ -1833,14 +1834,18 @@ impl RustConn {
                         .collect::<Vec<_>>()
                         .join(",")
                 );
-                let cached = self.stmt_cache.lock().unwrap().get(&key).cloned();
+                let cached = if reuse_prepared {
+                    self.stmt_cache.lock().unwrap().get(&key).cloned()
+                } else {
+                    None
+                };
                 let stmt = match cached {
                     Some(s) => s,
                     None => {
                         let s = self
                             .block(py, self.client()?.prepare_typed(&sql, &types))
                             .map_err(db_err)?;
-                        {
+                        if reuse_prepared {
                             let mut cache = self.stmt_cache.lock().unwrap();
 
                             if cache.len() >= odoo_kernel::db::MAX_PREPARED {
@@ -1894,7 +1899,7 @@ impl RustConn {
 
         if returns_rows(&sql) {
             let mut stmt = stmt;
-            if stmt.is_none() {
+            if stmt.is_none() && reuse_prepared {
                 let cached = self.stmt_cache.lock().unwrap().get(&sql).cloned();
                 stmt = match cached {
                     Some(s) => Some(s),
@@ -1976,14 +1981,15 @@ impl RustConn {
 
 #[pymethods]
 impl RustConn {
-    #[pyo3(signature = (query, params=None))]
+    #[pyo3(signature = (query, params=None, prepare=None))]
     fn execute(
         &self,
         py: Python<'_>,
         query: &str,
         params: Option<Bound<'_, PyAny>>,
+        prepare: Option<bool>,
     ) -> PyResult<RustResult> {
-        let result = self.execute_statement(py, query, params);
+        let result = self.execute_statement(py, query, params, prepare != Some(false));
         self.track_abort(py, query, &result);
         match result {
             Err(e) => {
