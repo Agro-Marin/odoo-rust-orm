@@ -302,9 +302,12 @@ pub fn prepare_python(py: Python<'_>, config: &str) -> PyResult<()> {
     path.insert(0, venv_site())?;
     path.insert(0, odoo_root())?;
     py.import("odoo")?;
-    py.import("odoo.tools")?.getattr("config")?.call_method1(
+    let kwargs = pyo3::types::PyDict::new(py);
+    kwargs.set_item("setup_logging", true)?;
+    py.import("odoo.tools")?.getattr("config")?.call_method(
         "parse_config",
         (vec!["-c".to_string(), config.to_string()],),
+        Some(&kwargs),
     )?;
     Ok(())
 }

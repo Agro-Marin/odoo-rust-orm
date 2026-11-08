@@ -108,7 +108,7 @@ def test_delegated_numeric_strings_keep_python_and_postgres_meaning(raw, expecte
         pytest.skip("RUSTORM_TEST_DSN must name a disposable database")
     import psycopg
 
-    from odoo.orm.domain.optimizations import _coerce_numeric
+    from odoo.orm.fields.numeric import _coerce_numeric
 
     value = _coerce_numeric(raw, "float")
     with psycopg.connect(dsn) as conn, conn.cursor() as cr:

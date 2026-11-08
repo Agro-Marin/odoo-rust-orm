@@ -1,4 +1,5 @@
 import collections
+import contextlib
 import datetime
 import json
 import sys
@@ -224,21 +225,25 @@ try:
     ]
     for label, uid, ctx, name, privilege in cases:
         model = env(user=uid, context=ctx)[name]  # noqa: F821
-        if privilege:
-            model = model.with_privilege(*privilege)
-        for shape, call in shapes(model).items():
-            routed_answer, routed = run_read_and_rollback(env, "on", call)  # noqa: F821
-            if not routed:
-                continue
-            python_answer, _ = run_read_and_rollback(env, "off", call)  # noqa: F821
-            compared[shape] += 1
-            routed_by[label] += 1
-            if routed_answer != python_answer:
-                key = (label, name, shape, repr(ctx), privilege)
-                mismatched[key] += 1
-                example.setdefault(
-                    key, (str(routed_answer)[:240], str(python_answer)[:240])
-                )
+        held = (
+            model.privileged(*privilege, reason="grant scope parity")
+            if privilege
+            else contextlib.nullcontext()
+        )
+        with held:
+            for shape, call in shapes(model).items():
+                routed_answer, routed = run_read_and_rollback(env, "on", call)  # noqa: F821
+                if not routed:
+                    continue
+                python_answer, _ = run_read_and_rollback(env, "off", call)  # noqa: F821
+                compared[shape] += 1
+                routed_by[label] += 1
+                if routed_answer != python_answer:
+                    key = (label, name, shape, repr(ctx), privilege)
+                    mismatched[key] += 1
+                    example.setdefault(
+                        key, (str(routed_answer)[:240], str(python_answer)[:240])
+                    )
     failures.extend(
         "the kernel answered %s without Python's group state" % label
         for label in ("portal scoped", "guard scoped", "dated", "window closed")

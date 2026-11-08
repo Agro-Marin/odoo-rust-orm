@@ -67,7 +67,7 @@ done
 bash "$ROOT/harness/install_engine.sh" > "$OUT/install_engine.log" 2>&1; step "install engine into venv" $?
 [ "$FAILED" = 0 ] || { say "GATE FAILED (build)"; exit 1; }
 
-"$PY" "$ODOO/odoo-bin" -c "$CONF" -d "$ORMT" \
+ODOO_ALLOW_TEST_MODULES=1 "$PY" "$ODOO/odoo-bin" -c "$CONF" -d "$ORMT" \
     -i test_orm,test_read_group,test_access_rights,test_search_panel,test_inherits \
     --stop-after-init --no-http --db_maxconn=8 > "$OUT/ormt_create.log" 2>&1
 step "create $ORMT" $?
