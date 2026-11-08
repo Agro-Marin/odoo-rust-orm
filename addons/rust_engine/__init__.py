@@ -351,12 +351,39 @@ def _report(orm_shim, final=False) -> None:
         _logger.debug("rust kernel first error on %s: %s", model, msg)
 
 
+SWITCH_FAILURES_LOGGED_AS_ERROR = 3
+
+
+def _read_switch(orm_shim, failures: int) -> int:
+    import psycopg
+
+    try:
+        _apply_params(orm_shim, _read_params())
+    except psycopg.OperationalError as exc:
+        failures += 1
+        if failures >= SWITCH_FAILURES_LOGGED_AS_ERROR:
+            _logger.error(
+                "rust_engine: could not read the kill switch %d times in a row: %s",
+                failures,
+                exc,
+            )
+        else:
+            _logger.warning(
+                "rust_engine: could not read the kill switch, keeping mode %s: %s",
+                orm_shim.MODE,
+                exc,
+            )
+        return failures
+    except Exception:
+        _logger.exception("rust_engine: could not read the kill switch")
+        return failures + 1
+    return 0
+
+
 def _tick(orm_shim, seconds, stop) -> None:
+    failures = 0
     while not stop.wait(seconds):
-        try:
-            _apply_params(orm_shim, _read_params())
-        except Exception:
-            _logger.exception("rust_engine: could not read the kill switch")
+        failures = _read_switch(orm_shim, failures)
         try:
             _report(orm_shim)
         except Exception:

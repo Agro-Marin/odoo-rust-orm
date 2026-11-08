@@ -775,6 +775,53 @@ def _os_threads() -> int:
     return len(list(pathlib.Path("/proc/self/task").iterdir()))
 
 
+def test_a_transient_switch_failure_warns_and_a_lasting_one_is_an_error() -> None:
+    import logging
+
+    import psycopg
+
+    mod = _addon()
+    shim = type("Shim", (), {"MODE": "on"})()
+    outcomes = iter(
+        [psycopg.OperationalError("timeout")] * 3 + [{}, psycopg.OperationalError("x")]
+    )
+
+    def read_params():
+        outcome = next(outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    levels = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record) -> None:
+            levels.append(record.levelname)
+
+    handler = _Capture()
+    mod._logger.addHandler(handler)
+    saved = mod._read_params, mod._apply_params
+    mod._read_params = read_params
+    mod._apply_params = lambda _shim, _params: None
+    try:
+        failures = 0
+        counts = []
+        for _ in range(5):
+            failures = mod._read_switch(shim, failures)
+            counts.append(failures)
+    finally:
+        mod._read_params, mod._apply_params = saved
+        mod._logger.removeHandler(handler)
+    check(
+        "consecutive failures are counted and a success resets", counts, [1, 2, 3, 0, 1]
+    )
+    check(
+        "a timeout warns until it lasts",
+        levels,
+        ["WARNING", "WARNING", "ERROR", "WARNING"],
+    )
+
+
 def test_a_fork_carries_no_tick_thread_and_only_the_parent_resumes_it() -> None:
     import warnings
 
