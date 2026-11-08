@@ -7,6 +7,8 @@ use serde_json::Value as Json;
 use crate::domain::{Leaf, Node};
 use crate::registry::{Field, FieldType, Model, Registry};
 
+type OrSet<'n> = (&'n str, Vec<&'n Json>);
+
 pub fn pg_cast_type(ttype: FieldType) -> &'static str {
     match ttype {
         FieldType::Boolean => "bool",
@@ -643,8 +645,9 @@ impl<'a> Compiler<'a> {
                 c
             }
             Node::Or(children) => {
+                let merged = self.merge_or_sets(children);
                 let mut c = Cond::any();
-                for ch in children {
+                for ch in merged.as_deref().unwrap_or(children) {
                     c = c.add(self.compile(ch)?);
                 }
                 c
@@ -659,6 +662,95 @@ impl<'a> Compiler<'a> {
             },
             Node::Leaf(leaf) => Cond::all().add(self.compile_leaf(leaf)?),
         })
+    }
+
+    /// The values an `=`/`in` leaf matches, when OR-ing it with another leaf on
+    /// the same column is the column's one `IN` list: a stored scalar column,
+    /// and values Odoo reads as themselves (no falsy value, which means unset,
+    /// and no name for a many2one, which is a name search).
+    fn or_set_values<'n>(&self, node: &'n Node) -> Option<OrSet<'n>> {
+        let Node::Leaf(leaf) = node else {
+            return None;
+        };
+        if !matches!(leaf.op.as_str(), "=" | "in") || crate::fragment::is_fragment(&leaf.value) {
+            return None;
+        }
+        let field = self.model.fields.get(&leaf.field)?;
+        if !field.stored
+            || !field.has_column
+            || field.translated
+            || field.company_dependent
+            || field.custom_search
+            || field.related.is_some()
+            || field.search_kind.is_some()
+        {
+            return None;
+        }
+        let numeric = match field.ttype {
+            FieldType::Integer | FieldType::Many2one => true,
+            FieldType::Char | FieldType::Selection => false,
+            _ => return None,
+        };
+        let values: Vec<&Json> = match &leaf.value {
+            Json::Array(items) if leaf.op == "in" => items.iter().collect(),
+            Json::Array(_) => return None,
+            scalar => vec![scalar],
+        };
+        let reads_as_itself =
+            |v: &&Json| !is_py_falsy(v) && if numeric { v.is_i64() } else { v.is_string() };
+        (!values.is_empty() && values.iter().all(reads_as_itself))
+            .then_some((leaf.field.as_str(), values))
+    }
+
+    fn merge_or_sets<'n>(&self, children: &'n [Node]) -> Option<Vec<Node>> {
+        let mut first_at: std::collections::HashMap<&str, usize> = Default::default();
+        let mut merged: Vec<(Option<OrSet<'n>>, &'n Node)> = Vec::new();
+        let mut any = false;
+        for child in children {
+            match self.or_set_values(child) {
+                Some((fname, values)) => match first_at.get(fname) {
+                    Some(&at) => {
+                        let (Some((_, kept)), _) = &mut merged[at] else {
+                            unreachable!()
+                        };
+                        for v in values {
+                            if !kept.contains(&v) {
+                                kept.push(v);
+                            }
+                        }
+                        any = true;
+                    }
+                    None => {
+                        first_at.insert(fname, merged.len());
+                        merged.push((Some((fname, values)), child));
+                    }
+                },
+                None => merged.push((None, child)),
+            }
+        }
+        if !any {
+            return None;
+        }
+        tracing::trace!(
+            target: "odoo_kernel::domain",
+            model = %self.model.name,
+            before = children.len(),
+            after = merged.len(),
+            "merged an OR's same-column values into IN lists"
+        );
+        Some(
+            merged
+                .into_iter()
+                .map(|(set, child)| match set {
+                    Some((fname, values)) => Node::Leaf(Leaf {
+                        field: fname.to_string(),
+                        op: "in".into(),
+                        value: Json::Array(values.into_iter().cloned().collect()),
+                    }),
+                    None => child.clone(),
+                })
+                .collect(),
+        )
     }
 
     fn negate(&self, node: &Node) -> Result<Node> {
@@ -1265,6 +1357,20 @@ impl<'a> Compiler<'a> {
             sql_field = sql_field.cast_as("float8");
         }
         let can_be_null = !field.not_null;
+
+        if field.ttype == FieldType::Boolean && matches!(op, "in" | "not in") {
+            // Python's literal IS TRUE: a parameter would hide it from partial
+            // indexes `WHERE active IS TRUE`, which `active = $1` never implies
+            let listed = |b: bool| values.iter().any(|v| !is_py_falsy(v) == b);
+            let selects = |b: bool| listed(b) == (op == "in");
+            let cond = match (selects(true), selects(false)) {
+                (true, true) => Expr::cust("TRUE"),
+                (false, false) => Expr::cust("FALSE"),
+                (true, false) => Expr::cust_with_exprs("$1 IS TRUE", [sql_field]),
+                (false, true) => Expr::cust_with_exprs("$1 IS NOT TRUE", [sql_field]),
+            };
+            return Ok(self.company_dependent_guard(field, op, &values, cond));
+        }
 
         let cond = match op {
             "in" | "not in" => self.in_condition(field, sql_field, op, &values, can_be_null),

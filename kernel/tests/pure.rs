@@ -289,6 +289,80 @@ fn empty_domain_is_true() {
 }
 
 #[test]
+fn an_or_of_one_columns_values_is_one_in_list() {
+    let reg = base_registry();
+    assert_eq!(
+        compile(&reg, json!(["|", ["id", "=", 1], ["id", "=", 2]])),
+        compile(&reg, json!([["id", "in", [1, 2]]])),
+    );
+    assert_eq!(
+        compile(
+            &reg,
+            json!([
+                "|",
+                "|",
+                ["id", "in", [1, 3]],
+                ["name", "=", "a"],
+                ["id", "=", 3]
+            ])
+        ),
+        compile(&reg, json!(["|", ["id", "in", [1, 3]], ["name", "=", "a"]])),
+    );
+    assert_eq!(
+        compile(
+            &reg,
+            json!(["|", ["country_id", "=", 7], ["country_id", "in", [8]]])
+        ),
+        compile(&reg, json!([["country_id", "in", [7, 8]]])),
+    );
+}
+
+#[test]
+fn a_boolean_selects_its_one_value_as_odoo_writes_it() {
+    let reg = base_registry();
+    let is_true = r#"WHERE "res_partner"."active" IS TRUE"#;
+    let is_not_true = r#"WHERE "res_partner"."active" IS NOT TRUE"#;
+    for (dom, want) in [
+        (json!([["active", "=", true]]), is_true),
+        (json!([["active", "in", [true]]]), is_true),
+        (json!([["active", "!=", false]]), is_true),
+        (json!([["active", "=", false]]), is_not_true),
+        (json!([["active", "not in", [true]]]), is_not_true),
+        (json!([["active", "in", [false, null]]]), is_not_true),
+        (json!([["active", "in", [true, false]]]), "WHERE TRUE"),
+        (json!([["active", "not in", [true, false]]]), "WHERE FALSE"),
+    ] {
+        let sql = compile(&reg, dom.clone());
+        assert!(sql.ends_with(want), "{dom}: {sql}");
+    }
+}
+
+#[test]
+fn an_or_whose_values_odoo_reads_otherwise_is_left_alone() {
+    let reg = base_registry();
+    for dom in [
+        json!(["|", ["name", "=", "a"], ["name", "=", false]]),
+        json!(["|", ["name", "=", "a"], ["name", "=", ""]]),
+        json!(["|", ["id", "=", 1], ["id", "=", 0]]),
+        json!(["|", ["country_id", "=", 7], ["country_id", "=", "Mexico"]]),
+        json!(["|", ["active", "=", true], ["active", "=", false]]),
+        json!(["|", ["company_ids", "in", [1]], ["company_ids", "in", [2]]]),
+        json!([
+            "|",
+            ["country_id.name", "=", "a"],
+            ["country_id.name", "=", "b"]
+        ]),
+        json!(["&", ["id", "in", [1, 2]], ["id", "in", [2, 3]]]),
+    ] {
+        let unmerged = compile(&reg, dom.clone());
+        assert!(
+            unmerged.contains(" OR ") || unmerged.contains(" AND ") || unmerged.contains("EXISTS"),
+            "{dom} must keep its two conditions: {unmerged}"
+        );
+    }
+}
+
+#[test]
 fn implicit_and_over_consecutive_leaves() {
     let n = domain::parse(&json!([["a", "=", 1], ["b", "=", 2]])).unwrap();
     match n {
@@ -1597,8 +1671,10 @@ fn numeric_and_boolean_comparands_are_coerced_from_strings() {
     assert!(count_sql(&reg, json!([["credit_limit", "in", ["5", "x"]]])).contains("IN (5)"));
     assert!(count_sql(&reg, json!([["credit_limit", "=", "x"]])).ends_with("WHERE FALSE"));
     assert!(compile_res(&reg, json!([["credit_limit", ">", "x"]])).is_err());
-    assert!(count_sql(&reg, json!([["active", "=", 1]])).contains("IN (TRUE)"));
-    assert!(count_sql(&reg, json!([["active", "in", ["false"]]])).contains("IS NULL"));
+    assert!(count_sql(&reg, json!([["active", "=", 1]])).ends_with("\"active\" IS TRUE"));
+    assert!(
+        count_sql(&reg, json!([["active", "in", ["false"]]])).ends_with("\"active\" IS NOT TRUE")
+    );
 }
 
 #[test]
