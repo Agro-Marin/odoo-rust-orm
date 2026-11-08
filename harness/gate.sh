@@ -62,6 +62,7 @@ for db in "$PROBE" "$ORMT"; do
   fi
 done
 
+export PYO3_PYTHON="$PY" PATH="$(dirname "$PY"):$PATH"
 ( cd "$ROOT" && cargo build --release > "$OUT/build.log" 2>&1 ); step "cargo build --release" $?
 ( cd "$ROOT" && cargo test --release -q > "$OUT/cargo_test.log" 2>&1 ); step "cargo test" $?
 bash "$ROOT/harness/install_engine.sh" > "$OUT/install_engine.log" 2>&1; step "install engine into venv" $?

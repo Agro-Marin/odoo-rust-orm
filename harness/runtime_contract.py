@@ -673,8 +673,10 @@ shim.MODE, shim.SAMPLE = "on", 0.0
 try:
     with env_for() as e:
         me = e["res.users"].browse(uid)
-        assert "odoobot_state" not in me._get_fields_invalidation()
-        assert "group_ids" in me._get_fields_invalidation()
+        persona = me._get_fields_persona()
+        assert "odoobot_state" not in persona
+        assert "signature" not in persona
+        assert "group_ids" in persona
         me.write({"signature": "<p>runtime contract</p>"})
         assert e.cr not in shim.DIRTY_CRS, "a signature write tainted the cursor"
         routed = shim.STATS["kernel"]
@@ -710,7 +712,7 @@ try:
 finally:
     shim.MODE, shim.SAMPLE = previous_mode, previous_sample
 print(
-    "CONTRACT a res.users write taints only through Odoo's own invalidation fields, "
+    "CONTRACT a res.users write taints only through the persona access code reads off a user, "
     "and only the written user; every other security model taints the transaction",
     flush=True,
 )
@@ -771,7 +773,8 @@ if "mail.mail" in reg:
                 "registry_sequence": reg.registry_sequence,
             }
             with unittest.TestCase().assertRaisesRegex(
-                engine.KernelRefused, "_get_records_forbidden_and_error_factory"
+                engine.KernelRefused,
+                r"record rules on mail\.message|_get_records_forbidden_and_error_factory",
             ):
                 shim.KERNEL.dispatch(e.cr._cnx._rust, json.dumps(request))
             request["raw_many2one"] = ["mail_message_id"]
@@ -780,7 +783,7 @@ if "mail.mail" in reg:
     finally:
         shim.MODE, shim.SAMPLE = previous_mode, previous_sample
     print(
-        "CONTRACT the kernel refuses to label a comodel that decides access in _get_records_forbidden_and_error_factory",
+        "CONTRACT the kernel refuses to label a comodel whose read access it cannot judge",
         flush=True,
     )
 

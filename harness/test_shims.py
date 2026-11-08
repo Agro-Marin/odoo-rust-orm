@@ -1992,7 +1992,18 @@ def test_a_write_touching_nothing_the_kernel_reads_is_harmless() -> None:
 
         @staticmethod
         def _get_fields_invalidation():
+            return {"active", "company_id"}
+
+        @staticmethod
+        def _get_fields_persona():
             return {"group_ids", "active", "company_id"}
+
+    class OlderUsers:
+        _name = "res.users"
+
+        @staticmethod
+        def _get_fields_invalidation():
+            return {"group_ids", "active"}
 
     class Rule:
         _name = "ir.access"
@@ -2007,6 +2018,12 @@ def test_a_write_touching_nothing_the_kernel_reads_is_harmless() -> None:
     check("archiving it is", harmless(Lang, {"active": False}), False)
     check("a user's signature is not", harmless(Users, {"signature": "x"}), True)
     check("a user's groups are", harmless(Users, {"group_ids": []}), False)
+    check(
+        "an older tree's invalidation fields stand in for the persona",
+        harmless(OlderUsers, {"group_ids": []}),
+        False,
+    )
+    check("and leave its signature harmless", harmless(OlderUsers, {"tz": "x"}), True)
     check("an access row is read whole", harmless(Rule, {"name": "x"}), False)
 
     class Company:
@@ -2258,6 +2275,32 @@ def test_an_operation_door_is_judged_by_the_method_beneath_it() -> None:
         purity.transparent(own, base, "_search")[0],
         False,
     )
+
+    orm_shim = _shims()[1]
+    seeded = {"__class__": base, "name_search": base.name_search}
+    saved = {k: orm_shim._BASE_METHODS.get(k) for k in seeded}
+    orm_shim._BASE_METHODS.update(seeded)
+    named = probe("probe.door_name_search")
+    named.name_search = _door(named, "name_search", None, None)
+    check(
+        "the name_search gate passes a door over the inherited name_search",
+        orm_shim._overridden(named, "name_search"),
+        False,
+    )
+    searched = probe("probe.own_name_search", name_search=lambda *_a, **_k: [])
+    searched.name_search = _door(
+        searched, "name_search", vars(searched)["name_search"], None
+    )
+    check(
+        "and refuses one over the class's own",
+        orm_shim._overridden(searched, "name_search"),
+        True,
+    )
+    for key, value in saved.items():
+        if value is None:
+            orm_shim._BASE_METHODS.pop(key, None)
+        else:
+            orm_shim._BASE_METHODS[key] = value
 
 
 def test_a_routed_read_group_flushes_no_label_it_does_not_return() -> None:

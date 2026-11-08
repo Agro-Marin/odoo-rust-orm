@@ -3680,7 +3680,7 @@ declares `sequences`, the sequence store that became a port beside the row
 port. The shim conformance test read it from the fork and failed; `RustBackend`
 mirrors its delegate's store as it mirrors the support flags.
 
-## A write to `res.users` taints a cursor only through Odoo's own invalidation fields
+## A write to `res.users` taints a cursor only through the user's persona
 
 "Cursor wrote a security model" is the most frequent reason a browser-tour
 read falls back to Python. Every write to `res.users` set it. With the taint's
@@ -3703,6 +3703,17 @@ Python's. The shim now taints a `res.users` write only when it touches that
 set; creates, unlinks and every other security model taint as before. A
 runtime contract writes a signature and requires the next read to route with
 Python's answer, then writes a group and requires the next read to fall back.
+
+**The fork split the set.** `odoo` `079cf9ec3d22` took `group_ids` out of the
+invalidation fields (a membership write goes through `_group_membership`, not
+the field), and `cb6ca0c93539` added `res.users._get_fields_persona()`, the set
+access code reads off the user it judges -- the invalidation fields,
+`group_ids`, `all_group_ids`, `share` and `commercial_partner_id`, which hr
+extends with its employee links. Read through
+the invalidation fields, a group write to a user left the cursor routable on a
+snapshot holding the user's old groups; the runtime contract's group-write
+assert caught it once the gate reached it. The shim reads the persona, and an
+older tree's invalidation fields where there is none.
 
 **The tours did not move** (routed 186, share 0.29, before and after), and the
 reason is worth stating: a tour runs its requests inside one test transaction,
@@ -4624,6 +4635,14 @@ now passes through such a door and judges the method where it is defined. 8 of
 252 models stay impure, each for an override of its own (`res.users.read`,
 `ir.attachment._search`, `mail.*`). The gate's shadow corpus compares 334 again,
 every-user 19,264.
+
+Five more gates compared a method with `BaseModel`'s by identity
+(`name_search`, `_search_display_name`, `_compute_display_name`,
+`_get_records_forbidden_and_error_factory`, and a web spec's x2many comodel
+`_search`), so `name_search` -- a door -- read as overridden on every model and
+the load stage's routed `ir.module.category.name_search` fell back. They now
+ask `_overridden`, which takes the identity answer when it settles the question
+and otherwise walks `purity.override_keys`, doors included.
 
 **`prepare=False` never reached the connection.** `FakeCursor.execute` dropped
 it and `RustConn` cached a named statement for every parameterized query, so a

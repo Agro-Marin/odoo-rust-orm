@@ -378,8 +378,10 @@ KERNEL_READ_FIELDS = {
 
 def _kernel_read_fields(records):
     if records._name == "res.users":
-        invalidating = getattr(records, "_get_fields_invalidation", None)
-        return set(invalidating()) if invalidating is not None else None
+        persona = getattr(records, "_get_fields_persona", None) or getattr(
+            records, "_get_fields_invalidation", None
+        )
+        return set(persona()) if persona is not None else None
     fields = KERNEL_READ_FIELDS.get(records._name)
     return set(fields) if fields is not None else None
 
@@ -402,6 +404,17 @@ def _harmless_user_write(records, vals) -> bool:
 
 _BASE_METHODS = {}
 _GATE_CACHE = {}
+
+
+def _overridden(cls, name) -> bool:
+    import purity
+
+    if getattr(cls, name) is _BASE_METHODS[name]:
+        return False
+    base = _BASE_METHODS.get("__class__")
+    if base is None or not (isinstance(cls, type) and issubclass(cls, base)):
+        return True
+    return bool(purity.override_keys(cls, base, name))
 
 
 def _cache_key(model, *parts):
@@ -525,7 +538,7 @@ def _display_clean(model):
     if cached is not None:
         return cached
     cls = type(model.sudo())
-    ok = cls._compute_display_name is _BASE_METHODS["_compute_display_name"]
+    ok = not _overridden(cls, "_compute_display_name")
     if ok:
         f = model._fields.get("display_name")
         compute = getattr(f, "compute", None) if f is not None else None
@@ -572,9 +585,8 @@ def _kernel_labels(comodel) -> bool:
     key = _cache_key(comodel, "ca")
     pure = _GATE_CACHE.get(key)
     if pure is None:
-        pure = (
-            type(comodel.sudo())._get_records_forbidden_and_error_factory
-            is _BASE_METHODS["_get_records_forbidden_and_error_factory"]
+        pure = not _overridden(
+            type(comodel.sudo()), "_get_records_forbidden_and_error_factory"
         )
         _GATE_CACHE[key] = pure
     return pure
@@ -1659,7 +1671,7 @@ def _web_field_in_python(model, f, name, spec):
         if callable(f.domain):
             return "x2many whose domain is computed per record"
         comodel = type(model.env[f.comodel_name].sudo())
-        if comodel._search is not _BASE_METHODS["_search"]:
+        if _overridden(comodel, "_search"):
             return "x2many through a comodel that searches in python"
     return None
 
@@ -1914,9 +1926,9 @@ def _name_search_clean(model):
     reason = _GATE_CACHE.get(key)
     if reason is None:
         cls = type(model.sudo())
-        if cls.name_search is not _BASE_METHODS["name_search"]:
+        if _overridden(cls, "name_search"):
             reason = "name_search overridden in python"
-        elif cls._search_display_name is not _BASE_METHODS["_search_display_name"]:
+        elif _overridden(cls, "_search_display_name"):
             reason = "_search_display_name overridden in python"
         elif not _display_ok(model):
             reason = "display_name computed in python"
