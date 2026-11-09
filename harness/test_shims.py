@@ -2314,6 +2314,19 @@ def test_an_operation_door_is_judged_by_the_method_beneath_it() -> None:
         purity.transparent(inherited, base, "_search"),
         (True, ()),
     )
+    patched = base.__dict__.get("_search")
+    base._search = lambda *_a, **_k: None
+    try:
+        check(
+            "and stays none once BaseModel's _search is patched after the door was made",
+            purity.transparent(inherited, base, "_search"),
+            (True, ()),
+        )
+    finally:
+        if patched is None:
+            del base._search
+        else:
+            base._search = patched
 
     own = probe("probe.door_own", _search=lambda *_a, **_k: None)
     own._search = _door(own, "_search", vars(own)["_search"], None)
