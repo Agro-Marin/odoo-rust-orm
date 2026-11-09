@@ -2278,6 +2278,10 @@ impl<'a> Compiler<'a> {
             FieldType::One2many => {
                 let inverse = field.o2m_inverse_column(&self.model.name, co)?;
                 self.ctx.touch(&co.name, inverse);
+                // odoo 2f3e5a84dc0: an x2many condition lists its own field in to_flush, so
+                // a pending recompute of a stored computed one2many runs before the EXISTS
+                // reads the comodel (many2many already lists it below)
+                self.ctx.touch(&self.model.name, &field.name);
                 select
                     .expr(col(&sub_alias, inverse))
                     .from_as(Alias::new(&co.table), Alias::new(sub_alias.as_str()))
