@@ -1983,16 +1983,27 @@ impl<'a> Compiler<'a> {
             (_, true) => Node::And(terms),
             (_, false) => Node::Or(terms),
         };
+        // a relational name field under a negative operator is the negation of its positive
+        // match, as _search_display_name_match writes it (~Domain(f.display_name, positive,
+        // value)): a record whose relation is unset has no name to match and is kept, where
+        // the negative operator on the dotted path asks for a related record and drops it
+        let positive = match op {
+            "!=" => Some("="),
+            "not in" => Some("in"),
+            other => other.strip_prefix("not "),
+        };
         let matching = |op: &str, value: &Json| {
             aggregate(
                 fnames
                     .iter()
-                    .map(|fname| {
-                        if relational(fname) {
-                            leaf(&format!("{fname}.display_name"), op, value.clone())
-                        } else {
-                            leaf(fname, op, value.clone())
-                        }
+                    .map(|fname| match (relational(fname), positive) {
+                        (true, Some(pos)) => Node::Not(Box::new(leaf(
+                            &format!("{fname}.display_name"),
+                            pos,
+                            value.clone(),
+                        ))),
+                        (true, None) => leaf(&format!("{fname}.display_name"), op, value.clone()),
+                        (false, _) => leaf(fname, op, value.clone()),
                     })
                     .collect(),
             )

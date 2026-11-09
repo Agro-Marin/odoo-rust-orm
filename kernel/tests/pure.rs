@@ -545,6 +545,27 @@ fn an_equality_on_display_name_searches_the_name_columns_and_handles_unset_names
 }
 
 #[test]
+fn a_negative_operator_on_a_relational_display_name_keeps_the_unset_relation() {
+    // ir.actions.act_window.view's name is its view_id: Python negates the positive match on
+    // view_id.display_name, so a row without a view matches `not =like 'a'`
+    let mut reg = base_registry();
+    reg.models
+        .get_mut("res.partner")
+        .unwrap()
+        .name_search_fields = Some(vec!["country_id".into()]);
+    for op in ["not ilike", "not like", "not =like", "!="] {
+        let sql = compile(&reg, json!([["display_name", op, "be"]]));
+        assert!(sql.contains(r#""country_id" IS NULL"#), "{op}: {sql}");
+        assert!(
+            !sql.contains("NOT ILIKE") && !sql.contains("NOT LIKE"),
+            "{op}: {sql}"
+        );
+    }
+    let positive = compile(&reg, json!([["display_name", "ilike", "be"]]));
+    assert!(!positive.contains("IS NULL"), "{positive}");
+}
+
+#[test]
 fn a_display_name_that_searches_itself_is_refused_not_recursed() {
     let mut reg = base_registry();
     {
@@ -2809,12 +2830,19 @@ fn count_sql_on(reg: &Registry, model: &str, dom: serde_json::Value) -> String {
 #[test]
 fn a_relational_rec_name_searches_the_comodel_display_name_on_the_path() {
     let reg = relational_rec_name_registry();
+    // _search_display_name_match writes a negative operator on a relational name field as
+    // ~Domain(country_id.display_name, positive, value): a link without a country has no name
+    // to match and is kept (measured on ir.actions.act_window.view, whose name is its view_id:
+    // `display_name not ilike 'a'` gave Python 6 rows and the kernel 5, the one without a view)
     let sql = count_sql_on(&reg, "m.link", json!([["display_name", "not ilike", "a"]]));
-    assert!(sql.contains(r#""m_link"."country_id" IN (SELECT"#), "{sql}");
-    assert!(!sql.contains(r#""country_id" IS NULL"#), "{sql}");
     assert!(
-        sql.contains("NOT ILIKE") || sql.contains("NOT (") || sql.contains("NOT LIKE"),
+        sql.contains(r#""m_link"."country_id" NOT IN (SELECT"#),
         "{sql}"
+    );
+    assert!(sql.contains(r#""m_link"."country_id" IS NULL"#), "{sql}");
+    assert!(
+        !sql.contains("NOT ILIKE"),
+        "the comodel's name is matched positively: {sql}"
     );
     let unset = count_sql_on(&reg, "m.link", json!([["display_name", "=", false]]));
     assert!(
