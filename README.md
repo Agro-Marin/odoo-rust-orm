@@ -4677,6 +4677,18 @@ DESC) WHERE active IS TRUE`, never served the lead list: a full scan and a sort
 where Python's SQL gets an index-only scan. The kernel now writes what
 `Boolean.condition_to_sql` writes: `IS TRUE`, `IS NOT TRUE` or a constant.
 
+## The full battery at odoo b2842a7791b (2026-11-08)
+
+`verify.sh` without `--quick` against odoo `b2842a7791b` failed three stages that the quick gate does not run or did not reach, and each was a wrong answer or a gate that compared nothing:
+
+- **fuzz, seed 2**: a negative operator on a relational display name dropped the record whose relation is unset. `_search_display_name_match` negates the positive match on `field.display_name`; `display_name_node` passed `not ilike` down the dotted path, which asks for a related record. `display_name not ilike 'a'` on `ir.actions.act_window.view` (its name is `view_id`) gave Python 6 rows and the kernel 5. The test that asserted the dotted form dated from the initial snapshot, where the fork already negated.
+- **search (port), 185 cases**: odoo `2f3e5a84dc0` has every x2many condition list its own field to flush; the one2many subquery touched only the inverse column.
+- **registry sweep, 0 routed**: a door keeps the method it found when the registry was set up, so once the shim patched `BaseModel` afterwards, the identity test in `_passes_through` failed for every model. A door whose closure holds no `inner` calls the next class at call time and now passes through.
+
+After them, at the same tree, the whole battery is green. The fuzz passes 3 of 3 seeds. The registry sweep compares 19,209 shapes and routes 17,367 of them. The native search answers 4,644 cases and all 4,644 match. The ORM test modules fail 0 of 2,313 tests in both legs, with 931 calls routed. Byte parity diverges on 0 of 1,341 cases. The soak serves 1,833 req/s on 8 threads.
+
+`cargo test` in `gate.sh` cannot run on a venv whose interpreter is a python-build-standalone build: its `_ctypes` is linked into the executable, so a test binary embedding its `libpython` cannot import psycopg. The engine itself builds and installs.
+
 ## The road to replacement (M2, then M3)
 
 `M3-PLAN.md` is the plan of record for the end state: the Rust binary as the
