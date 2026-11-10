@@ -399,6 +399,7 @@ impl<'a> Orm<'a> {
         }
         let t_labels = std::time::Instant::now();
         let comodels_labelled = m2o_columns.len();
+        let mut hidden_fields: BTreeSet<usize> = BTreeSet::new();
         for (comodel, columns) in m2o_columns {
             let ids: BTreeSet<i64> = cells
                 .iter()
@@ -413,9 +414,16 @@ impl<'a> Orm<'a> {
             for rec in &mut cells {
                 for ci in &columns {
                     if let Some(id) = rec[*ci].as_i64() {
+                        let unredacted = keep_hidden_ids.contains(ci);
                         rec[*ci] = match names.get(&id) {
+                            Some(name) if req.web_many2one && unredacted => {
+                                json!({"id": id, "display_name": name})
+                            }
                             Some(name) => json!([id, name]),
-                            None if keep_hidden_ids.contains(ci) => json!(id),
+                            None if unredacted => {
+                                hidden_fields.insert(*ci);
+                                json!(id)
+                            }
                             None => json!(false),
                         };
                     }
@@ -464,7 +472,21 @@ impl<'a> Orm<'a> {
                 );
                 format!("{{\"length\":{length},\"records\":{json}}}")
             }
+            _ if req.web_many2one => format!("{{\"records\":{json}}}"),
             _ => json,
+        };
+        let json = if req.web_many2one && !hidden_fields.is_empty() {
+            let hidden: Vec<&str> = hidden_fields
+                .iter()
+                .map(|ci| kinds[*ci].0.as_str())
+                .collect();
+            format!(
+                "{},\"hidden\":{}}}",
+                &json[..json.len() - 1],
+                serde_json::to_string(&hidden)?
+            )
+        } else {
+            json
         };
         tracing::debug!(
             target: "odoo_kernel::scan",

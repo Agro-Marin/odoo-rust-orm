@@ -287,6 +287,13 @@ pub struct Request {
     /// page was read with. The answer becomes `{"length": n, "records": [...]}`.
     #[serde(default)]
     pub web_length: Option<WebLength>,
+
+    /// Render each `unredacted_many2one` value the kernel labels as web's
+    /// `{"id": id, "display_name": name}` instead of `[id, name]`. The answer
+    /// becomes `{"records": [...]}`, with `"hidden"` naming the fields where
+    /// some target was left a bare id for Python to resolve.
+    #[serde(default)]
+    pub web_many2one: bool,
 }
 
 /// What `_format_web_search_read_results` reads besides the page itself: the
@@ -1608,6 +1615,9 @@ impl<'a> Orm<'a> {
                 if req.web_length.is_some() {
                     unsupported("web_length")?;
                 }
+                if req.web_many2one {
+                    unsupported("web_many2one")?;
+                }
                 if !req.fields.is_empty() {
                     unsupported("fields")?;
                 }
@@ -1630,6 +1640,9 @@ impl<'a> Orm<'a> {
             "read_group" => {
                 if req.web_length.is_some() {
                     unsupported("web_length")?;
+                }
+                if req.web_many2one {
+                    unsupported("web_many2one")?;
                 }
                 if !req.fields.is_empty() {
                     unsupported("fields")?;
