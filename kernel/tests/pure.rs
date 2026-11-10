@@ -3760,6 +3760,7 @@ fn a_request_naming_no_groupby_is_answered_not_refused() {
         allowed_company_ids: None,
         principal_groups: None,
         access_partner: None,
+        access_partner_of_user: false,
         groupby_labels: None,
         raw_many2one: Vec::new(),
         unredacted_many2one: Vec::new(),
