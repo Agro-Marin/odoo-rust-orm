@@ -556,6 +556,13 @@ def _search_native(
     if not env.su:
         try:
             envelope["principal_groups"] = rust_orm_shim._principal_groups(env)
+            # the kernel compiles this model's rules itself: send the partner a
+            # reach compares with as ir.access binds it (an acting partner in
+            # the context replaces the user's own), and have each hierarchy the
+            # cached rules hold walked again, since a contact moves under or out
+            # of a commercial partner without any signal that cache knows
+            envelope["access_partner"] = rust_orm_shim._access_partner(env)
+            envelope["fresh_hierarchies"] = True
         except Exception as exc:
             _delegated(method, "the group state raised %s" % type(exc).__name__)
             return None
