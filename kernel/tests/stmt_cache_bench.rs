@@ -114,6 +114,7 @@ fn req(model: &str, fields: &[&str], limit: Option<u64>) -> Request {
         principal_groups: None,
         access_partner: None,
         access_partner_of_user: false,
+        web_length: None,
         groupby_labels: None,
         raw_many2one: Vec::new(),
         unredacted_many2one: Vec::new(),

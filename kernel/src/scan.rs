@@ -262,6 +262,9 @@ impl<'a> Orm<'a> {
             .build_condition(model, domain_json, env, &rules, req.trusted_domain)
             .await?;
         let cond_ms = t_cond.elapsed().as_secs_f64() * 1000.0;
+        // the count web may ask for is taken on the very condition the page is
+        // read with, as Python's search_count compiles the same domain again
+        let count_cond = req.web_length.as_ref().map(|_| cond.clone());
         let ctx = self.ctx(env);
 
         let mut sel_fields: Vec<&Field> = Vec::new();
@@ -441,6 +444,28 @@ impl<'a> Orm<'a> {
             .collect();
         let t_serialise = std::time::Instant::now();
         let json = records_to_json(&names, &cells)?;
+        let json = match (&req.web_length, count_cond) {
+            (Some(web), Some(cond)) => {
+                let length = match web.decide(cells.len() as u64, offset, limit) {
+                    Ok(length) => length,
+                    Err(cap) => {
+                        if let Some(over) = model.overridden_for("search_count") {
+                            refuse!(
+                                "{model_name} overrides search_count in Python ({over}); \
+                                 web's length is its answer"
+                            );
+                        }
+                        self.count_rows(model, cond, cap).await? as u64
+                    }
+                };
+                tracing::debug!(
+                    target: "odoo_kernel::scan",
+                    model = %model_name, length, "web_search_read length decided in the dispatch"
+                );
+                format!("{{\"length\":{length},\"records\":{json}}}")
+            }
+            _ => json,
+        };
         tracing::debug!(
             target: "odoo_kernel::scan",
             model = %model_name,
@@ -712,26 +737,28 @@ impl<'a> Orm<'a> {
             model = %model_name, ?limit, capped = limit.is_some(),
             "search_count plan"
         );
+        Ok(self.count_rows(model, cond, limit).await?.to_string())
+    }
+
+    async fn count_rows(&self, model: &Model, cond: Condition, limit: Option<u64>) -> Result<i64> {
         let mut select = Query::select();
         select.from(Alias::new(&model.table)).cond_where(cond);
-        match limit {
+        let (sql, values) = match limit {
             Some(l) => {
                 select.expr(Expr::cust("1")).limit(l);
                 let mut outer = Query::select();
                 outer
                     .expr(Expr::cust("COUNT(*)"))
                     .from_subquery(select, Alias::new("capped"));
-                let (sql, values) = outer.build_postgres(PostgresQueryBuilder);
-                let rows = self.db.query(&sql, &values.as_params()).await?;
-                Ok(rows[0].get::<_, i64>(0).to_string())
+                outer.build_postgres(PostgresQueryBuilder)
             }
             None => {
                 select.expr(Expr::cust("COUNT(*)"));
-                let (sql, values) = select.build_postgres(PostgresQueryBuilder);
-                let rows = self.db.query(&sql, &values.as_params()).await?;
-                Ok(rows[0].get::<_, i64>(0).to_string())
+                select.build_postgres(PostgresQueryBuilder)
             }
-        }
+        };
+        let rows = self.db.query(&sql, &values.as_params()).await?;
+        Ok(rows[0].get::<_, i64>(0))
     }
 
     pub async fn read_group(&self, req: &Request, env: &Env) -> Result<String> {

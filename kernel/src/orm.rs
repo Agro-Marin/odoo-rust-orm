@@ -281,6 +281,48 @@ pub struct Request {
 
     #[serde(default)]
     pub order_fragments: Vec<serde_json::Value>,
+
+    /// Decide `web_search_read`'s `length` in this same dispatch, by web's own
+    /// rule (`_format_web_search_read_results`), counting on the condition the
+    /// page was read with. The answer becomes `{"length": n, "records": [...]}`.
+    #[serde(default)]
+    pub web_length: Option<WebLength>,
+}
+
+/// What `_format_web_search_read_results` reads besides the page itself: the
+/// `count_limit` its `search_count` is capped at, and the context's
+/// `force_search_count`.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebLength {
+    #[serde(default)]
+    pub count_limit: Option<u64>,
+    #[serde(default)]
+    pub force: bool,
+}
+
+impl WebLength {
+    /// The length of a page of `n` records read at `offset` with `limit`:
+    /// `Ok` when the page decides it, `Err(cap)` when web asks
+    /// `search_count(domain, limit=count_limit)` for it.
+    pub fn decide(&self, n: u64, offset: u64, limit: Option<u64>) -> Result<u64, Option<u64>> {
+        if n == 0 {
+            return if offset == 0 {
+                Ok(0)
+            } else {
+                Err(self.count_limit)
+            };
+        }
+        let current = n + offset;
+        let limit_reached = limit == Some(n);
+        let count_limit_reached = self.count_limit.is_some_and(|c| c != 0 && c <= current);
+        let limited = limit.is_some_and(|l| l != 0);
+        if limited && ((limit_reached && !count_limit_reached) || self.force) {
+            Err(self.count_limit)
+        } else {
+            Ok(current)
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1563,6 +1605,9 @@ impl<'a> Orm<'a> {
                 }
             }
             "search_count" => {
+                if req.web_length.is_some() {
+                    unsupported("web_length")?;
+                }
                 if !req.fields.is_empty() {
                     unsupported("fields")?;
                 }
@@ -1583,6 +1628,9 @@ impl<'a> Orm<'a> {
                 }
             }
             "read_group" => {
+                if req.web_length.is_some() {
+                    unsupported("web_length")?;
+                }
                 if !req.fields.is_empty() {
                     unsupported("fields")?;
                 }
@@ -1699,6 +1747,46 @@ impl<'a> Orm<'a> {
             "built the WHERE condition"
         );
         Ok(cond)
+    }
+}
+
+#[cfg(test)]
+mod web_length_tests {
+    use super::WebLength;
+
+    fn decide(
+        n: u64,
+        offset: u64,
+        limit: Option<u64>,
+        cap: Option<u64>,
+        force: bool,
+    ) -> Result<u64, Option<u64>> {
+        WebLength {
+            count_limit: cap,
+            force,
+        }
+        .decide(n, offset, limit)
+    }
+
+    // the cases harness/test_shims.py test_web_length holds _web_length to
+    #[test]
+    fn the_length_is_webs_rule() {
+        assert_eq!(decide(0, 0, Some(80), None, false), Ok(0));
+        assert_eq!(decide(0, 80, Some(80), Some(500), false), Err(Some(500)));
+        assert_eq!(decide(3, 0, Some(80), None, false), Ok(3));
+        assert_eq!(decide(80, 0, Some(80), None, false), Err(None));
+        assert_eq!(decide(80, 0, Some(80), Some(80), false), Ok(80));
+        assert_eq!(decide(3, 0, Some(80), None, true), Err(None));
+        assert_eq!(decide(3, 10, None, None, false), Ok(13));
+    }
+
+    // Python's truthiness: a zero limit or count_limit is no limit at all
+    #[test]
+    fn a_zero_limit_or_count_limit_is_falsy() {
+        assert_eq!(decide(3, 0, Some(0), None, true), Ok(3));
+        assert_eq!(decide(80, 0, Some(80), Some(0), false), Err(Some(0)));
+        assert_eq!(decide(40, 40, Some(40), Some(80), false), Ok(80));
+        assert_eq!(decide(40, 40, Some(40), Some(81), false), Err(Some(81)));
     }
 }
 
