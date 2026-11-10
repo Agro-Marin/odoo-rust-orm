@@ -4689,6 +4689,69 @@ After them, at the same tree, the whole battery is green. The fuzz passes 3 of 3
 
 `cargo test` in `gate.sh` cannot run on a venv whose interpreter is a python-build-standalone build: its `_ctypes` is linked into the executable, so a test binary embedding its `libpython` cannot import psycopg. The engine itself builds and installs.
 
+## The performance gate: routed must be at least as fast as Python
+
+Every other gate here asks whether a routed read is exact. None failed when
+routing made a read slower, so a shape could route for months at a loss while
+`speedup.py` and `http_bench.py` reported speed nobody was gated on.
+`harness/perf_gate.sh --db <db>` (or `harness/gate.sh --perf`, on the probe
+database) is that gate. The rule: a routed (model, method, shape) is at least
+1.0x Python end to end, and a shape below it is listed to be made faster. The
+gate does not change routing: it reports.
+
+- **Workload.** `parity_corpus.py` on the database, the same cases the
+  byte-parity stage sends (every model, the six routed methods, uid 2 and the
+  HTTP context), replayed in one process by `traffic_bench.py`, which now
+  writes every call's time in every leg (`RUSTORM_TRAFFIC_JSON`).
+- **Protocol.** 16 interleaved pairs, each leg first in half of them. A shape
+  is its model, method, domain skeleton (fields and operators, not values),
+  fields or specification, groupby, order and limit.
+- **Path, per shape.** `routed` when the kernel answered and nothing fell
+  back, `partial` when the kernel answered part of the call and the shim
+  handed the rest to Python (a `web_search_read` whose search routed and whose
+  read did not), `fallback` when the shim refused. `routed` and `partial` are
+  gated, `fallback` is reported.
+- **Noise.** The bound is a distribution-free 99% interval for the median
+  paired ratio, from order statistics, not an assumed error bar. A shape is
+  `slower` only when the whole interval is below 1.0x, `faster` when it is
+  above, and `inconclusive` otherwise. A thousand shapes at 99% leave a few
+  false failures, so the suspects are timed again on their own. A failure that
+  does not repeat is `unconfirmed`. The routed total is time-weighted.
+- **Control.** `--control` runs the same protocol with Python against Python.
+  Every shape it calls slower is a false failure, so the control measures the
+  instrument on this machine at its current load.
+- **Floors.** `--write-floors` records each faster shape's lower bound, and
+  `--floors` (`RUSTORM_PERF_FLOORS` for the gate) marks a shape `regressed`
+  when its upper bound falls below its floor.
+
+Measured 2026-11-10 at `origin/main` d950aa0, on 16 cores shared with a
+porting swarm (load average 4.2 to 7.4 during the runs), venv `p314o19m`
+(CPython 3.14.10; the fork's `odoo_rust` accel does not load there, so both
+legs use the Python fallbacks):
+
+| fixture | control false failures | routed total | routed shapes < 1.0x | at least 1.0x |
+|---|---|---|---|---|
+| mail,contacts, 6 partners | 0 of 1291 (1 before confirmation) | **0.39x** [0.39 .. 0.39] | 952 of 953 | `ir.cron.name_search` 1.33x |
+| same + 120k partners | 0 of 1291 (1 before confirmation) | **0.81x** [0.80 .. 0.82] | 952 of 955 | `ir.cron.name_search` 1.32x, `res.partner.industry.search_read` 1.15x |
+
+The measured drift is small. Per-shape interval half-widths have a median of
+4 to 7% and a p90 of 7 to 11%. On whole methods the half-width is 1 to 3%, and
+the control's total stays inside 0.99 to 1.02x. The routed result repeated
+between two runs to the second decimal.
+
+**Where the time goes.** A routed call at a non-superuser identity pays a
+fixed cost of about 1.5 ms that Python does not. Its median goes from 0.58 to
+1.81 ms against Python's own time. `search_count` on `res.partner` at uid 2,
+one environment, no invalidation: 0.10 ms in Python, 0.51 ms routed. The same
+call as superuser, where `_resolved_rules` returns at once, routes at 0.087 ms
+against Python's 0.098 ms. Under `cProfile`, `_resolved_rules` takes half of
+the routed call: it runs `optimize_full` over the caller's rule domain on
+every call, plus the `_access_partner` and field fetches it triggers. Python
+caches that domain per registry. A refused call pays the gate on top of
+Python's call, a median of 0.33 to 0.49 ms. The 120k fixture totals 0.81x
+because one 5-second `web_read_group` on `res.partner` (1.00x) dominates the
+sum. Per method, the losses are the same as on the small fixture.
+
 ## The road to replacement (M2, then M3)
 
 `M3-PLAN.md` is the plan of record for the end state: the Rust binary as the

@@ -13,6 +13,11 @@ REPLAY = os.environ.get("RUSTORM_REPLAY")
 ROUNDS = int(os.environ.get("RUSTORM_TRAFFIC_ROUNDS", "3"))
 if ROUNDS <= 0:
     raise ValueError("RUSTORM_TRAFFIC_ROUNDS must be positive")
+# every call's time in every leg of every pair, for harness/perf_gate.py
+DUMP = os.environ.get("RUSTORM_TRAFFIC_JSON")
+# The control leg serves Python against Python under the same protocol, so a
+# verdict drawn from it measures the instrument and not the kernel.
+CONTROL = os.environ.get("RUSTORM_TRAFFIC_CONTROL") == "1"
 if not REPLAY or not pathlib.Path(REPLAY).exists():
     print("TRAFFIC SKIP: set RUSTORM_REPLAY to a capture file")
     sys.exit(0)
@@ -35,7 +40,11 @@ calls = [
 
 
 ROUTED = {}
+# a routed call that also handed part of its work back to Python: a web read
+# whose search routed and whose read did not is neither routed nor a fallback
+PARTIAL = {}
 SERVED = set()
+FALLBACKS = ("fallback_gate", "fallback_error", "fallback_flush")
 
 
 def serve(index, call):
@@ -64,7 +73,7 @@ def serve(index, call):
 
 
 def replay(mode):
-    rust_orm_shim.set_mode(mode)
+    rust_orm_shim.set_mode("off" if CONTROL else mode)
     spent = collections.defaultdict(float)
     count = collections.Counter()
     for index, call in enumerate(calls):
@@ -73,6 +82,7 @@ def replay(mode):
         cenv = env(user=call.get("uid") or 2, context=dict(call.get("context") or {}))  # noqa: F821
         started = time.perf_counter()
         routed_before = rust_orm_shim.STATS["kernel"]
+        declined_before = sum(rust_orm_shim.STATS[k] for k in FALLBACKS)
         try:
             call_kw(
                 cenv[call["model"]],
@@ -106,6 +116,9 @@ def replay(mode):
                 )
                 raise ValueError("routing changed after warmup; comparison is invalid")
             ROUTED[index] = routed
+            PARTIAL[index] = routed and (
+                sum(rust_orm_shim.STATS[k] for k in FALLBACKS) > declined_before
+            )
         path = "routed" if ROUTED.get(index) else "fallback"
         spent[call["method"]] += elapsed
         count[call["method"]] += 1
@@ -119,6 +132,8 @@ def replay(mode):
 previous_mode, previous_sample = rust_orm_shim.MODE, rust_orm_shim.SAMPLE
 rust_orm_shim.set_sample(0.0)
 pairs = []
+orders = []
+load_before = os.getloadavg()
 try:
     rust_orm_shim.set_mode("off")
     for index, call in enumerate(calls):
@@ -136,6 +151,7 @@ try:
         pair = {}
         order = ("off", "on") if n % 2 == 0 else ("on", "off")
         _logger.debug("traffic pair=%s execution order=%s", n, order)
+        orders.append(order)
         for mode in order:
             routed = rust_orm_shim.STATS["kernel"]
             total, spent, count = replay(mode)
@@ -151,6 +167,28 @@ finally:
     rust_orm_shim.set_mode(previous_mode)
     rust_orm_shim.set_sample(previous_sample)
     env.cr.rollback()  # noqa: F821
+
+if DUMP:
+    timed = sorted(SERVED)
+    payload = {
+        "replay": REPLAY,
+        "control": CONTROL,
+        "loadavg": [load_before, os.getloadavg()],
+        "routed": {str(i): bool(ROUTED.get(i)) for i in timed},
+        "partial": {str(i): bool(PARTIAL.get(i)) for i in timed},
+        "rounds": [
+            {
+                "order": list(order),
+                **{
+                    mode: {str(i): pair[mode][1]["call", i] for i in timed}
+                    for mode in ("off", "on")
+                },
+            }
+            for order, pair in zip(orders, pairs, strict=True)
+        ],
+    }
+    pathlib.Path(DUMP).write_text(json.dumps(payload), encoding="utf-8")
+    print("TRAFFIC timings of %d calls x %d pairs in %s" % (len(timed), ROUNDS, DUMP))
 
 ratios = [pair["on"][0] / pair["off"][0] for pair in pairs]
 median_ratio = statistics.median(ratios)
