@@ -500,11 +500,17 @@ async fn access_partner(db: &Db<'_>, user: &UserCtx) -> Result<(i32, i32)> {
     if let Some(binds) = user.access_partner {
         return Ok(binds);
     }
+    user_access_partner(db, user.uid).await
+}
+
+/// The user's own partner and commercial partner, as `ir.access` binds them
+/// when no acting partner is named.
+pub(crate) async fn user_access_partner(db: &Db<'_>, uid: i32) -> Result<(i32, i32)> {
     let row = db
         .query_opt(
             "SELECT u.partner_id, p.commercial_partner_id FROM res_users u \
              JOIN res_partner p ON p.id = u.partner_id WHERE u.id = $1",
-            &[&user.uid],
+            &[&uid],
         )
         .await?;
     match row {
@@ -513,12 +519,9 @@ async fn access_partner(db: &Db<'_>, user: &UserCtx) -> Result<(i32, i32)> {
             r.try_get::<_, Option<i32>>(1)?,
         ) {
             (Some(partner), Some(commercial)) => Ok((partner, commercial)),
-            _ => refuse!(
-                "uid {} has no partner or commercial partner to reach",
-                user.uid
-            ),
+            _ => refuse!("uid {} has no partner or commercial partner to reach", uid),
         },
-        None => refuse!("unknown uid {}", user.uid),
+        None => refuse!("unknown uid {}", uid),
     }
 }
 

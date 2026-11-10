@@ -238,6 +238,14 @@ pub struct Request {
     #[serde(default)]
     pub access_partner: Option<(i32, i32)>,
 
+    /// With no `access_partner`, bind the user's own partner and commercial
+    /// partner read in this dispatch, which is what `ir.access` binds when no
+    /// acting partner is named: the caller states that nothing pending in its
+    /// ORM could make the columns differ. The binds read are what the rule
+    /// cache is keyed on, as if they had been sent.
+    #[serde(default)]
+    pub access_partner_of_user: bool,
+
     #[serde(default)]
     pub groupby_labels: Option<bool>,
 
@@ -692,6 +700,12 @@ impl<'a> Orm<'a> {
             uid = env.uid, count = seeds.len(), models = ?seeds,
             "models the request can reach; each one's rules must be compiled"
         );
+        let access_partner = match req.access_partner {
+            None if req.access_partner_of_user => {
+                Some(security::user_access_partner(&self.db, env.uid).await?)
+            }
+            sent => sent,
+        };
         let security_signals = self.registry.security_signals(&env.dynamic.signals);
         let mut groups: Vec<i32> = env.groups.iter().copied().collect();
         groups.sort_unstable();
@@ -701,7 +715,7 @@ impl<'a> Orm<'a> {
             company_ids: env.company_ids.clone(),
             groups,
             scopes: (*env.scopes).clone(),
-            access_partner: req.access_partner,
+            access_partner,
             signals: security_signals.clone(),
         };
         let base = self.caches.rule_cache.lock().await.get(&key).cloned();
@@ -735,7 +749,7 @@ impl<'a> Orm<'a> {
             company_ids: env.company_ids.clone(),
             groups: env.groups.clone(),
             scopes: env.scopes.clone(),
-            access_partner: req.access_partner,
+            access_partner,
         };
         let t_rules = std::time::Instant::now();
 

@@ -62,7 +62,10 @@ _RNG = random.Random()
 #   doors  a registry operation door that passes through is not a web override
 #   early  the gate refuses a read path the kernel's own export would refuse,
 #          before the request is built
-WEB_FASTPATH_FEATURES = frozenset({"doors", "early"})
+#   rules  record rules Python resolves to plain data are kept across requests
+#          under the access domain's own key, and the user's own partner binds
+#          are read by the kernel in the dispatch instead of through the ORM
+WEB_FASTPATH_FEATURES = frozenset({"doors", "early", "rules"})
 WEB_FASTPATH = _env_set("RUSTORM_WEB_FASTPATH") & WEB_FASTPATH_FEATURES
 
 
@@ -1261,6 +1264,42 @@ def _access_partner(env):
     return [access._access_bind_partner(), access._access_bind_commercial_partner()]
 
 
+_BASE_PARTNER_BINDS = {}
+
+
+def _binds_are_the_users_own(env) -> bool:
+    # ir.access binds the user's own partner and commercial partner unless the
+    # context names an acting one; with nothing pending in the ORM the columns
+    # the kernel reads in the caller's transaction are what the ORM would read
+    from odoo.orm.constants import ACTING_PARTNER_KEY
+
+    if env.context.get(ACTING_PARTNER_KEY) or _is_flush_required(env):
+        return False
+    if not _BASE_PARTNER_BINDS:
+        try:
+            from odoo.addons.base.models.ir_access import IrAccess
+        except ImportError:
+            return False
+        for name in ("_access_bind_partner", "_access_bind_commercial_partner"):
+            _BASE_PARTNER_BINDS[name] = getattr(IrAccess, name, None)
+    cls = type(env["ir.access"])
+    return all(
+        method is not None and _resolves_to(cls, name, method)
+        for name, method in _BASE_PARTNER_BINDS.items()
+    )
+
+
+_RESOLVED_RULES = {}
+
+
+def _resolved_rules_key(env, name):
+    try:
+        context = tuple(sorted((k, repr(v)) for k, v in env.context.items()))
+    except TypeError:
+        return None
+    return (_rules_key(env, name), env.registry.registry_sequence, context)
+
+
 def _rules_need_python(env, name):
     key = _rules_key(env, name)
     needed = _RULES_NEED_PYTHON.get(key)
@@ -1388,11 +1427,17 @@ def _resolved_rules(model, kw, encode):
         if field is not None and field.relational:
             names.add(field.comodel_name)
     resolved = {}
+    keep = "rules" in WEB_FASTPATH
     for name in sorted(names):
         with _refusing("computing the record rules on %s" % name):
             if not _rules_need_python(env, name):
                 continue
+            cache_key = _resolved_rules_key(env, name) if keep else None
+            if cache_key is not None and (hit := _RESOLVED_RULES.get(cache_key)):
+                resolved[name] = hit
+                continue
             domain = env[name]._access_domain("read")
+        statements = getattr(env.cr, "sql_statement_count", None)
         with _refusing("resolving the record rules on %s" % name):
             rules = list(
                 domain.optimize_full(env[name].sudo().with_context(active_test=False))
@@ -1404,7 +1449,28 @@ def _resolved_rules(model, kw, encode):
             _RULES_NEED_PYTHON[_rules_key(env, name)] = False
             continue
         resolved[name] = rules
+        if cache_key is not None and _resolution_is_pure(
+            env, name, domain, rules, statements
+        ):
+            if len(_RESOLVED_RULES) >= 4096:
+                _RESOLVED_RULES.clear()
+            _RESOLVED_RULES[cache_key] = rules
     return resolved
+
+
+def _resolution_is_pure(env, name, domain, rules, statements) -> bool:
+    # kept only when the resolution read nothing: no statement ran, no Python
+    # search method took part, and the result is literals alone (no subquery
+    # or SQL fragment built against this request's state)
+    if statements is None or getattr(env.cr, "sql_statement_count", None) != statements:
+        return False
+    if _has_python_search_field_in_domain(env[name], domain):
+        return False
+    try:
+        json.dumps(rules)
+    except TypeError, ValueError:
+        return False
+    return True
 
 
 def _sql_tz(env):
@@ -1457,7 +1523,10 @@ def _request(model, method, **kw):
     if not env.su:
         with _refusing("computing the principal's group state"):
             req["principal_groups"] = _principal_groups(env)
-            req["access_partner"] = _access_partner(env)
+            if "rules" in WEB_FASTPATH and _binds_are_the_users_own(env):
+                req["access_partner_of_user"] = True
+            else:
+                req["access_partner"] = _access_partner(env)
     nonce = secrets.token_hex(16)
     encode = _wire_encoder(nonce)
     if resolved := _resolved_rules(model, kw, encode):
