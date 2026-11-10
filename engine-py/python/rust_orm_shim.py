@@ -71,8 +71,13 @@ _RNG = random.Random()
 #          but those, and revives only the date and datetime columns
 #   nowarm a routed web read does not copy its answer into the ORM cache; the
 #          next attribute access reads from the database instead
+#   reach  the kernel compiles the record rules of a model whose access rows
+#          the principal is bound by reach only as far as the kernel binds
+#          (`partner`, and `own` through a partner anchor), instead of
+#          Python resolving them per call, and walks again each hierarchy
+#          its cached rules walked before reusing them
 WEB_FASTPATH_FEATURES = frozenset(
-    {"doors", "early", "rules", "count", "labels", "nowarm"}
+    {"doors", "early", "rules", "count", "labels", "nowarm", "reach"}
 )
 WEB_FASTPATH = _env_set("RUSTORM_WEB_FASTPATH") & WEB_FASTPATH_FEATURES
 
@@ -1308,9 +1313,71 @@ def _resolved_rules_key(env, name):
     return (_rules_key(env, name), env.registry.registry_sequence, context)
 
 
-def _rules_need_python(env, name):
+def _rules_need_python_key(env, name):
     key = _rules_key(env, name)
+    return (*key, "reach") if "reach" in WEB_FASTPATH else key
+
+
+def _kernel_binds_reach(env, name, row) -> bool:
+    # a row whose reach the kernel compiles to the very domain Python's
+    # _reach_domain builds (security.rs reach_leaves): `partner`, or `own`
+    # through a partner anchor, read through a plain path on the model (no
+    # dot, which Python and the kernel unset differently, and no x2many,
+    # which Python searches through its stored links), beside a fixed filter
+    # that is literal data
+    from odoo.fields import Domain
+
+    from odoo.addons.base.models.ir_access import REACH_ANCHOR
+
+    if row.domain and not isinstance(row.domain, Domain):
+        return False
+    anchor = env.registry.model_anchors.get(name, {}).get(
+        row.anchor or REACH_ANCHOR.get(row.reach)
+    )
+    if anchor is None or "." in anchor.path:
+        return False
+    if not (
+        row.reach == "partner" or (row.reach == "own" and anchor.kind == "partner")
+    ):
+        return False
+    field = env[name]._fields.get(anchor.path)
+    return field is not None and (field.type == "many2one" or not field.relational)
+
+
+def _bound_reach_needs_python(env, name) -> bool:
+    # only the rows that bind the principal make its domain, as
+    # _bound_access_infos binds them for Python's own access domain
+    access = env["ir.access"]
+    pending, seen = [name], set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        permissions, guards = access._bound_access_infos(current, "read")
+        for row, _companies in (*permissions, *guards):
+            if row.reach in (None, "", "all", "none"):
+                continue
+            if not _kernel_binds_reach(env, current, row):
+                return True
+        model = env[current]
+        if model._inherits_rules:
+            pending.extend(model._inherits)
+    return False
+
+
+def _rules_need_python(env, name):
+    key = _rules_need_python_key(env, name)
     needed = _RULES_NEED_PYTHON.get(key)
+    if needed is None and "reach" in WEB_FASTPATH:
+        domain = env[name]._access_domain("read")
+        needed = _bound_reach_needs_python(env, name) or (
+            not domain.is_true()
+            and _has_python_search_field_in_domain(env[name], domain)
+        )
+        if len(_RULES_NEED_PYTHON) >= 4096:
+            _RULES_NEED_PYTHON.clear()
+        _RULES_NEED_PYTHON[key] = needed
     if needed is None:
         domain = env[name]._access_domain("read")
         # Reach policies are compiled for the live principal by Odoo even when
@@ -1454,7 +1521,7 @@ def _resolved_rules(model, kw, encode):
             json.dumps(rules, default=encode)
         except (TypeError, ValueError, KernelRefused) as exc:
             _logger.debug("record rules on %s do not resolve to data: %s", name, exc)
-            _RULES_NEED_PYTHON[_rules_key(env, name)] = False
+            _RULES_NEED_PYTHON[_rules_need_python_key(env, name)] = False
             continue
         resolved[name] = rules
         if cache_key is not None and _resolution_is_pure(
@@ -1535,6 +1602,8 @@ def _request(model, method, **kw):
                 req["access_partner_of_user"] = True
             else:
                 req["access_partner"] = _access_partner(env)
+            if "reach" in WEB_FASTPATH:
+                req["fresh_hierarchies"] = True
     nonce = secrets.token_hex(16)
     encode = _wire_encoder(nonce)
     if resolved := _resolved_rules(model, kw, encode):

@@ -97,6 +97,7 @@ SEAMS = [
         "IrAccess",
         [
             "_reach_domain",
+            "_bound_access_infos",
             "_ref_id",
             "_access_bind_user",
             "_access_bind_partner",
@@ -104,6 +105,7 @@ SEAMS = [
             "_access_bind_companies",
         ],
     ),
+    ("odoo.addons.base.models.ir_access", None, ["REACH_ANCHOR"]),
     ("odoo.db", None, ["get_connection_info_for_database", "observing_statements"]),
     ("odoo.db", "Cursor", ["statements_observed"]),
     ("odoo.db", "registry", ["close_db"]),

@@ -1640,6 +1640,8 @@ def test_dynamic_reach_rules_resolve_even_when_the_domain_is_true() -> None:
             shim, "_rules_key", side_effect=lambda _env, name: ("probe", name)
         ),
         patch.object(shim, "_RULES_NEED_PYTHON", {}),
+        # the path without the reach feature, whatever RUSTORM_WEB_FASTPATH says
+        patch.object(shim, "WEB_FASTPATH", frozenset()),
     ):
         check(
             "dynamic rules on delegated parents are compiled",
@@ -1662,6 +1664,121 @@ def test_dynamic_reach_rules_resolve_even_when_the_domain_is_true() -> None:
                 shim._rules_need_python(env, "child"),
                 False,
             )
+
+
+def test_the_reach_feature_hands_the_kernel_the_reaches_it_binds() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    shim = _shims()[1]
+    _odoo()
+    from odoo.fields import Domain
+
+    domain = SimpleNamespace(is_true=lambda: True)
+
+    def field(type_, relational=False):
+        return SimpleNamespace(type=type_, relational=relational, is_x2many=False)
+
+    fields = {
+        "id": field("integer"),
+        "partner_id": field("many2one", True),
+        "partner_ids": field("many2many", True),
+    }
+    anchors = {
+        "partner": SimpleNamespace(path="id", kind="partner"),
+        "contact": SimpleNamespace(path="partner_id", kind="partner"),
+        "contacts": SimpleNamespace(path="partner_ids", kind="partner"),
+        "through": SimpleNamespace(path="partner_id.parent_id", kind="partner"),
+        "owner": SimpleNamespace(path="create_uid", kind="owner"),
+        "company": SimpleNamespace(path="company_id", kind="company"),
+    }
+    bound = {"probe": ([], [])}
+
+    class Env(dict):
+        registry = SimpleNamespace(model_anchors={"probe": anchors})
+
+    env = Env(
+        {
+            "ir.access": SimpleNamespace(
+                _bound_access_infos=lambda name, _op: bound[name],
+                _get_all_access=lambda: {
+                    "probe": [
+                        row for row, _ in [*bound["probe"][0], *bound["probe"][1]]
+                    ]
+                    or [SimpleNamespace(reach="partner")]
+                },
+            ),
+            "probe": SimpleNamespace(
+                _access_domain=lambda _op: domain,
+                _inherits_rules=False,
+                _fields=fields,
+            ),
+        }
+    )
+
+    def row(reach, anchor="", domain=Domain.TRUE):
+        return SimpleNamespace(reach=reach, anchor=anchor, domain=domain)
+
+    def verdict(*rows, guard=False, features=("reach",)):
+        bound["probe"] = (
+            ([], [(r, None) for r in rows])
+            if guard
+            else (
+                [(r, None) for r in rows],
+                [],
+            )
+        )
+        with (
+            patch.object(
+                shim, "_rules_key", side_effect=lambda _env, name: ("probe", name)
+            ),
+            patch.object(shim, "_RULES_NEED_PYTHON", {}),
+            patch.object(shim, "WEB_FASTPATH", frozenset(features)),
+        ):
+            return shim._rules_need_python(env, "probe")
+
+    check("no bound reach compiles natively", verdict(), False)
+    check("a bound partner reach compiles natively", verdict(row("partner")), False)
+    check(
+        "a guard's partner reach compiles natively",
+        verdict(row("partner"), guard=True),
+        False,
+    )
+    check(
+        "own through a partner anchor compiles natively",
+        verdict(row("own", "partner"), row("own", "contact"), row("all")),
+        False,
+    )
+    check(
+        "a literal filter beside the reach is the kernel's",
+        verdict(row("partner", domain=Domain("id", "=", 3))),
+        False,
+    )
+    for name, rows in [
+        ("own through an owner anchor", (row("own"),)),
+        ("own through an x2many anchor", (row("own", "contacts"),)),
+        ("partner through an x2many anchor", (row("partner", "contacts"),)),
+        ("a dotted anchor", (row("partner", "through"),)),
+        ("an undeclared anchor", (row("partner", "nowhere"),)),
+        ("a company reach", (row("company"),)),
+        ("a predicate", (row("predicate"),)),
+        (
+            "a filter left for safe_eval",
+            (row("partner", domain="[('a', '=', user.id)]"),),
+        ),
+        ("one rung beside a native one", (row("partner"), row("team"))),
+    ]:
+        check(name + " stays in Python", verdict(*rows), True)
+    check(
+        "without the feature every dynamic reach stays in Python",
+        verdict(row("partner"), features=()),
+        True,
+    )
+    check(
+        "without the feature an unbound reach row still sends it to Python",
+        verdict(features=()),
+        True,
+    )
 
 
 def test_web_search_read_preserves_record_verb_specification() -> None:
@@ -2882,6 +2999,9 @@ def test_install_is_idempotent_and_keeps_stamps() -> None:
 
         def _get_all_access(self):
             return {}
+
+        def _bound_access_infos(self, *_args):
+            return [], []
 
         def _access_domain(self, *_args):
             return Domain.TRUE
