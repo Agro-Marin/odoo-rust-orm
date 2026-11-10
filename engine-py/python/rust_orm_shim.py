@@ -66,7 +66,10 @@ _RNG = random.Random()
 #          under the access domain's own key, and the user's own partner binds
 #          are read by the kernel in the dispatch instead of through the ORM
 #   count  web_search_read's length is decided in the page's own dispatch
-WEB_FASTPATH_FEATURES = frozenset({"doors", "early", "rules", "count"})
+#   labels the kernel renders the many2ones it labels as web's dicts and names
+#          the fields it left a target unlabelled in, so Python walks no record
+#          but those, and revives only the date and datetime columns
+WEB_FASTPATH_FEATURES = frozenset({"doors", "early", "rules", "count", "labels"})
 WEB_FASTPATH = _env_set("RUSTORM_WEB_FASTPATH") & WEB_FASTPATH_FEATURES
 
 
@@ -1634,6 +1637,24 @@ def _revive_records(model, records):
     return _python_key_order(model, records)
 
 
+def _revive_web_records(model, records):
+    # _revive_records for an answer whose many2ones are web's dicts already:
+    # only the date and datetime columns are walked, and none when there are none
+    if not records:
+        return records
+    fields = model._fields
+    parse = {
+        name: _parse_dt if f.type == "datetime" else _parse_date
+        for name in records[0]
+        if (f := fields.get(name)) is not None and f.type in ("date", "datetime")
+    }
+    for rec in records if parse else ():
+        for name, revive in parse.items():
+            if isinstance(val := rec[name], str):
+                rec[name] = revive(val)
+    return _python_key_order(model, records)
+
+
 def _warm_cache(model, records) -> None:
     if not records:
         return
@@ -1901,6 +1922,22 @@ def _web_resolve_many2ones(model, records, specification, raw, unredacted):
         if hidden:
             model._web_read_resolve_many2one(
                 hidden, model._fields[name], name, specification[name]
+            )
+    return records
+
+
+def _web_resolve_hidden_many2ones(model, records, specification, raw, hidden):
+    # _web_resolve_many2ones once the kernel rendered its labels as web's dicts:
+    # only a field it left a bare id in is walked, as the unredacted loop does
+    for name in raw:
+        spec = specification[name] or {}
+        if "fields" in spec:
+            model._web_read_resolve_many2one(records, model._fields[name], name, spec)
+    for name in hidden:
+        unlabelled = [rec for rec in records if type(rec[name]) is int]
+        if unlabelled:
+            model._web_read_resolve_many2one(
+                unlabelled, model._fields[name], name, specification[name]
             )
     return records
 
@@ -2491,6 +2528,7 @@ def _wrap_web_search_read(orig_web_read, orig_web_search_read):
                     raise KernelRefused("flush failed; not routing")
                 force_count = bool(self.env.context.get("force_search_count"))
                 fused = "count" in WEB_FASTPATH
+                labelled = "labels" in WEB_FASTPATH
                 recs = _dispatch(
                     self,
                     "search_read",
@@ -2512,11 +2550,15 @@ def _wrap_web_search_read(orig_web_read, orig_web_search_read):
                         if fused
                         else {}
                     ),
+                    **({"web_many2one": True} if labelled else {}),
                 )
                 STATS["kernel"] += 1
+                hidden = recs.get("hidden", ()) if labelled else ()
                 if fused:
                     length, recs = recs["length"], recs["records"]
                 else:
+                    if labelled:
+                        recs = recs["records"]
 
                     def count(cap):
                         n = _dispatch(
@@ -2528,13 +2570,22 @@ def _wrap_web_search_read(orig_web_read, orig_web_search_read):
                     length = _web_length(
                         len(recs), offset or 0, limit, count_limit, force_count, count
                     )
-                records = _web_resolve_many2ones(
-                    self,
-                    _revive_records(self, recs),
-                    specification,
-                    raw,
-                    unredacted,
-                )
+                if labelled:
+                    records = _web_resolve_hidden_many2ones(
+                        self,
+                        _revive_web_records(self, recs),
+                        specification,
+                        raw,
+                        hidden,
+                    )
+                else:
+                    records = _web_resolve_many2ones(
+                        self,
+                        _revive_records(self, recs),
+                        specification,
+                        raw,
+                        unredacted,
+                    )
                 if python_spec and records:
                     records = _web_merge(
                         specification,
@@ -2596,6 +2647,7 @@ def _wrap_web_read(orig_web_read):
         if plan and _gate(self, plan[0], method="read"):
             fields, many2ones, python_spec = plan
             raw, unredacted = _web_split_many2ones(self, specification, many2ones)
+            labelled = "labels" in WEB_FASTPATH
             try:
                 if not _flush_if_needed(
                     self.env, self, [("id", "in", ids)], "id", fields
@@ -2612,20 +2664,28 @@ def _wrap_web_read(orig_web_read):
                     x2many_active_test=bool(self.env.context.get("active_test", True)),
                     raw_many2one=raw,
                     unredacted_many2one=unredacted,
+                    **({"web_many2one": True} if labelled else {}),
                 )
                 STATS["kernel"] += 1
+                if labelled:
+                    hidden, recs = recs.get("hidden", ()), recs["records"]
                 ordered = _read_reorder(
                     self,
                     ids,
-                    _revive_records(self, recs),
+                    (_revive_web_records if labelled else _revive_records)(self, recs),
                     "_classic_read",
                     specification,
                 )
                 if ordered is None:
                     raise KernelRefused("web_read of records the kernel did not return")
-                result = _web_resolve_many2ones(
-                    self, ordered, specification, raw, unredacted
-                )
+                if labelled:
+                    result = _web_resolve_hidden_many2ones(
+                        self, ordered, specification, raw, hidden
+                    )
+                else:
+                    result = _web_resolve_many2ones(
+                        self, ordered, specification, raw, unredacted
+                    )
                 if python_spec:
                     result = _web_merge(
                         specification, result, orig_web_read(self, python_spec)
