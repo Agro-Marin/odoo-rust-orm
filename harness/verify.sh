@@ -509,6 +509,18 @@ else
 fi
 
 if [ -f "$PYMOD/engine_py.so" ]; then
+  PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/partner_reach.py" > "$OUT/partner_reach.log" 2>&1; rc=$?
+  if [ "$rc" = 0 ]; then
+    stage "partner reach" OK "$(grep -a '^PARTNER REACH on' "$OUT/partner_reach.log" | cut -c15-90)"
+  elif timed_out "$rc"; then stage "partner reach" FAIL "$expired"
+  else
+    stage "partner reach" FAIL "$(grep -aE '^PARTNER REACH FAILED' "$OUT/partner_reach.log" | head -1 | cut -c1-90)"
+  fi
+else
+  stage "partner reach" SKIP "needs libengine_py.so"
+fi
+
+if [ -f "$PYMOD/engine_py.so" ]; then
   PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/grant_scopes.py" > "$OUT/grant_scopes.log" 2>&1; rc=$?
   if [ "$rc" = 0 ]; then
     stage "grant scopes" OK "$(grep -a '^GRANT SCOPES compared' "$OUT/grant_scopes.log" | cut -c14-40)"
