@@ -152,6 +152,86 @@ HEAVY_CALLS = [
 ]
 
 
+# the web client's own read shapes, so that a change to the web_search_read /
+# web_read route shows in the throughput instead of being diluted by the
+# search_read and search_count calls of the default mix
+WEB_CALLS = [
+    (
+        "res.partner",
+        "web_search_read",
+        {
+            "domain": [],
+            "specification": {
+                "name": {},
+                "email": {},
+                "ref": {},
+                "country_id": {"fields": {"display_name": {}}},
+                "company_id": {"fields": {"display_name": {}}},
+                "parent_id": {"fields": {"display_name": {}}},
+                "child_ids": {},
+                "write_date": {},
+            },
+            "limit": 80,
+            "count_limit": 10001,
+            "order": "name asc",
+        },
+    ),
+    (
+        "res.partner",
+        "web_search_read",
+        {
+            "domain": [["is_company", "=", True]],
+            "specification": {
+                "name": {},
+                "ref": {},
+                "country_id": {"fields": {"display_name": {}}},
+                "company_id": {},
+            },
+            "limit": 40,
+            "count_limit": 10001,
+        },
+    ),
+    (
+        "res.country",
+        "web_search_read",
+        {
+            "domain": [],
+            "specification": {
+                "name": {},
+                "code": {},
+                "currency_id": {"fields": {"display_name": {}}},
+            },
+            "offset": 40,
+            "limit": 40,
+            "order": "name asc",
+        },
+    ),
+    (
+        "res.currency",
+        "web_search_read",
+        {
+            "domain": [["active", "in", [True, False]]],
+            "specification": {"name": {}, "symbol": {}, "rounding": {}},
+            "limit": 80,
+        },
+    ),
+    (
+        "res.partner",
+        "web_read",
+        {
+            "specification": {
+                "name": {},
+                "email": {},
+                "country_id": {"fields": {"display_name": {}}},
+                "company_id": {"fields": {"display_name": {}}},
+                "write_date": {},
+            }
+        },
+        [[1, 2, 3]],
+    ),
+]
+
+
 def _write_cycle(state, i):
     step = i % 5
     if step == 0:
@@ -184,7 +264,12 @@ def _write_cycle(state, i):
 
 
 WRITE_PROFILE = "writes"
-PROFILES = {"default": CALLS, "heavy": HEAVY_CALLS, WRITE_PROFILE: _write_cycle}
+PROFILES = {
+    "default": CALLS,
+    "heavy": HEAVY_CALLS,
+    "web": WEB_CALLS,
+    WRITE_PROFILE: _write_cycle,
+}
 ACTIVE = CALLS
 
 
@@ -235,20 +320,15 @@ def call(opener, port, model, method, kwargs, args=()):
     return body
 
 
-def worker(port, db, login, password, latencies, errors, expected) -> None:
-    try:
-        opener = create_authenticated_opener(port, db, login, password)
-    except Exception as exc:
-        errors.append("auth: %s" % exc)
-        return
+def worker(port, opener, latencies, errors, expected) -> None:
     i = 0
     state: dict = {}
     while not STOP.is_set():
         if callable(ACTIVE):
             (model, method, args, kwargs), remember = ACTIVE(state, i)
         else:
-            model, method, kwargs = ACTIVE[i % len(ACTIVE)]
-            args, remember = (), None
+            model, method, kwargs, *rest = ACTIVE[i % len(ACTIVE)]
+            args, remember = (rest[0] if rest else ()), None
         i += 1
         t0 = time.monotonic()
         try:
@@ -271,21 +351,21 @@ def worker(port, db, login, password, latencies, errors, expected) -> None:
 def run(args, expected, seconds):
     STOP.clear()
     latencies, errors = [], []
+    # the fork refuses a sign-in while another one from the same address is in
+    # progress, so the sessions are opened one after the other before the clock
+    # starts; opened inside the threads, all but one were refused and the
+    # SystemExit ended their thread without a word
+    openers = [
+        create_authenticated_opener(args.port, args.db, args.login, args.password)
+        for _ in range(args.threads)
+    ]
     threads = [
         threading.Thread(
             target=worker,
-            args=(
-                args.port,
-                args.db,
-                args.login,
-                args.password,
-                latencies,
-                errors,
-                expected,
-            ),
+            args=(args.port, opener, latencies, errors, expected),
             daemon=True,
         )
-        for _ in range(args.threads)
+        for opener in openers
     ]
     t0 = time.monotonic()
     for t in threads:
@@ -302,7 +382,10 @@ def baseline(args):
     opener = create_authenticated_opener(args.port, args.db, args.login, args.password)
     if callable(ACTIVE):
         return []
-    return [call(opener, args.port, m, meth, kw) for m, meth, kw in ACTIVE]
+    return [
+        call(opener, args.port, m, meth, kw, rest[0] if rest else ())
+        for m, meth, kw, *rest in ACTIVE
+    ]
 
 
 def main() -> int:
