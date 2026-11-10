@@ -3,7 +3,7 @@ set -uo pipefail
 
 usage() {
   cat <<'USAGE'
-usage: harness/gate.sh [--keep] [--quick] [--ab]
+usage: harness/gate.sh [--keep] [--quick] [--ab] [--perf]
 
 The whole gate, unattended: build and test the crates, deploy the extension
 into the venv, create the two scratch databases the battery needs, run
@@ -17,9 +17,12 @@ This is the one command to run after a sync, or from a timer.
   --keep    keep the scratch databases (for a re-run or a look)
   --quick   pass --quick to verify.sh (skips sweep, fuzz, tours, soak)
   --ab      also run harness/ab_diff.sh, the A/B database differential (~15 min)
+  --perf    also run harness/perf_gate.sh on the probe database: FAIL when a
+            routed read shape is measurably slower than Python (~5 min)
 
 environment: RUSTORM_GATE_OUT (summary dir, default ~/.cache/rustorm-gate),
-  RUSTORM_GATE_DB_PREFIX (default rustorm_gate), plus everything verify.sh reads.
+  RUSTORM_GATE_DB_PREFIX (default rustorm_gate), RUSTORM_PERF_FLOORS (a
+  floors file for --perf), plus everything verify.sh reads.
 USAGE
 }
 
@@ -31,12 +34,13 @@ CONF="${RUSTORM_ODOO_CONF:-$WORKSPACE/p314o19m.conf}"
 PREFIX="${RUSTORM_GATE_DB_PREFIX:-rustorm_gate}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT="${RUSTORM_GATE_OUT:-$HOME/.cache/rustorm-gate}/$STAMP"
-KEEP=0; QUICK=""; AB=0
+KEEP=0; QUICK=""; AB=0; PERF=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --keep)  KEEP=1; shift ;;
     --quick) QUICK="--quick"; shift ;;
     --ab)    AB=1; shift ;;
+    --perf)  PERF=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -84,6 +88,15 @@ if [ "$AB" = 1 ]; then
   rc=$?
   cat "$OUT/ab.out" >> "$SUMMARY"
   step "ab_diff.sh" $rc
+fi
+
+if [ "$PERF" = 1 ]; then
+  perf_args=(--db "$PROBE" --out "$OUT/perf")
+  [ -n "${RUSTORM_PERF_FLOORS:-}" ] && perf_args+=(--floors "$RUSTORM_PERF_FLOORS")
+  bash "$ROOT/harness/perf_gate.sh" "${perf_args[@]}" > "$OUT/perf.out" 2>&1
+  rc=$?
+  grep -aE '^PERF (routing|  |routed|OK|FAILED|SKIP|SETUP)' "$OUT/perf.out" >> "$SUMMARY"
+  step "perf_gate.sh" $rc
 fi
 
 if [ "$KEEP" = 0 ]; then
