@@ -842,3 +842,147 @@ async fn two_fields_walking_the_same_hierarchy_each_keep_their_own_leaf() {
     }
     drop_schema(&client, schema).await;
 }
+
+#[tokio::test]
+#[ignore = "needs RUSTORM_TEST_DSN"]
+async fn a_cached_partner_reach_follows_a_moved_tree_only_when_asked() {
+    use odoo_kernel::db::StmtCache;
+    use odoo_kernel::orm::{Caches, Orm, Request};
+    use odoo_kernel::registry::{AccessAnchor, FieldType, Reach, Rule};
+    use serde_json::json;
+    use support::{field, model, registry};
+
+    let schema = "rustorm_t_partner_reach_moves";
+    let client = connect(schema).await;
+    for parent_store in [false, true] {
+        client
+            .batch_execute(
+                "DROP TABLE IF EXISTS res_partner, res_users;
+                 CREATE TABLE res_partner (id int PRIMARY KEY, parent_id int,
+                                           parent_path varchar, tz varchar, name varchar);
+                 CREATE TABLE res_users (id int PRIMARY KEY, company_id int, partner_id int);
+                 INSERT INTO res_partner VALUES (8, NULL, '8/', NULL, 'c'),
+                   (9, 8, '8/9/', NULL, 'c9'), (20, NULL, '20/', NULL, 'o');
+                 INSERT INTO res_users VALUES (7, 1, 8);",
+            )
+            .await
+            .unwrap();
+        let mut parent = field("parent_id", FieldType::Many2one);
+        parent.relation = Some("res.partner".into());
+        let mut partner = model(
+            "res.partner",
+            "id",
+            vec![
+                field("id", FieldType::Integer),
+                parent,
+                field("parent_path", FieldType::Char),
+                field("name", FieldType::Char),
+            ],
+        );
+        partner.parent_name = Some("parent_id".into());
+        partner.parent_store = parent_store;
+        partner.access_anchors = Some(HashMap::from([(
+            "partner".to_string(),
+            AccessAnchor {
+                path: "id".into(),
+                kind: "partner".into(),
+                shared: false,
+                hierarchy: String::new(),
+            },
+        )]));
+        let reg = registry(vec![partner]);
+        {
+            let mut dynamic = (*reg.dynamic()).clone();
+            dynamic.security.user_groups.insert(7, vec![5]);
+            dynamic.security.user_companies.insert(7, vec![1]);
+            dynamic
+                .security
+                .access
+                .insert("res.partner".into(), vec![5]);
+            dynamic.security.rules.insert(
+                "res.partner".into(),
+                vec![Rule {
+                    groups: vec![5],
+                    restrict: false,
+                    domain_force: None,
+                    parsed: None,
+                    reach: Some(Reach {
+                        rung: "partner".into(),
+                        anchor: None,
+                    }),
+                    exempt: Vec::new(),
+                }],
+            );
+            reg.set_dynamic(dynamic);
+        }
+        let stmts = StmtCache::default();
+        let orm = Orm::new(
+            &reg,
+            &client,
+            std::sync::Arc::new(Caches::default()),
+            &stmts,
+        );
+        let read = |fresh: bool| {
+            let req: Request = serde_json::from_value(json!({
+                "model": "res.partner",
+                "method": "search_read",
+                "domain": [],
+                "fields": ["id"],
+                "order": "id",
+                "uid": 7,
+                "access_partner": [8, 8],
+                "fresh_hierarchies": fresh,
+            }))
+            .unwrap();
+            let orm = &orm;
+            let reg = &reg;
+            async move {
+                let raw = orm
+                    .dispatch_with(&req, Some(reg.dynamic()))
+                    .await
+                    .unwrap()
+                    .0;
+                serde_json::from_str::<serde_json::Value>(&raw)
+                    .unwrap()
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|r| r["id"].as_i64().unwrap())
+                    .collect::<Vec<i64>>()
+            }
+        };
+        assert_eq!(read(false).await, vec![8, 9], "parent_store={parent_store}");
+        // a contact is created under the commercial partner, one moves out of
+        // its tree, and the commercial partner itself moves under another
+        client
+            .batch_execute(
+                "INSERT INTO res_partner VALUES (10, 8, '20/8/10/', NULL, 'c10');
+                 UPDATE res_partner SET parent_id = NULL, parent_path = '9/' WHERE id = 9;
+                 UPDATE res_partner SET parent_id = 20, parent_path = '20/8/' WHERE id = 8;",
+            )
+            .await
+            .unwrap();
+        let stale = read(false).await;
+        tracing::debug!(
+            parent_store,
+            ?stale,
+            "the cached rules keep the tree they walked"
+        );
+        assert_ne!(
+            stale,
+            vec![8, 10],
+            "parent_store={parent_store}: the hazard is real"
+        );
+        assert_eq!(
+            read(true).await,
+            vec![8, 10],
+            "parent_store={parent_store}: walked again, the rules follow the tree"
+        );
+        assert_eq!(
+            read(true).await,
+            vec![8, 10],
+            "parent_store={parent_store}: and the recompiled set is reused"
+        );
+    }
+    drop_schema(&client, schema).await;
+}

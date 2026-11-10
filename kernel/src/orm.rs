@@ -48,8 +48,8 @@ type EnvValue = (
     Option<String>,
 );
 
-#[derive(Clone)]
-enum Walked {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Walked {
     Prefixes(Vec<String>),
     Ids(Vec<i64>),
 }
@@ -75,7 +75,11 @@ impl Walked {
     }
 }
 
-type HierMemo = HashMap<(String, String, bool, Vec<i32>), Walked>;
+/// A hierarchy walk: the model walked, its parent link, downwards or not,
+/// and the seed ids.
+pub(crate) type HierKey = (String, String, bool, Vec<i32>);
+
+type HierMemo = HashMap<HierKey, Walked>;
 
 fn hierarchy_seeds(raw: &[Json]) -> Result<(Vec<i32>, Vec<Json>)> {
     let mut seeds = Vec::new();
@@ -245,6 +249,13 @@ pub struct Request {
     /// cache is keyed on, as if they had been sent.
     #[serde(default)]
     pub access_partner_of_user: bool,
+
+    /// Walk again each hierarchy a cached rule set walked before reusing it,
+    /// and compile the rules again if one walks elsewhere now: the caller
+    /// hands the kernel rules whose `child_of` reads data that moves without
+    /// a signal (a commercial partner's contacts).
+    #[serde(default)]
+    pub fresh_hierarchies: bool,
 
     #[serde(default)]
     pub groupby_labels: Option<bool>,
@@ -767,7 +778,18 @@ impl<'a> Orm<'a> {
             access_partner,
             signals: security_signals.clone(),
         };
-        let base = self.caches.rule_cache.lock().await.get(&key).cloned();
+        let mut base = self.caches.rule_cache.lock().await.get(&key).cloned();
+        if req.fresh_hierarchies
+            && let Some(cached) = &base
+            && !self.walks_hold(cached).await?
+        {
+            tracing::debug!(
+                target: "odoo_kernel::rules",
+                uid = env.uid,
+                "a hierarchy the cached rules walked reads differently now; compiling them again"
+            );
+            base = None;
+        }
         let seeds: Vec<String> = seeds
             .into_iter()
             .filter(|m| !base.as_ref().is_some_and(|b| b.is_compiled(m)))
@@ -904,10 +926,32 @@ impl<'a> Orm<'a> {
             ms = t_rules.elapsed().as_secs_f64() * 1000.0,
             "compiled record rules for identity"
         );
+        rules.note_walks(memo);
         let arc = Arc::new(rules);
         self.caches.rule_cache.lock().await.insert(key, arc.clone());
         self.caches.evict(&security_signals).await;
         Ok(arc)
+    }
+
+    /// Whether every hierarchy a cached rule set walked still walks to what
+    /// it holds. Python resolves a rule's `child_of` and `parent_of` on each
+    /// search, and a contact created under, or moved into or out of, a
+    /// commercial partner's tree changes no signal the cache is keyed on.
+    async fn walks_hold(&self, rules: &RuleSet) -> Result<bool> {
+        for ((model, link, down, seeds), held) in rules.walks() {
+            let now = self
+                .walk(self.registry.get(model)?, link, *down, seeds)
+                .await?;
+            if &now != held {
+                tracing::debug!(
+                    target: "odoo_kernel::hierarchy",
+                    %model, %link, down, ?seeds, ?held, ?now,
+                    "a hierarchy the cached rules walked has moved"
+                );
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn reachable_seeds(&self, req: &Request, env: &Env) -> Result<Vec<String>> {
@@ -1195,32 +1239,7 @@ impl<'a> Orm<'a> {
                         }
                         None => {
                             let walked =
-                                if down && self.can_use_parent_path(target_model, &parent_link) {
-                                    let prefixes =
-                                        self.parent_path_prefixes(target_model, &seeds).await?;
-                                    tracing::debug!(
-                                        target: "odoo_kernel::hierarchy",
-                                        target = %target_model.name,
-                                        prefixes = prefixes.len(),
-                                        "using parent_path: the descendants stay a prefix match \
-                                         in the query instead of being materialised"
-                                    );
-                                    Walked::Prefixes(prefixes)
-                                } else {
-                                    let ids = if down {
-                                        self.descendants(target_model, &parent_link, &seeds).await?
-                                    } else {
-                                        self.ancestors(target_model, &parent_link, &seeds).await?
-                                    };
-                                    tracing::debug!(
-                                        target: "odoo_kernel::hierarchy",
-                                        target = %target_model.name,
-                                        direction = if down { "descendants" } else { "ancestors" },
-                                        resolved = ids.len(),
-                                        "walked the hierarchy row by row"
-                                    );
-                                    Walked::Ids(ids)
-                                };
+                                self.walk(target_model, &parent_link, down, &seeds).await?;
                             memo.insert(key, walked.clone());
                             walked
                         }
@@ -1245,6 +1264,44 @@ impl<'a> Orm<'a> {
             }
         }
         Ok(Json::Array(out))
+    }
+
+    /// Walks a hierarchy from its seeds: a prefix match on `parent_path` down
+    /// a parent store, else the ids materialised level by level.
+    async fn walk(
+        &self,
+        target_model: &Model,
+        parent_link: &str,
+        down: bool,
+        seeds: &[i32],
+    ) -> Result<Walked> {
+        Ok(
+            if down && self.can_use_parent_path(target_model, parent_link) {
+                let prefixes = self.parent_path_prefixes(target_model, seeds).await?;
+                tracing::debug!(
+                    target: "odoo_kernel::hierarchy",
+                    target = %target_model.name,
+                    prefixes = prefixes.len(),
+                    "using parent_path: the descendants stay a prefix match \
+                     in the query instead of being materialised"
+                );
+                Walked::Prefixes(prefixes)
+            } else {
+                let ids = if down {
+                    self.descendants(target_model, parent_link, seeds).await?
+                } else {
+                    self.ancestors(target_model, parent_link, seeds).await?
+                };
+                tracing::debug!(
+                    target: "odoo_kernel::hierarchy",
+                    target = %target_model.name,
+                    direction = if down { "descendants" } else { "ancestors" },
+                    resolved = ids.len(),
+                    "walked the hierarchy row by row"
+                );
+                Walked::Ids(ids)
+            },
+        )
     }
 
     fn parent_name(&self, model: &Model) -> Option<String> {

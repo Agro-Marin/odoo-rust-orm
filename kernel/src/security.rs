@@ -251,6 +251,11 @@ pub struct RuleSet {
 
     ruled: std::collections::HashSet<String>,
     compiled: std::collections::HashSet<String>,
+
+    /// The hierarchies the rules walked, and what each walked to: the
+    /// cached domains hold the result, so a caller that asks for it has each
+    /// walked again before the set is reused.
+    walks: std::collections::HashMap<crate::orm::HierKey, crate::orm::Walked>,
 }
 
 impl RuleSet {
@@ -296,6 +301,19 @@ impl RuleSet {
         if !reads.is_empty() {
             self.reads.insert(model, reads);
         }
+    }
+
+    pub(crate) fn note_walks(
+        &mut self,
+        walks: impl IntoIterator<Item = (crate::orm::HierKey, crate::orm::Walked)>,
+    ) {
+        self.walks.extend(walks);
+    }
+
+    pub(crate) fn walks(
+        &self,
+    ) -> impl Iterator<Item = (&crate::orm::HierKey, &crate::orm::Walked)> {
+        self.walks.iter()
     }
 
     pub fn reads_of(&self, model: &str) -> &[(String, String)] {

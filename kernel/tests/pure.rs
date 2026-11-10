@@ -3761,6 +3761,7 @@ fn a_request_naming_no_groupby_is_answered_not_refused() {
         principal_groups: None,
         access_partner: None,
         access_partner_of_user: false,
+        fresh_hierarchies: false,
         web_length: None,
         web_many2one: false,
         groupby_labels: None,
