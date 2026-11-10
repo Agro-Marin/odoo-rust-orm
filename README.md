@@ -4752,6 +4752,97 @@ Python's call, a median of 0.33 to 0.49 ms. The 120k fixture totals 0.81x
 because one 5-second `web_read_group` on `res.partner` (1.00x) dominates the
 sum. Per method, the losses are the same as on the small fixture.
 
+## The web read fast path, opt-in (2026-11-10)
+
+Before this, no `web_search_read` or `web_read` routed at all against the
+fork: `_web_clean` asked whether each web hook on a model's class IS web's
+method, and the registry now puts an operation door over `web_read` on every
+class, so every web read was refused as "web read hooks overridden in python"
+and only the `read()` and `search_count` beneath it routed. Recognising the
+door is the first feature below; with it alone the web reads route and are
+slower than Python, and the rest is what takes them past it.
+
+`rust_engine_web_fastpath` (conf) or `RUSTORM_WEB_FASTPATH` (env) is a
+comma-separated list, empty by default, and an empty list leaves every path
+exactly as it was:
+
+| feature | what it changes |
+|---|---|
+| `doors` | a door that passes through (`purity._passes_through`) is no web override; a door over the class's own method still is |
+| `early` | `read`, `search_read` and `web_search_read` refuse in the gate what the kernel's `overridden_for("search_read")` would refuse, before the request is built |
+| `rules` | a resolved record-rule list is kept across requests when its resolution was pure (no statement ran, no Python search method, literals only), and the user's own partner binds are read by the kernel in the dispatch (`access_partner_of_user`) when no acting partner is named and nothing is pending |
+| `count` | `web_search_read`'s length is decided in the page's dispatch (`web_length`), counting on the page's own condition |
+| `labels` | the kernel renders labelled many2ones as web's dicts (`web_many2one`) and names the fields it left a bare id in; Python walks only those and the date columns |
+| `nowarm` | a routed web read does not copy its answer into the ORM cache |
+
+No refusal is removed: `early` moves one earlier, `count` refuses a model
+overriding `search_count` as the separate dispatch did, and shadow mode and
+verification samples always warm the cache.
+
+In process, uid 2, `oneread_120k` (120k partners), median of interleaved
+legs, python time / routed time (higher is faster):
+
+| shape | `doors` | + `rules` | + `count` | + `labels` | + `nowarm` |
+|---|---|---|---|---|---|
+| partner list, 80 rows, counted | 0.79x | 1.39x | 1.47x | 1.55x | 1.67x |
+| partner page, 40 rows, counted | 0.81x | 1.04x | 1.07x | 1.08x | 1.08x |
+| country page, offset 40 | 0.85x | 1.72x | 1.99x | 2.03x | 2.44x |
+| currency page | 0.42x | 0.84x | 0.99x | 1.07x | 1.55x |
+| partner `web_read`, 3 ids | 0.45x | 2.27x | 2.27x | 2.27x | 2.58x |
+
+Those reuse one transaction. A request opens its own, and over HTTP
+(`http_bench.py --profile web`, 2 workers, 8 threads, 20 s legs, 120k
+partners, off/on/set interleaved over three rounds, load 1.3-2.7) the whole
+set reads 383 +- 9 req/s against Python's 393 +- 2 (-2.5 %, p50 19.5 ms
+against 18.6), where routing on without it reads 259 +- 3 (-34 %). The
+`default` profile, mostly `search_read` on `res.partner`, was measured
+under a second gate's load (2.7 rising to 15): per round, the set against
+Python read 0.72x, 0.88x and 1.11x, routing without it 0.67x, 0.78x and
+0.77x; the direction holds, the size does not.
+
+The perf gate of PR #18 (`harness/perf_gate.sh --db rustorm_perf_volume
+--rounds 16`, its corpus of 1,338 calls, one process, routing off and on
+interleaved, at load 36-62) reads python time / routed time per method,
+without the features and with all six:
+
+| method | without | with |
+|---|---|---|
+| `name_search` | 0.46x | 1.29x |
+| `search_count` | 0.26x | 0.77x |
+| `search_read` | 0.36x | 1.23x |
+| `web_read` | 0.48x | 1.59x |
+| `web_read_group` | 0.94x | 0.98x |
+| `web_search_read` | 0.40x | 1.26x |
+| routed calls | 0.78x | 1.02x |
+
+Routed shapes 955 -> 1,159, of them slower than Python 939 -> 519. Most of
+those are small `search_count` and 20-row `search_read` reads whose own
+time is a fraction of a millisecond, under the fixed cost of a dispatch.
+
+What is left is one thing on `res.partner`: its record rules carry a
+`partner` reach, which `_rules_need_python` resolves in Python on purpose
+(f80ff43), and that resolution reads the commercial partner's
+`parent_path` (`_optimize_hierarchy`), so it is not pure and is not kept:
+1 to 1.4 ms of every routed partner read. Keeping it needs a data
+invalidation this process does not have (a `parent_path` moves without its
+row's `write_date`), or letting the kernel compile the `partner` reach it
+already compiles natively; both are a decision about f80ff43, not a cache.
+Every shape not on `res.partner` is faster routed with the set; the partner
+`search_read` shapes move from 0.36x-0.78x to 0.48x-1.03x.
+
+JSON is not where the time is: `orjson.loads` of the kernel's answer is
+0.03 ms of a 2 ms partner list, so pre-encoded JSON was not built. If it
+becomes the cost, the fork would need one hook: the JSON-RPC dispatcher
+marks the call whose result goes straight to `_prepare_jsonrpc_response`
+(a context variable set around `call_kw`), and the shim then returns the
+records as an `orjson.Fragment` of the kernel's bytes, which
+`prepare_json_response`'s `orjson.dumps` embeds as is; any other caller
+keeps getting Python objects.
+
+`http_bench.py` itself measured one client until this change: the fork
+refuses a sign-in while another from the same address is in progress, and
+the threads that lost died on the `SystemExit` without an error counted.
+
 ## The road to replacement (M2, then M3)
 
 `M3-PLAN.md` is the plan of record for the end state: the Rust binary as the
