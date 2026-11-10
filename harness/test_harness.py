@@ -557,7 +557,13 @@ def traffic_probe(tmp_path, monkeypatch, caplog):
     capture.write_text(json.dumps({"model": "res.country", "method": "search_read"}))
     monkeypatch.setenv("RUSTORM_REPLAY", str(capture))
     monkeypatch.setenv("RUSTORM_TRAFFIC_ROUNDS", "3")
-    shim = SimpleNamespace(MODE="shadow", SAMPLE=0.5, STATS={"kernel": 0})
+    shim = SimpleNamespace(
+        MODE="shadow",
+        SAMPLE=0.5,
+        STATS=dict.fromkeys(
+            ("kernel", "fallback_gate", "fallback_error", "fallback_flush"), 0
+        ),
+    )
     shim.set_mode = lambda value: setattr(shim, "MODE", value)
     shim.set_sample = lambda value: setattr(shim, "SAMPLE", value)
     monkeypatch.setitem(sys.modules, "rust_orm_shim", shim)
