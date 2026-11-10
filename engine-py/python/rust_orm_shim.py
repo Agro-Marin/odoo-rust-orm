@@ -65,7 +65,8 @@ _RNG = random.Random()
 #   rules  record rules Python resolves to plain data are kept across requests
 #          under the access domain's own key, and the user's own partner binds
 #          are read by the kernel in the dispatch instead of through the ORM
-WEB_FASTPATH_FEATURES = frozenset({"doors", "early", "rules"})
+#   count  web_search_read's length is decided in the page's own dispatch
+WEB_FASTPATH_FEATURES = frozenset({"doors", "early", "rules", "count"})
 WEB_FASTPATH = _env_set("RUSTORM_WEB_FASTPATH") & WEB_FASTPATH_FEATURES
 
 
@@ -2488,6 +2489,8 @@ def _wrap_web_search_read(orig_web_read, orig_web_search_read):
                     self._check_field_access(self._fields[name], "read")
                 if not _flush_if_needed(self.env, self, domain, order, fields):
                     raise KernelRefused("flush failed; not routing")
+                force_count = bool(self.env.context.get("force_search_count"))
+                fused = "count" in WEB_FASTPATH
                 recs = _dispatch(
                     self,
                     "search_read",
@@ -2499,22 +2502,32 @@ def _wrap_web_search_read(orig_web_read, orig_web_search_read):
                     x2many_active_test=bool(self.env.context.get("active_test", True)),
                     raw_many2one=raw,
                     unredacted_many2one=unredacted,
+                    **(
+                        {
+                            "web_length": {
+                                "count_limit": count_limit,
+                                "force": force_count,
+                            }
+                        }
+                        if fused
+                        else {}
+                    ),
                 )
                 STATS["kernel"] += 1
+                if fused:
+                    length, recs = recs["length"], recs["records"]
+                else:
 
-                def count(cap):
-                    n = _dispatch(self, "search_count", domain=domain or [], limit=cap)
-                    STATS["kernel"] += 1
-                    return n
+                    def count(cap):
+                        n = _dispatch(
+                            self, "search_count", domain=domain or [], limit=cap
+                        )
+                        STATS["kernel"] += 1
+                        return n
 
-                length = _web_length(
-                    len(recs),
-                    offset or 0,
-                    limit,
-                    count_limit,
-                    bool(self.env.context.get("force_search_count")),
-                    count,
-                )
+                    length = _web_length(
+                        len(recs), offset or 0, limit, count_limit, force_count, count
+                    )
                 records = _web_resolve_many2ones(
                     self,
                     _revive_records(self, recs),
