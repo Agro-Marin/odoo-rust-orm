@@ -60,7 +60,9 @@ _RNG = random.Random()
 # opt-in reshapings of the routed web reads, each measured on its own; none of
 # them changes an answer, and an empty set keeps the routed path as it was:
 #   doors  a registry operation door that passes through is not a web override
-WEB_FASTPATH_FEATURES = frozenset({"doors"})
+#   early  the gate refuses a read path the kernel's own export would refuse,
+#          before the request is built
+WEB_FASTPATH_FEATURES = frozenset({"doors", "early"})
 WEB_FASTPATH = _env_set("RUSTORM_WEB_FASTPATH") & WEB_FASTPATH_FEATURES
 
 
@@ -515,6 +517,18 @@ _READ_PATH_NEEDS = {
 }
 
 
+# hooks the kernel's `Model::overridden_for("search_read")` refuses and the
+# path's own needs leave out, read from the same purity walk the export runs:
+# these paths dispatch a kernel search_read, so a model failing one of them is
+# refused there anyway. `fetch` stays with the kernel on the search paths,
+# which do not go through it in Python
+_KERNEL_SEARCH_READ_NEEDS = {
+    "read": ("_search", "search_read", "search_fetch", "_field_to_sql"),
+    "search_read": ("_field_to_sql",),
+    "web_search_read": ("_field_to_sql",),
+}
+
+
 def _clean_model(model, method=None):
     needs = (
         *(
@@ -523,6 +537,11 @@ def _clean_model(model, method=None):
         ),
         "_access_guard",
     )
+    if "early" in WEB_FASTPATH and method in _KERNEL_SEARCH_READ_NEEDS:
+        needs = (
+            *needs,
+            *(n for n in _KERNEL_SEARCH_READ_NEEDS[method] if n not in needs),
+        )
     cls = type(model.sudo())
     methods = tuple(getattr(cls, name) for name in needs)
     key = _cache_key(model, "rp:" + (method or "*"), tuple(map(id, methods)))
@@ -533,7 +552,7 @@ def _clean_model(model, method=None):
 
     base = _BASE_METHODS["__class__"]
     ok = all(
-        m is _BASE_METHODS[name] or purity.transparent(cls, base, name)[0]
+        m is _BASE_METHODS.get(name) or purity.transparent(cls, base, name)[0]
         for m, name in zip(methods, needs, strict=True)
     )
     _GATE_CACHE[key] = ok
