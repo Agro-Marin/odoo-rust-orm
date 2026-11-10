@@ -558,7 +558,11 @@ def _apply_config(orm_shim, config) -> None:
             DEFAULT_BREAKER,
         )
         orm_shim.BREAKER = DEFAULT_BREAKER
-    fastpath = config.get("rust_engine_web_fastpath") or ""
+    fastpath = config.get("rust_engine_web_fastpath")
+    if fastpath is None:
+        # unset in the conf: RUSTORM_WEB_FASTPATH, read when the shim loaded,
+        # stays what it was
+        return
     try:
         orm_shim.set_web_fastpath(str(fastpath).split(","))
     except ValueError as exc:

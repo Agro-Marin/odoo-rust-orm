@@ -69,7 +69,11 @@ _RNG = random.Random()
 #   labels the kernel renders the many2ones it labels as web's dicts and names
 #          the fields it left a target unlabelled in, so Python walks no record
 #          but those, and revives only the date and datetime columns
-WEB_FASTPATH_FEATURES = frozenset({"doors", "early", "rules", "count", "labels"})
+#   nowarm a routed web read does not copy its answer into the ORM cache; the
+#          next attribute access reads from the database instead
+WEB_FASTPATH_FEATURES = frozenset(
+    {"doors", "early", "rules", "count", "labels", "nowarm"}
+)
 WEB_FASTPATH = _env_set("RUSTORM_WEB_FASTPATH") & WEB_FASTPATH_FEATURES
 
 
@@ -2597,7 +2601,8 @@ def _wrap_web_search_read(orig_web_read, orig_web_search_read):
                     )
                 result = {"length": length, "records": records}
                 if MODE != "shadow" and not _is_verification_sampled():
-                    _warm_cache(self, result["records"])
+                    if "nowarm" not in WEB_FASTPATH:
+                        _warm_cache(self, result["records"])
                     return result
             except Exception as e:
                 _record_error(self, e)
@@ -2691,7 +2696,8 @@ def _wrap_web_read(orig_web_read):
                         specification, result, orig_web_read(self, python_spec)
                     )
                 if MODE != "shadow" and not _is_verification_sampled():
-                    _warm_cache(self, result)
+                    if "nowarm" not in WEB_FASTPATH:
+                        _warm_cache(self, result)
                     return result
             except Exception as e:
                 _record_error(self, e)
