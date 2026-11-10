@@ -57,6 +57,28 @@ BREAKER = int(os.environ.get("RUSTORM_ROUTE_BREAKER", "0") or 0)
 SAMPLE = float(os.environ.get("RUSTORM_ROUTE_SAMPLE", "0") or 0)
 _RNG = random.Random()
 
+# opt-in reshapings of the routed web reads, each measured on its own; none of
+# them changes an answer, and an empty set keeps the routed path as it was:
+#   doors  a registry operation door that passes through is not a web override
+WEB_FASTPATH_FEATURES = frozenset({"doors"})
+WEB_FASTPATH = _env_set("RUSTORM_WEB_FASTPATH") & WEB_FASTPATH_FEATURES
+
+
+def set_web_fastpath(features):
+    global WEB_FASTPATH
+    wanted = frozenset(f.strip() for f in features if f and f.strip())
+    if unknown := wanted - WEB_FASTPATH_FEATURES:
+        raise ValueError(
+            "unknown web fast-path feature(s) %s; known: %s"
+            % (", ".join(sorted(unknown)), ", ".join(sorted(WEB_FASTPATH_FEATURES)))
+        )
+    WEB_FASTPATH = wanted
+    _GATE_CACHE.clear()
+    _logger.info(
+        "rust kernel web fast path is now %s", ",".join(sorted(wanted)) or "off"
+    )
+    return WEB_FASTPATH
+
 
 def set_sample(fraction):
     global SAMPLE
@@ -1624,11 +1646,33 @@ def _web_clean(model):
     if cached is not None:
         return cached
     cls = type(model.sudo())
-    ok = bool(_WEB_METHODS) and all(
-        getattr(cls, name, None) is _WEB_METHODS[name] for name in _WEB_HOOKS
-    )
+    if "doors" in WEB_FASTPATH:
+        ok = bool(_WEB_METHODS) and all(
+            _resolves_to(cls, name, _WEB_METHODS[name]) for name in _WEB_HOOKS
+        )
+    else:
+        ok = bool(_WEB_METHODS) and all(
+            getattr(cls, name, None) is _WEB_METHODS[name] for name in _WEB_HOOKS
+        )
     _GATE_CACHE[key] = ok
     return ok
+
+
+def _resolves_to(cls, name, method) -> bool:
+    # the registry puts an operation door over web_read on every model class; a
+    # door that passes through calls the next class's method, so it is not an
+    # override, and the identity alone read every model as overriding web
+    import purity
+
+    for klass in cls.__mro__:
+        member = vars(klass).get(name)
+        if member is None:
+            continue
+        if member is method:
+            return True
+        if not purity._passes_through(member, klass, name):
+            return False
+    return False
 
 
 def _no_plan(reason) -> None:

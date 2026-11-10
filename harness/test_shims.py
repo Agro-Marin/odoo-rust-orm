@@ -2356,6 +2356,39 @@ def test_an_operation_door_is_judged_by_the_method_beneath_it() -> None:
         orm_shim._overridden(searched, "name_search"),
         True,
     )
+
+    def web_hook(*_a, **_k):
+        return []
+
+    def subclass(parent, name, **attrs):
+        return type(
+            name.replace(".", "_"),
+            (parent,),
+            {
+                "__module__": "odoo.addons.probe.models",
+                "_register": False,
+                "_name": name,
+            }
+            | attrs,
+        )
+
+    holder = probe("probe.web_holder", web_read=web_hook)
+    doored = subclass(holder, "probe.web_doored")
+    doored.web_read = _door(doored, "web_read", None, None)
+    check(
+        "the web gate passes a door over the inherited web hook",
+        orm_shim._resolves_to(doored, "web_read", web_hook),
+        True,
+    )
+    overriding = subclass(holder, "probe.web_own", web_read=lambda *_a, **_k: [])
+    overriding.web_read = _door(
+        overriding, "web_read", vars(overriding)["web_read"], None
+    )
+    check(
+        "and refuses one over the class's own web hook",
+        orm_shim._resolves_to(overriding, "web_read", web_hook),
+        False,
+    )
     for key, value in saved.items():
         if value is None:
             orm_shim._BASE_METHODS.pop(key, None)

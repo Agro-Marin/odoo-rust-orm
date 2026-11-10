@@ -558,6 +558,16 @@ def _apply_config(orm_shim, config) -> None:
             DEFAULT_BREAKER,
         )
         orm_shim.BREAKER = DEFAULT_BREAKER
+    fastpath = config.get("rust_engine_web_fastpath") or ""
+    try:
+        orm_shim.set_web_fastpath(str(fastpath).split(","))
+    except ValueError as exc:
+        _logger.error(
+            "rust_engine: rust_engine_web_fastpath is %r and was ignored: %s",
+            fastpath,
+            exc,
+        )
+        orm_shim.set_web_fastpath(())
 
 
 def _arm_port(engine_py, orm_shim, config, db_name) -> None:
@@ -599,6 +609,7 @@ CONFIG_KEYS = (
     "rust_engine_port",
     "rust_engine_report_seconds",
     "rust_engine_verify_sample",
+    "rust_engine_web_fastpath",
 )
 
 
