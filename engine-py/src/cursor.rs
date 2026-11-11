@@ -94,6 +94,17 @@ fn skip_opaque(bytes: &[u8], i: usize) -> Option<usize> {
     odoo_kernel::sqllex::opaque(bytes, i).map(|token| token.end)
 }
 
+// psycopg formats a query whenever it is handed parameters, an empty sequence
+// included: `%%` reaches the server as `%`. Handed none at all, it sends the text
+// as written. A script of several statements carries no parameter either way.
+fn simple_protocol_text(query: &str, params_absent: bool) -> std::borrow::Cow<'_, str> {
+    if params_absent {
+        std::borrow::Cow::Borrowed(query)
+    } else {
+        std::borrow::Cow::Owned(translate_placeholders(query).0)
+    }
+}
+
 fn translate_placeholders(sql: &str) -> (String, Vec<String>) {
     let bytes = sql.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(sql.len() + 8);
@@ -1796,7 +1807,8 @@ impl RustConn {
                 "multi-statement execute: falling back to the simple query protocol"
             );
             self.clear_prepared();
-            return self.execute_simple(py, query);
+            let absent = params.as_ref().is_none_or(|p| p.is_none());
+            return self.execute_simple(py, &simple_protocol_text(query, absent));
         }
 
         let (sql, stmt, boxed) = match &params {
@@ -2240,7 +2252,7 @@ mod tests {
     use super::{
         LOWER_HEX, UPPER_HEX, conv_json, has_bare_keyword, has_multiple_statements, hex_text,
         holds_nul_text, leading_keyword, numeric_binary_to_text, returns_rows,
-        translate_placeholders,
+        simple_protocol_text, translate_placeholders,
     };
 
     #[test]
@@ -2481,6 +2493,14 @@ SET b = 2;"
         let (sql, names) = translate_placeholders("SELECT %(x)s, %(y)s");
         assert_eq!(sql, "SELECT $1, $2");
         assert_eq!(names, vec!["x", "y"]);
+    }
+
+    #[test]
+    fn a_script_sent_with_empty_parameters_is_formatted_as_psycopg_formats_it() {
+        let script = "CREATE FUNCTION f() RETURNS trigger LANGUAGE plpgsql AS $b$ BEGIN \
+                      RAISE EXCEPTION '%% %%: never', TG_TABLE_NAME, OLD.id; END $b$; SELECT 1";
+        assert!(simple_protocol_text(script, false).contains("'% %: never'"));
+        assert_eq!(simple_protocol_text(script, true), script);
     }
 
     #[test]
