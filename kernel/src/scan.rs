@@ -1342,7 +1342,7 @@ where
                 let right = &triple[2];
                 let expr = match operator {
                     "in" | "not in" => {
-                        let values: Vec<sea_query::Value> = match right {
+                        let values: Vec<Expr> = match right {
                             Json::Array(values) => {
                                 values.iter().map(having_value).collect::<Result<_>>()?
                             }
@@ -1377,14 +1377,16 @@ where
     Ok(stack.pop())
 }
 
-fn having_value(value: &Json) -> Result<sea_query::Value> {
+// A number carries its own type: the server would otherwise give the parameter
+// the aggregate's (int4 for MAX of a many2one) and refuse the eight bytes sent.
+fn having_value(value: &Json) -> Result<Expr> {
     Ok(match value {
-        Json::Number(n) if n.is_i64() => sea_query::Value::from(n.as_i64().expect("i64")),
+        Json::Number(n) if n.is_i64() => Expr::val(n.as_i64().expect("i64")).cast_as("int8"),
         Json::Number(n) => {
-            sea_query::Value::from(n.as_f64().ok_or_else(|| refusal!("bad number {n}"))?)
+            Expr::val(n.as_f64().ok_or_else(|| refusal!("bad number {n}"))?).cast_as("float8")
         }
-        Json::Bool(b) => sea_query::Value::from(*b),
-        Json::String(s) => sea_query::Value::from(s.clone()),
+        Json::Bool(b) => Expr::val(*b),
+        Json::String(s) => Expr::val(s.clone()),
         other => refuse!("unsupported having value {other}"),
     })
 }
@@ -1423,7 +1425,7 @@ mod tests {
         assert_eq!(having_sql(json!(null)).unwrap(), None);
         assert_eq!(having_sql(json!([])).unwrap(), None);
         let sql = flat(having_sql(json!([["__count", ">", 1]])).unwrap().unwrap());
-        assert!(sql.ends_with("HAVING COUNT* > 1"), "{sql}");
+        assert!(sql.ends_with("HAVING COUNT* > CAST1 AS int8"), "{sql}");
         let sql = flat(
             having_sql(json!([
                 "|",
@@ -1434,7 +1436,9 @@ mod tests {
             .unwrap(),
         );
         assert!(
-            sql.contains("COUNT* = 1 OR SUM\"t\".\"value\"::float8 IN 12, 99.5"),
+            sql.contains(
+                "COUNT* = CAST1 AS int8 OR SUM\"t\".\"value\"::float8 IN CAST12 AS int8, CAST99.5 AS float8"
+            ),
             "{sql}"
         );
         let sql = flat(
@@ -1442,15 +1446,18 @@ mod tests {
                 .unwrap()
                 .unwrap(),
         );
-        assert!(sql.contains("NOT SUM\"t\".\"value\"::float8 < 9"), "{sql}");
+        assert!(
+            sql.contains("NOT SUM\"t\".\"value\"::float8 < CAST9 AS int8"),
+            "{sql}"
+        );
         // two bare triples AND together, as python's stack does
         let sql = flat(
             having_sql(json!([["__count", "<", 3], ["value:sum", ">=", 4]]))
                 .unwrap()
                 .unwrap(),
         );
-        assert!(sql.contains("COUNT* < 3 AND"), "{sql}");
-        assert!(sql.contains("::float8 >= 4"), "{sql}");
+        assert!(sql.contains("COUNT* < CAST3 AS int8 AND"), "{sql}");
+        assert!(sql.contains("::float8 >= CAST4 AS int8"), "{sql}");
         let sql = flat(
             having_sql(json!([["__count", "not in", []]]))
                 .unwrap()
