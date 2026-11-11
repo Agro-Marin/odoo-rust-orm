@@ -254,9 +254,11 @@ def _close_switch_connection() -> None:
     owner, conn = _STATE.get("switch_conn") or (None, None)
     _STATE["switch_conn"] = None
     if conn is not None and owner == os.getpid():
+        import psycopg
+
         try:
             conn.close()
-        except Exception as exc:
+        except psycopg.Error as exc:
             _logger.debug("rust_engine: closing the kill-switch connection: %s", exc)
 
 

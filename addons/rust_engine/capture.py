@@ -2,6 +2,8 @@ import json
 import logging
 import pathlib
 
+from odoo.libs.logging import best_effort
+
 _logger = logging.getLogger(__name__)
 
 CAPTURE_METHODS = frozenset(
@@ -29,7 +31,9 @@ def arm(path, db_name) -> None:
 
     def call_kw(model, name, args, kwargs):
         if name in CAPTURE_METHODS and model.env.cr.dbname == db_name:
-            try:
+            with best_effort(
+                _logger, "rust_engine: could not capture %s.%s", model._name, name
+            ):
                 record = {
                     "model": model._name,
                     "method": name,
@@ -40,10 +44,6 @@ def arm(path, db_name) -> None:
                 }
                 with pathlib.Path(path).open("a", encoding="utf-8") as fh:
                     fh.write(json.dumps(record, default=str) + "\n")
-            except Exception:
-                _logger.exception(
-                    "rust_engine: could not capture %s.%s", model._name, name
-                )
         return orig_call_kw(model, name, args, kwargs)
 
     service_model.call_kw = call_kw
