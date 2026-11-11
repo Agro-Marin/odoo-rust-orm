@@ -4844,6 +4844,106 @@ keeps getting Python objects.
 refuses a sign-in while another from the same address is in progress, and
 the threads that lost died on the `SystemExit` without an error counted.
 
+## The `reach` feature: the kernel compiles partner reaches (opt-in, 2026-11-11)
+
+The section above blames `res.partner`'s remaining loss on the commercial
+partner's `parent_path`. Read at `oneread_small`, that is not what an internal
+user pays. `_rules_need_python` (f80ff43) sends a model to Python whenever any
+of its access rows carries a principal-dependent reach, whether or not the row
+binds the caller. `res.partner` has three: `own` through its partner anchor for
+everyone, and `partner` for portal and public. So every routed partner read at
+every identity paid `optimize_full`. At an internal user that reads
+`res_company.parent_path` for the guard `company_id parent_of company_ids`, so
+the resolution is never pure and is never kept. At a portal user, Python's
+`id child_of [commercial]` becomes a recursive CTE over `parent_id`, because
+`res.partner` is not a parent store in the fork.
+
+`reach` in `rust_engine_web_fastpath` / `RUSTORM_WEB_FASTPATH` changes two
+things. An empty list leaves the shim's routed reads as they were, and f80ff43's
+path stays the fallback.
+
+- **Shim.** The verdict looks only at the rows that bind the principal, as
+  `ir.access._bound_access_infos` binds them for Python's own access domain,
+  following `_inherits_rules` parents. A model goes to the kernel when each
+  bound reach is one the kernel compiles to the domain `_reach_domain` builds:
+  - `partner`, or `own` through a `partner` anchor;
+  - read through a plain path on the model (no dot and no x2many, whose unset
+    and stored-link forms Python builds differently);
+  - beside a fixed filter that is literal data.
+
+  Any other bound reach stays on Python's resolution: `own` through an owner,
+  creator or employee anchor, `company`, `team`, `unit`, a predicate, or a
+  link.
+- **Kernel.** The rule cache keeps a compiled `child_of` as the ids or
+  `parent_path` prefixes it walked, keyed on the identity and the security
+  signals. None of these moves those keys: a contact created under a commercial
+  partner, one moved into or out of its tree, or the commercial partner moved
+  under another. Python, meanwhile, resolves the hierarchy on every search. With
+  `fresh_hierarchies` in the request, each walk a cached rule set holds is
+  walked again before the set is reused, and a walk that reads differently
+  compiles the rules again.
+
+**Found on the way, fixed for everyone.** The search port
+(`rust_backend._search_native`, on by default) already let the kernel compile
+`res.partner`'s rules itself. It sent no partner binds, so an acting partner in
+the context was ignored, and it reused the cached walk. With no fast-path
+feature at all, 40 of 704 portal and public `web_search_read` calls in the new
+stage disagreed with Python:
+- a contact moved out of the tree was still shown;
+- a contact created or moved in was missing;
+- the acting partner's tree was not the one read.
+
+The port now sends `access_partner` as `ir.access` binds it, and
+`fresh_hierarchies`.
+
+`harness/partner_reach.py` (stage "partner reach") reads `res.partner` and
+`res.users` at every user, portal and public included, in each company
+combination of a multi-company user. It does so while the commercial partner's
+tree moves under it, each move flushed and pending, and with an acting partner.
+Each leg recreates its partners under the same ids. It releases, on rollback,
+the ormcache groups its writes invalidated, as a rolled-back request does;
+without that, Python's own access domain keeps a moved commercial partner after
+the rollback, and the comparison is against a stale Python. There are three
+passes:
+1. the feature off;
+2. on: routed must equal Python, and Python must not have resolved
+   `res.partner`'s rules;
+3. on with the re-walk withheld, which must disagree somewhere.
+
+At the gate's probe database: 1,408 compared per pass, 528 of them at share
+users, 0 mismatching off and on. Withholding the re-walk gave 216 wrong answers
+with the six features, and 99 with `reach` alone.
+
+Measured 2026-11-11 on `rustorm_perf_volume`. The perf gate ran 16 pairs, with
+the six features against the six plus `reach`, uid 2, back to back, at load
+9.7 → 7.2 and 3.8 → 6.1. Python time / routed time:
+
+| | six | + `reach` |
+|---|---|---|
+| routed calls | 0.99x [0.98 .. 1.00] | 1.00x [0.99 .. 1.01] |
+| `res.partner.search_read` | 0.77x | 1.91x |
+| `res.partner.web_search_read` (3 shapes) | 0.81x | 0.87x |
+| `res.partner.search_count` | 0.93x | 1.01x |
+| `res.partner.web_read` | 0.50x | 0.48x |
+| `phone.number.web_search_read` (3 shapes) | 0.27x | 0.98x |
+
+In process, on `oneread_120k` (120k partners), with the median of 2 x 40
+calls per leg, interleaved, and answers identical across legs:
+
+| shape | uid 2, six | uid 2, + `reach` | portal, six | portal, + `reach` |
+|---|---|---|---|---|
+| partner list, 80 rows, counted | 1.64x | 1.66x | 0.95x (31.9 ms vs 30.1) | 76x (0.40 ms) |
+| partner page, 40 rows, counted | 1.08x | 1.09x | 0.94x | 65x (0.37 ms) |
+| country page | 2.49x | 2.36x | 2.47x | 2.15x |
+| currency page | 1.59x | 1.50x | 1.56x | 1.30x |
+| partner `web_read`, 3 ids | 2.70x | 2.57x | 0.62x | 0.94x |
+
+At an internal user the feature changes little in one process. What it buys
+there is the perf gate's partner `search_read` shapes. At a portal user it
+replaces Python's recursive CTE with the kernel's cached, re-walked tree. The
+re-walk costs 0.02 to 0.08 ms on every routed read at an identity whose rules
+walk a hierarchy, visible on the country and currency pages.
+
 ## The road to replacement (M2, then M3)
 
 `M3-PLAN.md` is the plan of record for the end state: the Rust binary as the
