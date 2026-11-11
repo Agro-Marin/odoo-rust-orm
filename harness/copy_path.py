@@ -1,4 +1,4 @@
-import datetime
+import datetime as dt
 import os
 import pathlib
 import sys
@@ -45,8 +45,8 @@ CASES = [
     {"name": "copy-zero", "ref": "R9", "color": 0},
     {"name": "copy-neg", "ref": "R10", "color": -7},
     {"name": "copy-big", "ref": "R11", "color": 2147483647},
-    {"name": "copy-date", "ref": "R12", "birthdate": datetime.date(1000, 1, 1)},
-    {"name": "copy-date2", "ref": "R13", "birthdate": datetime.date(9999, 12, 31)},
+    {"name": "copy-date", "ref": "R12", "birthdate": dt.date(1000, 1, 1)},
+    {"name": "copy-date2", "ref": "R13", "birthdate": dt.date(9999, 12, 31)},
     {"name": "copy-float", "ref": "R14", "partner_latitude": 0.1 + 0.2},
     {"name": "copy-float2", "ref": "R15", "partner_latitude": -89.999999},
 ]

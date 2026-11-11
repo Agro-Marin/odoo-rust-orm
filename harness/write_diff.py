@@ -1,5 +1,5 @@
 import base64
-import datetime
+import datetime as dt
 import decimal
 import json
 import os
@@ -56,21 +56,21 @@ def case(field, i):
         return opts[i % len(opts)] if opts else None
     if t == "date":
         return [
-            datetime.date(2026, 1, 31),
-            datetime.date(1970, 1, 1),
+            dt.date(2026, 1, 31),
+            dt.date(1970, 1, 1),
             False,
-            datetime.date(2000, 2, 29),
-            datetime.date(2099, 12, 31),
-            datetime.date(2026, 9, 18),
+            dt.date(2000, 2, 29),
+            dt.date(2099, 12, 31),
+            dt.date(2026, 9, 18),
         ][i % 6]
     if t == "datetime":
         return [
-            datetime.datetime(2026, 1, 31, 12, 34, 56),
-            datetime.datetime(1970, 1, 1),
+            dt.datetime(2026, 1, 31, 12, 34, 56),
+            dt.datetime(1970, 1, 1),
             False,
-            datetime.datetime(2000, 2, 29, 23, 59, 59),
-            datetime.datetime(2026, 9, 18, 0, 0, 0),
-            datetime.datetime(2026, 6, 30, 6, 6, 6),
+            dt.datetime(2000, 2, 29, 23, 59, 59),
+            dt.datetime(2026, 9, 18, 0, 0, 0),
+            dt.datetime(2026, 6, 30, 6, 6, 6),
         ][i % 6]
     return None
 
@@ -212,7 +212,7 @@ def resolve_required_vals(model, fields, i) -> dict[str, Any] | None:
 
 
 def dump(v):
-    if isinstance(v, (datetime.date, datetime.datetime)):
+    if isinstance(v, (dt.date, dt.datetime)):
         return v.isoformat()
     if isinstance(v, decimal.Decimal):
         return str(v)
@@ -646,7 +646,7 @@ def run_models(env, result, stats) -> None:
 
 
 def utcnow():
-    return datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+    return dt.datetime.now(dt.UTC).replace(tzinfo=None)
 
 
 def main(env):

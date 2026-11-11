@@ -1,6 +1,6 @@
 import collections
 import contextlib
-import datetime
+import datetime as dt
 import json
 import logging
 import math
@@ -1166,7 +1166,7 @@ def _date_comparand_reads_as_text(model, domain, depth: int = 0) -> bool:
             continue
         values = value if isinstance(value, (list, tuple, set, frozenset)) else (value,)
         if (field.type in _DATE_TEXT_DIFFERS or operator in _PATTERN_OPERATORS) and any(
-            isinstance(v, datetime.date) for v in values
+            isinstance(v, dt.date) for v in values
         ):
             return True
     return False
@@ -1374,11 +1374,11 @@ def _wire_encoder(nonce):
                         % type(param).__name__
                     )
             return {"$sql": value.code, "$params": params, "$nonce": nonce}
-        if isinstance(value, datetime.datetime):
+        if isinstance(value, dt.datetime):
             if value.tzinfo is not None:
-                value = value.astimezone(datetime.UTC).replace(tzinfo=None)
+                value = value.astimezone(dt.UTC).replace(tzinfo=None)
             return value.isoformat(" ")
-        if isinstance(value, datetime.date):
+        if isinstance(value, dt.date):
             return value.isoformat()
         raise KernelRefused(
             "domain carries a %s the kernel cannot receive" % type(value).__name__
@@ -1586,8 +1586,8 @@ def _dispatch(model, method, **kw):
     return result
 
 
-_parse_dt = datetime.datetime.fromisoformat
-_parse_date = datetime.date.fromisoformat
+_parse_dt = dt.datetime.fromisoformat
+_parse_date = dt.date.fromisoformat
 
 
 COUNT_AGGREGATES = frozenset({"count", "count_distinct"})

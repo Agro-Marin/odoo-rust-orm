@@ -1,4 +1,4 @@
-import datetime
+import datetime as dt
 import json
 import math
 import pathlib
@@ -26,7 +26,7 @@ def leg_clocks(armed, control):
     if "clock" not in armed or "clock" not in control:
         return None
     return [
-        [datetime.datetime.fromisoformat(stamp) for stamp in leg["clock"]]
+        [dt.datetime.fromisoformat(stamp) for stamp in leg["clock"]]
         for leg in (armed, control)
     ]
 
@@ -36,11 +36,11 @@ def clock_shifted(t, a, b, clocks, given):
         return False
     (a0, a1), (c0, c1) = clocks
     if t == "datetime":
-        parse = datetime.datetime.fromisoformat
-        slack = datetime.timedelta(seconds=1)
+        parse = dt.datetime.fromisoformat
+        slack = dt.timedelta(seconds=1)
         lo, hi = a0 - c1 - slack, a1 - c0 + slack
     elif t == "date":
-        parse = datetime.date.fromisoformat
+        parse = dt.date.fromisoformat
         lo, hi = a0.date() - c1.date(), a1.date() - c0.date()
     else:
         return False

@@ -1,6 +1,6 @@
 import collections
 import contextlib
-import datetime
+import datetime as dt
 import json
 import sys
 import time
@@ -115,11 +115,11 @@ def seed(env):
     for grantee, grp, vals in [
         (portal_scoped, reader, {"company_ids": [Command.set(company_a.ids)]}),
         (guard_scoped, guard, {"company_ids": [Command.set(company_a.ids)]}),
-        (dated, guard, {"date_to": now + datetime.timedelta(days=30)}),
-        (dated, reader, {"date_from": now + datetime.timedelta(days=30)}),
+        (dated, guard, {"date_to": now + dt.timedelta(days=30)}),
+        (dated, reader, {"date_from": now + dt.timedelta(days=30)}),
         # still active in the table once its end has passed: the boundary
         # cron settles it, and no cron runs here
-        (window_closed, reader, {"date_to": now + datetime.timedelta(seconds=2)}),
+        (window_closed, reader, {"date_to": now + dt.timedelta(seconds=2)}),
     ]:
         if not Grant.search_count(
             [

@@ -403,12 +403,12 @@ def _revive(value):
     if isinstance(value, list):
         return [_revive(item) for item in value]
     if isinstance(value, dict):
-        import datetime
+        import datetime as dt
 
         if "__date__" in value:
-            return datetime.date.fromisoformat(value["__date__"])
+            return dt.date.fromisoformat(value["__date__"])
         if "__datetime__" in value:
-            return datetime.datetime.fromisoformat(value["__datetime__"])
+            return dt.datetime.fromisoformat(value["__datetime__"])
     return value
 
 

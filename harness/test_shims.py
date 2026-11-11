@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import collections
 import contextlib
-import datetime as _dt
+import datetime as dt
 import importlib.util
 import json
 import os
@@ -1253,7 +1253,7 @@ def test_a_date_whose_text_reads_otherwise_is_refused() -> None:
             "tag_ids": Field("many2many", comodel="partner"),
         }
     )
-    day = _dt.date(2024, 1, 1)
+    day = dt.date(2024, 1, 1)
     reads = orm_shim._date_comparand_reads_as_text
     item = env["item"]
     check("a date field takes a date", reads(item, [("day", "=", day)]), False)
@@ -1305,7 +1305,6 @@ def test_web_length() -> None:
 
 
 def test_wire_encoder() -> None:
-    import datetime
     import json
 
     from odoo.tools import SQL
@@ -1318,7 +1317,7 @@ def test_wire_encoder() -> None:
         {"$sql": "SELECT id FROM t WHERE p = %s", "$params": [7], "$nonce": "n"},
     )
     for label, param in (
-        ("a datetime", datetime.datetime(2026, 9, 14, 8)),
+        ("a datetime", dt.datetime(2026, 9, 14, 8)),
         ("an empty list", []),
         ("None", None),
         ("a mixed list", [1, "a"]),
@@ -1340,14 +1339,14 @@ def test_wire_encoder() -> None:
             encode(SQL("SELECT %s", param))["$params"],
             [param],
         )
-    zone = datetime.timezone(datetime.timedelta(hours=2))
+    zone = dt.timezone(dt.timedelta(hours=2))
     check(
         "a datetime is its naive UTC timestamp, the way Python compares it",
         json.dumps(
             [
-                datetime.datetime(2026, 9, 14, 10, 0, 0, 500, tzinfo=zone),
-                datetime.datetime(2026, 9, 14, 8),
-                datetime.date(2026, 9, 14),
+                dt.datetime(2026, 9, 14, 10, 0, 0, 500, tzinfo=zone),
+                dt.datetime(2026, 9, 14, 8),
+                dt.date(2026, 9, 14),
             ],
             default=encode,
         ),
@@ -1819,12 +1818,12 @@ def test_revive_temporal() -> None:
     check(
         "a datetime aggregate is revived",
         revive(F("datetime"), "2026-09-10 01:42:04.523820"),
-        _dt.datetime(2026, 9, 10, 1, 42, 4, 523820),
+        dt.datetime(2026, 9, 10, 1, 42, 4, 523820),
     )
     check(
         "a date aggregate is revived",
         revive(F("date"), "2026-09-10"),
-        _dt.date(2026, 9, 10),
+        dt.date(2026, 9, 10),
     )
     check("a numeric granularity stays a number", revive(F("datetime"), 3.0), 3.0)
     check("an unset value stays False", revive(F("datetime"), False), False)
@@ -1832,12 +1831,12 @@ def test_revive_temporal() -> None:
     check(
         "an array_agg of dates is revived element-wise",
         revive(F("date"), ["2026-01-01", None, "2026-01-02"]),
-        [_dt.date(2026, 1, 1), None, _dt.date(2026, 1, 2)],
+        [dt.date(2026, 1, 1), None, dt.date(2026, 1, 2)],
     )
     check(
         "an array_agg of datetimes is revived element-wise",
         revive(F("datetime"), ["2026-01-01 00:00:00"]),
-        [_dt.datetime(2026, 1, 1)],
+        [dt.datetime(2026, 1, 1)],
     )
     check(
         "an array_agg of a non-temporal field is untouched",
