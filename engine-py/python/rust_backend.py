@@ -155,7 +155,7 @@ class RustBackend:
 
     def update_rows(self, model, fnames, rows) -> None:
         if self._armed("update_rows", model) and _update_rows_native(
-            model, fnames, rows
+            model, fnames, rows, self._delegate._expect_rows_matched
         ):
             _count("native", "update_rows")
             return None
@@ -280,7 +280,7 @@ def _routing_allows(model, method) -> bool:
     return True
 
 
-def _update_rows_native(model, fnames, rows) -> bool:
+def _update_rows_native(model, fnames, rows, expect_rows_matched) -> bool:
     from odoo.orm.primitives import UPDATE_BATCH_SIZE
 
     env = model.env
@@ -307,11 +307,14 @@ def _update_rows_native(model, fnames, rows) -> bool:
             params = []
             for value, repeat in zip(values, repeats, strict=True):
                 params.extend([value] * repeat)
-            params.append([row[0] for row in rows])
-            statements.append(("update_rows.uniform", sql, params))
+            ids = [row[0] for row in rows]
+            params.append(ids)
+            statements.append(("update_rows.uniform", sql, params, ids))
         else:
-            for start in range(0, len(rows), UPDATE_BATCH_SIZE):
-                batch = rows[start : start + UPDATE_BATCH_SIZE]
+            # rows are locked in id order, as the Python backend takes them
+            ordered = sorted(rows, key=lambda row: row[0])
+            for start in range(0, len(ordered), UPDATE_BATCH_SIZE):
+                batch = ordered[start : start + UPDATE_BATCH_SIZE]
                 sql, _repeats = kernel.update_rows_sql(
                     model._name, list(fnames), uniform=False, row_count=len(batch)
                 )
@@ -320,14 +323,16 @@ def _update_rows_native(model, fnames, rows) -> bool:
                         "update_rows.values",
                         sql,
                         [value for row in batch for value in row],
+                        [row[0] for row in batch],
                     )
                 )
     except (KernelRefused, KernelRegistryStale) as exc:
         _delegated("update_rows", str(exc))
         return False
 
-    for shape, sql, params in statements:
-        env.cr.execute(sql, params)
+    for shape, sql, params, ids in statements:
+        matched = env.cr.execute_counted(sql, params)
+        expect_rows_matched(model, ids, matched)
         _count("native", shape)
     return True
 

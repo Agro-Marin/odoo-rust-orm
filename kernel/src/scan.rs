@@ -734,6 +734,14 @@ impl<'a> Orm<'a> {
                 members += 1;
             }
         }
+        if field.ttype == FieldType::Many2many {
+            // a relation that is a model's own table can hold a pair twice,
+            // and the pair is one link
+            for ids in out.values_mut() {
+                let mut seen = std::collections::HashSet::with_capacity(ids.len());
+                ids.retain(|id| seen.insert(*id));
+            }
+        }
         tracing::debug!(
             target: "odoo_kernel::scan",
             model = %owner.name,
