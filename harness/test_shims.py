@@ -2426,6 +2426,9 @@ def test_a_routed_read_group_flushes_no_label_it_does_not_return() -> None:
         _order = "id"
         _fields = {"partner_id": F("many2one", comodel_name="res.partner")}
 
+        def _read_group_masks_many2one(self):
+            return False
+
     registry = {"res.partner": Partner(), "probe.line": Line()}
 
     class Env:

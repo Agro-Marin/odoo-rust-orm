@@ -2257,6 +2257,21 @@ def _wrap_search_count(orig_search_count):
     return search_count
 
 
+def _masked_many2one(model, groupby, aggregates):
+    # the fork folds a many2one target the reader cannot read into the empty
+    # group (MASK_UNREADABLE_TARGETS, which web_read_group sets): the kernel
+    # would name that target, so such a grouping is answered by Python
+    if not model._read_group_masks_many2one():
+        return None
+    specs = [*groupby, *(a.rsplit(":", 1)[0] for a in aggregates if a != "__count")]
+    for spec in specs:
+        field = model._fields.get(spec.split(":")[0].split(".")[0])
+        if field is not None and field.type == "many2one":
+            if model._read_group_many2one_is_masked(field):
+                return f"{field.name}: its unreadable targets are masked"
+    return None
+
+
 def _wrap_read_group(orig_read_group):
     def _read_group(
         self,
@@ -2271,8 +2286,11 @@ def _wrap_read_group(orig_read_group):
         having = list(having or ())
         bad_aggregate = _bad_aggregate(self, aggregates)
         bad_having = _bad_having(self, having) if having else None
+        masked = _masked_many2one(self, groupby, aggregates)
         if not groupby:
             supported = _refuse("no groupby")
+        elif masked is not None:
+            supported = _refuse(masked)
         elif bad_aggregate is not None:
             supported = _refuse(f"aggregate {bad_aggregate}")
         elif bad_having is not None:
@@ -2732,6 +2750,8 @@ def _prepare_formatted_group_planner(_group_hooks_clean):
             return _refuse(bad)
         if not groupby:
             return _refuse("no groupby")
+        if (masked := _masked_many2one(model, groupby, aggregates)) is not None:
+            return _refuse(masked)
         if not _group_hooks_clean(model):
             return _refuse("read_group formatting hooks overridden in python")
         fill_temporal = model.env.context.get("fill_temporal")
