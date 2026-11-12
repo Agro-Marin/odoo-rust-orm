@@ -366,11 +366,32 @@ pub struct AccessAnchor {
 }
 
 /// An access row's reach that the kernel compiles per principal: the rung
-/// (`own`, `company`, `partner`) and the anchor it names, if not its rung's.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// (`own`, `company`, `partner`, `predicate`), the anchor it names, if not its
+/// rung's, and on `predicate` the template it evaluates.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Reach {
     pub rung: String,
     pub anchor: Option<String>,
+    pub predicate: Option<Predicate>,
+}
+
+/// A named predicate's template and the row's arguments to it
+/// (`ir.access.compile_predicate`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Predicate {
+    pub name: String,
+    pub template: crate::security::PyExpr,
+    pub args: serde_json::Map<String, serde_json::Value>,
+}
+
+/// What an access row names of its predicate, as `ir_access` and
+/// `ir_access_predicate` store it.
+#[derive(Debug, Default)]
+pub struct PredicateRow {
+    pub name: Option<String>,
+    pub template: Option<String>,
+    pub method: Option<String>,
+    pub args: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1727,9 +1748,11 @@ impl Registry {
         for row in client
             .query(
                 "SELECT a.id, m.model, a.group_id, a.kind = 'guard',
-                        a.guard_scope = 'members', a.domain, a.reach, a.anchor
+                        a.guard_scope = 'members', a.domain, a.reach, a.anchor,
+                        p.name, p.template, p.method, a.predicate_args::text
                    FROM ir_access a
                    JOIN ir_model m ON a.model_id = m.id
+                   LEFT JOIN ir_access_predicate p ON a.predicate_id = p.id
                   WHERE a.active AND a.operation LIKE '%r%'
                   ORDER BY a.id",
                 &[],
@@ -1744,10 +1767,17 @@ impl Registry {
             let members_only: bool = row.get(4);
             let reach: Option<String> = row.get(6);
             let anchor: Option<String> = row.get(7);
+            let predicate = PredicateRow {
+                name: row.get(8),
+                template: row.get(9),
+                method: row.get(10),
+                args: row.get(11),
+            };
             let (domain_force, row_reach, compiled_in_python) = match reach_domain(
                 reach.as_deref(),
                 anchor.as_deref(),
                 row.get::<_, Option<String>>(5),
+                predicate,
             ) {
                 Ok((domain, reach)) => (domain, reach, None),
                 Err(why) => (None, None, Some(why)),
@@ -1923,13 +1953,15 @@ const NOTHING: &str = "[(0, '=', 1)]";
 /// the domain alone, `none` is nothing whatever the domain says, and `own`,
 /// `company` and `partner` reach through the model's anchor, compiled per
 /// principal (`security::reach_domain`) and ANDed with the domain as a fixed
-/// filter. `team`, `unit` and `unit_tree` compare the anchor with what hr and
-/// team bind, and a named predicate is Python code: the kernel refuses those
-/// rows instead of reading them as unrestricted.
+/// filter. A named predicate's template is evaluated per principal too
+/// (`security::predicate_domain`); a predicate that is a method is Python code,
+/// and `team`, `unit` and `unit_tree` compare the anchor with what hr and team
+/// bind: the kernel refuses those rows instead of reading them as unrestricted.
 fn reach_domain(
     reach: Option<&str>,
     anchor: Option<&str>,
     domain: Option<String>,
+    predicate: PredicateRow,
 ) -> std::result::Result<(Option<String>, Option<Reach>), String> {
     let domain = domain.filter(|d| !d.trim().is_empty());
     match reach.unwrap_or("") {
@@ -1940,10 +1972,56 @@ fn reach_domain(
             Some(Reach {
                 rung: rung.to_owned(),
                 anchor: anchor.filter(|a| !a.is_empty()).map(str::to_owned),
+                predicate: None,
+            }),
+        )),
+        "predicate" => Ok((
+            domain,
+            Some(Reach {
+                rung: "predicate".to_owned(),
+                anchor: None,
+                predicate: Some(predicate_template(predicate)?),
             }),
         )),
         other => Err(format!("reach {other} is compiled per principal in Python")),
     }
+}
+
+fn predicate_template(row: PredicateRow) -> std::result::Result<Predicate, String> {
+    let name = row
+        .name
+        .ok_or_else(|| "reach predicate names no predicate".to_owned())?;
+    if let Some(method) = row.method.filter(|m| !m.is_empty()) {
+        return Err(format!(
+            "predicate {name} is the method {method}, which Python runs per principal"
+        ));
+    }
+    let source = row
+        .template
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| format!("predicate {name} has neither a template nor a method"))?;
+    let template = crate::security::parse_py(&source)
+        .map_err(|e| format!("predicate {name}'s template does not parse: {e:#}"))?;
+    let args = match row
+        .args
+        .as_deref()
+        .map(serde_json::from_str::<serde_json::Value>)
+    {
+        None => serde_json::Map::new(),
+        Some(Ok(serde_json::Value::Object(args))) => args,
+        Some(Ok(serde_json::Value::Null)) => serde_json::Map::new(),
+        Some(Ok(other)) => {
+            return Err(format!(
+                "predicate {name}'s arguments are not named: {other}"
+            ));
+        }
+        Some(Err(e)) => return Err(format!("predicate {name}'s arguments: {e}")),
+    };
+    Ok(Predicate {
+        name,
+        template,
+        args,
+    })
 }
 
 /// The anchors an export states for a model; `None` when it states none, a
@@ -1988,7 +2066,18 @@ fn is_literally_false(domain: &str) -> bool {
 
 #[cfg(test)]
 mod access_row_tests {
-    use super::{NOTHING, Reach, access_anchors, is_literally_false, reach_domain};
+    use super::{
+        NOTHING, PredicateRow, Reach, access_anchors, is_literally_false,
+        reach_domain as reach_domain_with,
+    };
+
+    fn reach_domain(
+        reach: Option<&str>,
+        anchor: Option<&str>,
+        domain: Option<String>,
+    ) -> std::result::Result<(Option<String>, Option<Reach>), String> {
+        reach_domain_with(reach, anchor, domain, PredicateRow::default())
+    }
 
     #[test]
     fn a_row_without_reach_or_reaching_all_is_its_domain() {
@@ -2030,7 +2119,8 @@ mod access_row_tests {
                     None,
                     Some(Reach {
                         rung: rung.into(),
-                        anchor: None
+                        anchor: None,
+                        predicate: None,
                     })
                 )),
                 "{rung}"
@@ -2041,7 +2131,8 @@ mod access_row_tests {
                     Some("[('a', '=', 1)]".into()),
                     Some(Reach {
                         rung: rung.into(),
-                        anchor: Some("review".into())
+                        anchor: Some("review".into()),
+                        predicate: None,
                     })
                 )),
                 "{rung}"
@@ -2051,15 +2142,67 @@ mod access_row_tests {
             reach_domain(Some("own"), Some(""), None).unwrap().1,
             Some(Reach {
                 rung: "own".into(),
-                anchor: None
+                anchor: None,
+                predicate: None,
             }),
             "an empty anchor is the rung's own"
         );
     }
 
+    fn predicate(template: Option<&str>, method: Option<&str>, args: Option<&str>) -> PredicateRow {
+        PredicateRow {
+            name: Some("base.p".into()),
+            template: template.map(str::to_owned),
+            method: method.map(str::to_owned),
+            args: args.map(str::to_owned),
+        }
+    }
+
     #[test]
-    fn a_row_reaching_through_hr_team_or_a_predicate_is_refused() {
-        for reach in ["team", "unit", "unit_tree", "predicate"] {
+    fn a_predicate_row_keeps_its_parsed_template_and_its_arguments() {
+        let (domain, reach) = reach_domain_with(
+            Some("predicate"),
+            None,
+            Some("[('a', '=', 1)]".into()),
+            predicate(
+                Some("[(args.at + 'x', '=', P.partner)]"),
+                None,
+                Some(r#"{"at": "parent_id."}"#),
+            ),
+        )
+        .unwrap();
+        assert_eq!(domain.as_deref(), Some("[('a', '=', 1)]"));
+        let reach = reach.unwrap();
+        assert_eq!(reach.rung, "predicate");
+        let predicate = reach.predicate.unwrap();
+        assert_eq!(predicate.name, "base.p");
+        assert_eq!(predicate.args["at"], "parent_id.");
+        assert!(crate::security::reads_names(&predicate.template));
+    }
+
+    #[test]
+    fn a_predicate_that_is_a_method_or_reads_past_the_template_language_is_refused() {
+        for row in [
+            predicate(None, Some("_access_predicate_graph_reach"), None),
+            predicate(None, None, None),
+            predicate(
+                Some("[('x', '=', P.partner.parent_id.id if P else 0)]"),
+                None,
+                None,
+            ),
+            predicate(Some("[('x', '=', 1)]"), None, Some("[1]")),
+            PredicateRow::default(),
+        ] {
+            assert!(
+                reach_domain_with(Some("predicate"), None, None, row).is_err(),
+                "a predicate the kernel cannot evaluate is refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_reaching_through_hr_team_is_refused() {
+        for reach in ["team", "unit", "unit_tree"] {
             assert!(reach_domain(Some(reach), None, None).is_err(), "{reach}");
             assert!(
                 reach_domain(Some(reach), None, Some("[('a', '=', 1)]".into())).is_err(),

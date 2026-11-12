@@ -409,6 +409,9 @@ async fn reach_domain(
     reach: &crate::registry::Reach,
     user: &UserCtx,
 ) -> Result<Json> {
+    if let Some(predicate) = &reach.predicate {
+        return predicate_domain(model, predicate, db, user).await;
+    }
     let anchor = reach_anchor(model, registry.get(model)?.access_anchors.as_ref(), reach)?;
     let partner = if needs_partner(reach, anchor) {
         Some(access_partner(db, user).await?)
@@ -442,6 +445,93 @@ fn reach_anchor<'a>(
             "{model} declares no anchor {key:?} for reach {}; Python's row admits nothing",
             reach.rung
         )
+    })
+}
+
+/// `ir.access.compile_predicate` for a template: `P.<bind>` is the principal's
+/// bind (`ir.access._bind_value`) and `args.<name>` the row's argument. The
+/// kernel binds what base settles from the user alone; `employees`, `teams` and
+/// `units` are hr's and team's, and Python answers a row reading them.
+async fn predicate_domain(
+    model: &str,
+    predicate: &crate::registry::Predicate,
+    db: &Db<'_>,
+    user: &UserCtx,
+) -> Result<Json> {
+    let mut partner = None;
+    let domain = Box::pin(eval_predicate(
+        &predicate.template,
+        predicate,
+        db,
+        user,
+        &mut partner,
+    ))
+    .await?;
+    if !domain.is_array() {
+        refuse!(
+            "predicate {} on {model} answers {domain}, not a domain",
+            predicate.name
+        );
+    }
+    tracing::trace!(
+        target: "odoo_kernel::rules",
+        %model, predicate = %predicate.name, %domain,
+        "compiled an access row's predicate for the principal"
+    );
+    Ok(domain)
+}
+
+async fn eval_predicate(
+    expr: &PyExpr,
+    predicate: &crate::registry::Predicate,
+    db: &Db<'_>,
+    user: &UserCtx,
+    partner: &mut Option<(i32, i32)>,
+) -> Result<Json> {
+    Ok(match expr {
+        PyExpr::Str(s) => json!(s),
+        PyExpr::Int(i) => json!(i),
+        PyExpr::Float(f) => float_json(*f)?,
+        PyExpr::Bool(b) => json!(b),
+        PyExpr::None => Json::Null,
+        PyExpr::Seq(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(Box::pin(eval_predicate(item, predicate, db, user, partner)).await?);
+            }
+            Json::Array(out)
+        }
+        PyExpr::Add(a, b) => {
+            let a = Box::pin(eval_predicate(a, predicate, db, user, partner)).await?;
+            let b = Box::pin(eval_predicate(b, predicate, db, user, partner)).await?;
+            add_values(a, b)?
+        }
+        PyExpr::Name(chain) => match chain.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+            ["args", name] => predicate.args.get(name).cloned().ok_or_else(|| {
+                refusal!(
+                    "predicate {} reads args.{name}, which its row does not pass",
+                    predicate.name
+                )
+            })?,
+            ["P", "user"] => json!(user.uid),
+            ["P", "companies"] => json!(user.company_ids),
+            ["P", bind @ ("partner" | "commercial_partner")] => {
+                let (own, commercial) = match *partner {
+                    Some(known) => known,
+                    None => *partner.insert(access_partner(db, user).await?),
+                };
+                json!(if bind == "partner" { own } else { commercial })
+            }
+            _ => refuse!(
+                "predicate {} reads {}, which the kernel does not bind",
+                predicate.name,
+                chain.join(".")
+            ),
+        },
+        PyExpr::Ref(xmlid) => refuse!(
+            "predicate {} calls ref({xmlid:?}), which its template cannot",
+            predicate.name
+        ),
     })
 }
 
@@ -1483,6 +1573,7 @@ mod tests {
         crate::registry::Reach {
             rung: rung.into(),
             anchor: anchor.map(str::to_string),
+            predicate: None,
         }
     }
 
