@@ -25,6 +25,7 @@ fn engine_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<cursor::RustConn>()?;
     m.add_class::<cursor::RustCopy>()?;
     m.add_class::<kernel::RustKernel>()?;
+    m.add_function(pyo3::wrap_pyfunction!(cursor::set_json_loads, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(install_shims, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(install_backend, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(export_registry, m)?)?;

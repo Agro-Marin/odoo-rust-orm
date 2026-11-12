@@ -28,6 +28,8 @@ SOURCES = [
 
 SEAMS = [
     ("odoo.db.pool", "ConnectionPool", ["borrow", "give_back"]),
+    ("odoo.db.pool", None, ["_PsycopgPool"]),
+    ("odoo.db.lifecycle", None, ["_load_json"]),
     ("odoo.orm.runtime.registry", "Registry", ["new", "cursor"]),
     (
         "odoo.orm.models.base",
@@ -82,6 +84,8 @@ SEAMS = [
             "_read_group_groupby",
             "_read_group_orderby",
             "_read_group_having",
+            "_read_group_is_masking_many2one",
+            "_read_group_is_many2one_masked",
             "_read_group_postprocess_aggregate",
             "_read_group_postprocess_groupby",
             "search_fetch",

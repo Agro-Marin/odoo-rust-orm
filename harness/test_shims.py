@@ -4486,7 +4486,8 @@ def test_db_shim_kill_switch_follows_active() -> None:
     pool_mod = types.ModuleType("odoo.db.pool")
     life_mod = types.ModuleType("odoo.db.lifecycle")
     reg_mod = types.ModuleType("odoo.db.registry")
-    pool_mod._PsycopgPool = life_mod._PsycopgPool = FakePsycopgPool
+    pool_mod._PsycopgPool = FakePsycopgPool
+    life_mod._load_json = json.loads
     reg_mod.close_db = closed.append
     odoo_mod.db, db_mod.pool, db_mod.lifecycle, db_mod.registry = (
         db_mod,
@@ -4517,8 +4518,8 @@ def test_db_shim_kill_switch_follows_active() -> None:
         check("install closes the armed db's pools once", closed, ["armed"])
         factory = pool_mod._PsycopgPool
         check(
-            "both names are rebound to one object",
-            life_mod._PsycopgPool is factory,
+            "the pool module's name is rebound to the factory",
+            factory is not FakePsycopgPool,
             True,
         )
         check(

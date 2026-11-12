@@ -927,8 +927,12 @@ def set_active(flag):
 
 
 def install():
+    import engine_py
+
     from odoo.db import lifecycle as lifecycle_module
     from odoo.db import pool as pool_module
+
+    engine_py.set_json_loads(lifecycle_module._load_json)
 
     psycopg_pool_class = pool_module._PsycopgPool
 
@@ -947,7 +951,6 @@ def install():
 
     pool_factory.check_connection = psycopg_pool_class.check_connection
     pool_module._PsycopgPool = pool_factory
-    lifecycle_module._PsycopgPool = pool_factory
 
     original_simple_query = getattr(lifecycle_module, "_run_simple_query", None)
 

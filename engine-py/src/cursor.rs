@@ -240,8 +240,24 @@ fn py_json_text(v: &Bound<'_, PyAny>) -> PyResult<String> {
     dt_types(py)?.json_dumps.bind(py).call1((v,))?.extract()
 }
 
+static JSON_LOADS: std::sync::RwLock<Option<Py<PyAny>>> = std::sync::RwLock::new(None);
+
+#[pyfunction]
+pub fn set_json_loads(loads: Py<PyAny>) {
+    *JSON_LOADS.write().unwrap_or_else(|e| e.into_inner()) = Some(loads);
+}
+
 fn json_text_to_py(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
-    Ok(dt_types(py)?.json_loads.bind(py).call1((text,))?.unbind())
+    let configured = JSON_LOADS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|loads| loads.clone_ref(py));
+    let loads = match configured {
+        Some(loads) => loads,
+        None => dt_types(py)?.json_loads.clone_ref(py),
+    };
+    Ok(loads.bind(py).call1((text,))?.unbind())
 }
 
 #[derive(Debug)]
