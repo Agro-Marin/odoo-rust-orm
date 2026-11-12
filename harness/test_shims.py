@@ -2426,7 +2426,7 @@ def test_a_routed_read_group_flushes_no_label_it_does_not_return() -> None:
         _order = "id"
         _fields = {"partner_id": F("many2one", comodel_name="res.partner")}
 
-        def _read_group_masks_many2one(self):
+        def _read_group_is_masking_many2one(self):
             return False
 
     registry = {"res.partner": Partner(), "probe.line": Line()}
@@ -3333,8 +3333,8 @@ def _protocol_members():
     )
     flags = sorted(
         name
-        for name in getattr(StorageBackend, "__annotations__", {})
-        if not name.startswith("_")
+        for name, value in vars(StorageBackend).items()
+        if not name.startswith("_") and isinstance(value, property)
     )
     return methods, flags
 
@@ -3534,8 +3534,8 @@ def test_an_unarmed_port_is_its_delegate() -> None:
         "link_m2m_pairs": (("model", "rel", "c1", "c2", [(1, 2)]), {}),
         "unlink_m2m_pairs": (("model", "rel", "c1", "c2", [(1, 2)]), {}),
         "read_m2m_groups": (("records", "rel", "c1", "c2", "query"), {}),
-        "set_parent_paths": (("model", [1]), {}),
-        "move_parent_paths": (("model", [1], "1/"), {}),
+        "place_parent_paths_and_get_paths": (("model", [1]), {}),
+        "move_parent_paths_and_get_paths": (("model", [1], "1/"), {}),
         "ancestors": (("model", "parent_id", [1]), {}),
         "descendant_edges": (("model", "parent_id", [1]), {}),
         "records_with_parent_changed": (("model", {1: [2]}), {}),

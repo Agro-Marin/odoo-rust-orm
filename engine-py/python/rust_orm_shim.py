@@ -2261,13 +2261,13 @@ def _masked_many2one(model, groupby, aggregates):
     # the fork folds a many2one target the reader cannot read into the empty
     # group (MASK_UNREADABLE_TARGETS, which web_read_group sets): the kernel
     # would name that target, so such a grouping is answered by Python
-    if not model._read_group_masks_many2one():
+    if not model._read_group_is_masking_many2one():
         return None
     specs = [*groupby, *(a.rsplit(":", 1)[0] for a in aggregates if a != "__count")]
     for spec in specs:
         field = model._fields.get(spec.split(":")[0].split(".")[0])
         if field is not None and field.type == "many2one":
-            if model._read_group_many2one_is_masked(field):
+            if model._read_group_is_many2one_masked(field):
                 return f"{field.name}: its unreadable targets are masked"
     return None
 

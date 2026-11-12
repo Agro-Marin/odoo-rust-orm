@@ -33,8 +33,8 @@ PROTOCOL_METHODS = (
     "link_m2m_pairs",
     "unlink_m2m_pairs",
     "read_m2m_groups",
-    "set_parent_paths",
-    "move_parent_paths",
+    "place_parent_paths_and_get_paths",
+    "move_parent_paths_and_get_paths",
     "records_with_parent_changed",
     "timezone_names",
     "count_m2m_groups",
@@ -213,9 +213,9 @@ class RustBackend:
 
     read_m2m_groups = _forward("read_m2m_groups")
 
-    set_parent_paths = _forward("set_parent_paths")
+    place_parent_paths_and_get_paths = _forward("place_parent_paths_and_get_paths")
 
-    move_parent_paths = _forward("move_parent_paths")
+    move_parent_paths_and_get_paths = _forward("move_parent_paths_and_get_paths")
 
     records_with_parent_changed = _forward("records_with_parent_changed")
 

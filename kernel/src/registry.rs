@@ -401,7 +401,7 @@ pub struct Security {
     pub user_groups: HashMap<i32, Vec<i32>>,
 
     /// The groups holding a read permission on the model whose domain is not
-    /// literally FALSE: holding one is what `_access_allowed` asks.
+    /// literally FALSE: holding one is what `_access_is_model_allowed` asks.
     pub access: HashMap<String, Vec<i32>>,
 
     /// Read guards whose domain is literally FALSE: `None` binds everyone,
