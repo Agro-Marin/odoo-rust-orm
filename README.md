@@ -476,7 +476,7 @@ thing it exists for. About 15 minutes; it drops its four databases.
 
 `harness/gate.sh` is the one command for after a sync, or for a timer: it
 builds and tests the crates, deploys the extension into the venv, creates the
-probe database (`--build mail,contacts`) and the ORM-lane database, runs the
+probe database (`--build mail,partner`) and the ORM-lane database, runs the
 battery with the ORM lane, drops both, and leaves `summary.txt` with the five
 repositories' tips under `~/.cache/rustorm-gate/<stamp>/`. Exit 0 only when
 everything passed. There is no CI here, and the fork's cursor contract moved

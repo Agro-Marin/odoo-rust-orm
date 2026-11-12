@@ -68,7 +68,7 @@ with psycopg.connect(dsn_for(sys.argv[2]), connect_timeout=10):
 PY
   then
     echo "verify: cannot connect to '$DB' using the configured PostgreSQL endpoint; see $OUT/database_check.log." >&2
-    echo "For a new database, pass --build mail,contacts." >&2
+    echo "For a new database, pass --build mail,partner." >&2
     exit 2
   fi
 fi

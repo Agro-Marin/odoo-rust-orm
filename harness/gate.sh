@@ -78,7 +78,7 @@ ODOO_ALLOW_TEST_MODULES=1 "$PY" "$ODOO/odoo-bin" -c "$CONF" -d "$ORMT" \
 step "create $ORMT" $?
 
 RUSTORM_VERIFY_OUT="$OUT/verify" RUSTORM_DB="$PROBE" RUSTORM_ORM_TEST_DB="$ORMT" \
-  bash "$ROOT/harness/verify.sh" --build mail,contacts $QUICK > "$OUT/verify.out" 2>&1
+  bash "$ROOT/harness/verify.sh" --build mail,partner $QUICK > "$OUT/verify.out" 2>&1
 rc=$?
 cat "$OUT/verify.out" >> "$SUMMARY"
 step "verify.sh" $rc

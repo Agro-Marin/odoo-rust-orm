@@ -23,15 +23,33 @@ fn refuse_column(field: &Field) -> Option<String> {
     None
 }
 
+// The Python backend's translated UPDATE (odoo/orm/runtime/_backend_pg_write.py):
+// a column still NULL takes the written language's text as its en_US source and
+// records base 1.288's echo marker `_echo:<lang>`; the marker goes once the two
+// texts differ, or when the language written is en_US (settled_translation_echo).
 fn assignment(table: &str, field: &Field, expr: &str) -> String {
     let column = ident(&field.name);
     if field.translate_whole {
+        let merged = format!(
+            "COALESCE({table}.{column}, jsonb_build_object(
+                'en_US', jsonb_path_query_first({expr}, '$.*'),
+                '_echo:' || (jsonb_path_query_first({expr}, '$.keyvalue().key') #>> '{{}}'), ''
+            )) || {expr}"
+        );
         format!(
-            "{column} = CASE WHEN {expr} IS NULL THEN NULL ELSE
-                        COALESCE({table}.{column}, jsonb_build_object(
-                            'en_US', jsonb_path_query_first({expr}, '$.*')
-                        )) || {expr}
-                    END"
+            "{column} = CASE WHEN {expr} IS NULL THEN NULL ELSE (SELECT CASE
+                    WHEN echo.lang IS NOT NULL AND (
+                        echo.lang = 'en_US'
+                        OR held.value ->> echo.lang IS DISTINCT FROM held.value ->> 'en_US'
+                    )
+                    THEN held.value - ('_echo:' || echo.lang)
+                    ELSE held.value
+                END
+                FROM (SELECT {merged} AS value) AS held
+                LEFT JOIN LATERAL (
+                    SELECT substr(key, 7) AS lang FROM jsonb_object_keys(held.value) AS key
+                    WHERE left(key, 6) = '_echo:' LIMIT 1
+                ) AS echo ON TRUE) END"
         )
     } else {
         format!("{column} = {expr}")
@@ -39,7 +57,7 @@ fn assignment(table: &str, field: &Field, expr: &str) -> String {
 }
 
 pub fn value_repeats(field: &Field) -> usize {
-    if field.translate_whole { 3 } else { 1 }
+    if field.translate_whole { 4 } else { 1 }
 }
 
 pub fn update_rows_sql(

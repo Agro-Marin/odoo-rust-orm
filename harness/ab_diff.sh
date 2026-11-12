@@ -21,7 +21,7 @@ PY="${RUSTORM_PYTHON:-$WORKSPACE/p314o19m/bin/python}"
 CONF="${RUSTORM_ODOO_CONF:-$WORKSPACE/p314o19m.conf}"
 PREFIX="${RUSTORM_AB_PREFIX:-rustorm_ab}"
 OUT="${RUSTORM_AB_OUT:-$(mktemp -d -t rustorm-ab-XXXXXX)}"
-MODULES="base,mail,contacts,account,sale,purchase,stock,crm,project,calendar"
+MODULES="base,mail,partner,account,sale,purchase,stock,crm,project,calendar"
 KEEP=0
 while [ $# -gt 0 ]; do
   case "$1" in
