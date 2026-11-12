@@ -23,6 +23,7 @@ import odoo
 from odoo.modules.registry import Registry
 
 EXPORT = os.environ.get("RUSTORM_EXPORT")
+TYPE_MODEL = "mail.work.item.type"
 if not EXPORT or not pathlib.Path(EXPORT).exists():
     print("LOAD SKIP: set RUSTORM_EXPORT to a registry export")
     sys.exit(3)
@@ -171,7 +172,12 @@ with registry.cursor() as cr:
             cr.rollback()
     print("LOAD empty list params: %s" % ("ok" if empty_ok else "WRONG"))
     ok = ok and empty_ok
-    if "mail.template" in e.registry and "mail.activity.type" in e.registry:
+    if "mail.template" in e.registry and TYPE_MODEL not in e.registry:
+        print(
+            "LOAD read active_test=False: WRONG (%s is gone from the fork)" % TYPE_MODEL
+        )
+        ok = False
+    elif "mail.template" in e.registry:
         with cr.savepoint() as sp:
             model_id = e["ir.model"]._get_id("res.partner")
             Tmpl = e["mail.template"]
@@ -179,7 +185,7 @@ with registry.cursor() as cr:
             gone = Tmpl.create(
                 {"name": "LOAD gone", "model_id": model_id, "active": False}
             )
-            atype = e["mail.activity.type"].create(
+            atype = e[TYPE_MODEL].create(
                 {"name": "LOAD probe", "mail_template_ids": [(6, 0, (keep + gone).ids)]}
             )
             before = dict(orm_shim.stats())
@@ -195,7 +201,7 @@ with registry.cursor() as cr:
             own_gate = [
                 (m, meth, why)
                 for (m, meth, why) in orm_shim.GATE_REASONS
-                if m == "mail.activity.type"
+                if m == TYPE_MODEL
                 and why != "mail_template_ids written in this transaction"
             ]
             routed_after = after["kernel"] - mid_["kernel"]
@@ -213,7 +219,7 @@ with registry.cursor() as cr:
             gates = [
                 (meth, why, n)
                 for (m, meth, why), n in orm_shim.GATE_REASONS.items()
-                if m == "mail.activity.type"
+                if m == TYPE_MODEL
             ]
             print(
                 "LOAD read active_test=False: %s (cached %s then %s of %s, routed=%d, refused=%d%s%s)"
@@ -227,8 +233,7 @@ with registry.cursor() as cr:
                     "; the model is gated on its own: %s" % own_gate[0][2]
                     if own_gate and routed_after == 0
                     else "",
-                    "; kernel: %s"
-                    % orm_shim.STATS["errors"].get("mail.activity.type", "")[:100]
+                    "; kernel: %s" % orm_shim.STATS["errors"].get(TYPE_MODEL, "")[:100]
                     if refused_after
                     else "",
                 )

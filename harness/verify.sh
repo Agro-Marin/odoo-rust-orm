@@ -459,9 +459,14 @@ if [ -f "$ROOT/target/release/libengine_py.so" ]; then
     else
       stage "write differential" FAIL "$(grep -aE '^ *MISMATCH|^ *NOT NATIVE|^WRITE DIFF' "$OUT/write_diff.log" | tail -1 | cut -c1-90)"
     fi
-    RUSTORM_WRITE_DIFF_LEG=armed RUSTORM_WRITE_DIFF_FAULT=1 RUSTORM_WRITE_DIFF_MODELS=res.partner \
-      RUSTORM_WRITE_DIFF_OUT="$OUT/write_diff_fault.json" \
-      PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/write_diff.py" > "$OUT/write_diff_fault.log" 2>&1; rc=$?
+    fault_model=$("$PY" "$ROOT/harness/write_diff_fault_model.py" "$OUT/write_diff_control.json" 2>&1); rc=$?
+    if [ "$rc" = 0 ]; then
+      RUSTORM_WRITE_DIFF_LEG=armed RUSTORM_WRITE_DIFF_FAULT=1 RUSTORM_WRITE_DIFF_MODELS="$fault_model" \
+        RUSTORM_WRITE_DIFF_OUT="$OUT/write_diff_fault.json" \
+        PYTHONPATH="$PYMOD" shell_script "$ROOT/harness/write_diff.py" > "$OUT/write_diff_fault.log" 2>&1; rc=$?
+    else
+      echo "WRITE DIFF positive control: $fault_model" > "$OUT/write_diff_fault_compare.log"
+    fi
     if [ "$rc" = 0 ] && "$PY" "$ROOT/harness/write_diff_compare.py" "$OUT/write_diff_fault.json" \
         "$OUT/write_diff_control.json" --expect-fault > "$OUT/write_diff_fault_compare.log" 2>&1; then
       stage "write diff control" OK "$(grep -a 'positive control' "$OUT/write_diff_fault_compare.log" | head -1 | cut -c29-90)"

@@ -162,13 +162,13 @@ for index, (got, want) in enumerate(zip(native_rows, python_rows, strict=False))
                 "row %d column %s: native %r python %r" % (index, col, a, b)
             )
 
-MERGE_MODEL = "mail.activity.type"
+MERGE_MODEL = "mail.work.item.type"
 MERGE_FIELD = "summary"
 if MERGE_MODEL not in env:  # noqa: F821
-    print(
-        "WRITE NOTE: %s is not installed here; the merge is unexercised" % MERGE_MODEL
+    failures.append(
+        "%s is not in this registry, so the translated merge is unexercised"
+        % MERGE_MODEL
     )
-    failures.append("no translated model on this database to exercise the merge")
 else:
     Merge = env[MERGE_MODEL]  # noqa: F821
     field = Merge._fields[MERGE_FIELD]

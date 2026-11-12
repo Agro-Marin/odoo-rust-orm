@@ -78,8 +78,8 @@ def test_numeric_domain_leaf_sentinels(term, expected):
 
 @pytest.mark.parametrize("value", ["USA", "é日語", 123])
 def test_char_search_values_are_not_storage_values(value):
-    from odoo.orm.fields import Char
     from odoo.libs.accel_units import orm_fields_textual
+    from odoo.orm.fields import Char
 
     field = Char()
     field.size = 2
@@ -94,7 +94,12 @@ def test_char_search_values_are_not_storage_values(value):
         inequality,
     )
     assert stored == str(value)[:2]
-    assert compared == inequality == orm_fields_textual.get_string_comparand(value) == str(value)
+    assert (
+        compared
+        == inequality
+        == orm_fields_textual.get_string_comparand(value)
+        == str(value)
+    )
 
 
 @pytest.mark.parametrize(

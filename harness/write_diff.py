@@ -523,7 +523,11 @@ def create_or_minimal(model, fields, bases, vals_list):
         minimal = [
             dict(
                 bases[i],
-                **{f.name: v[f.name] for f in fields if f.required and f.name in v},
+                **{
+                    f.name: v[f.name]
+                    for f in fields
+                    if f.required and f.default is None and f.name in v
+                },
             )
             for i, v in enumerate(vals_list)
         ]
