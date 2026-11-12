@@ -1023,7 +1023,21 @@ impl<'a> Orm<'a> {
             select.expr(expr);
             agg_kinds.push(kind);
         }
-        if let Some(having) = having_condition(&req.having, &aggregate_of)? {
+        let false_is_absent = |agg: &str| -> Result<bool> {
+            if agg == "__count" {
+                return Ok(true);
+            }
+            let (fname, func) = agg
+                .rsplit_once(':')
+                .ok_or_else(|| refusal!("bad aggregate spec {agg}"))?;
+            let f = model
+                .fields
+                .get(fname)
+                .ok_or_else(|| refusal!("unknown aggregate field {fname}"))?;
+            Ok(!matches!(func, "bool_and" | "bool_or")
+                && !(f.ttype == FieldType::Boolean && matches!(func, "any_value" | "max" | "min")))
+        };
+        if let Some(having) = having_condition(&req.having, &aggregate_of, &false_is_absent)? {
             select.and_having(having);
         }
 
@@ -1303,9 +1317,14 @@ impl<'a> Orm<'a> {
     }
 }
 
-fn having_condition<F, K>(having: &Json, aggregate_of: &F) -> Result<Option<Expr>>
+fn having_condition<F, K, N>(
+    having: &Json,
+    aggregate_of: &F,
+    false_is_absent: &N,
+) -> Result<Option<Expr>>
 where
     F: Fn(&str) -> Result<(Expr, K)>,
+    N: Fn(&str) -> Result<bool>,
 {
     let items = match having {
         Json::Null => return Ok(None),
@@ -1340,22 +1359,60 @@ where
                     .ok_or_else(|| refusal!("having operator must be a string: {}", triple[1]))?;
                 let (left, _kind) = aggregate_of(spec)?;
                 let right = &triple[2];
+                let is_absent = |value: &Json| -> Result<bool> {
+                    Ok(match value {
+                        Json::Null => true,
+                        Json::Bool(false) => false_is_absent(spec)?,
+                        _ => false,
+                    })
+                };
                 let expr = match operator {
                     "in" | "not in" => {
-                        let values: Vec<Expr> = match right {
-                            Json::Array(values) => {
-                                values.iter().map(having_value).collect::<Result<_>>()?
-                            }
-                            scalar => vec![having_value(scalar)?],
+                        let values: Vec<&Json> = match right {
+                            Json::Array(values) => values.iter().collect(),
+                            scalar => vec![scalar],
                         };
-                        if values.is_empty() {
-                            Expr::cust(if operator == "in" { "FALSE" } else { "TRUE" })
-                        } else if operator == "in" {
-                            left.is_in(values)
-                        } else {
-                            left.is_not_in(values)
+                        let mut present = Vec::new();
+                        let mut absent = false;
+                        for value in values {
+                            if is_absent(value)? {
+                                absent = true;
+                            } else {
+                                present.push(having_value(value)?);
+                            }
+                        }
+                        let inn = operator == "in";
+                        let mut terms = Vec::new();
+                        if !present.is_empty() {
+                            terms.push(if inn {
+                                left.clone().is_in(present)
+                            } else {
+                                left.clone().is_not_in(present)
+                            });
+                        }
+                        if absent {
+                            terms.push(if inn {
+                                left.is_null()
+                            } else {
+                                left.is_not_null()
+                            });
+                        }
+                        match terms.len() {
+                            0 => Expr::cust(if inn { "FALSE" } else { "TRUE" }),
+                            1 => terms.pop().expect("one term"),
+                            _ => {
+                                let b = terms.pop().expect("two terms");
+                                let a = terms.pop().expect("two terms");
+                                if inn { a.or(b) } else { a.and(b) }
+                            }
                         }
                     }
+                    "=" if is_absent(right)? => left.is_null(),
+                    "!=" if is_absent(right)? => left.is_not_null(),
+                    _ if is_absent(right)? => refuse!(
+                        "having {spec} {operator} {right}: an aggregate without a value \
+                         compares with = and != only"
+                    ),
                     "=" => left.eq(having_value(right)?),
                     "!=" => left.ne(having_value(right)?),
                     "<" => left.lt(having_value(right)?),
@@ -1403,20 +1460,25 @@ mod tests {
                 match spec {
                     "__count" => Expr::cust("COUNT(*)"),
                     "value:sum" => Expr::cust("(SUM(\"t\".\"value\"))::float8"),
+                    "partner_id:max" => Expr::cust("MAX(\"t\".\"partner_id\")"),
+                    "flag:bool_or" => Expr::cust("BOOL_OR(\"t\".\"flag\")"),
                     other => anyhow::bail!("unknown {other}"),
                 },
                 (),
             ))
         };
-        Ok(having_condition(&having, &aggregate_of)?.map(|expr| {
-            let mut select = Query::select();
-            select
-                .expr(Expr::cust("1"))
-                .from(sea_query::Alias::new("t"));
-            select.add_group_by([Expr::cust("1")]);
-            select.and_having(expr);
-            select.to_string(PostgresQueryBuilder)
-        }))
+        let false_is_absent = |spec: &str| -> anyhow::Result<bool> { Ok(spec != "flag:bool_or") };
+        Ok(
+            having_condition(&having, &aggregate_of, &false_is_absent)?.map(|expr| {
+                let mut select = Query::select();
+                select
+                    .expr(Expr::cust("1"))
+                    .from(sea_query::Alias::new("t"));
+                select.add_group_by([Expr::cust("1")]);
+                select.and_having(expr);
+                select.to_string(PostgresQueryBuilder)
+            }),
+        )
     }
 
     #[test]
@@ -1475,6 +1537,46 @@ mod tests {
         assert!(having_sql(json!(["nope"])).is_err());
         assert!(having_sql(json!([["nope:sum", ">", 1]])).is_err());
         assert!(having_sql(json!([["__count", ">", null]])).is_err());
+        assert!(having_sql(json!([["partner_id:max", "<", false]])).is_err());
+    }
+
+    #[test]
+    fn a_value_python_reads_as_absent_compiles_to_a_null_test() {
+        let sql = |having| {
+            let sql: String = having_sql(having).unwrap().unwrap();
+            sql.replace(['(', ')'], "")
+        };
+        let cases = [
+            (
+                json!([["partner_id:max", "=", false]]),
+                "HAVING MAX\"t\".\"partner_id\" IS NULL",
+            ),
+            (
+                json!([["partner_id:max", "!=", null]]),
+                "HAVING MAX\"t\".\"partner_id\" IS NOT NULL",
+            ),
+            (
+                json!([["partner_id:max", "in", [false, 7]]]),
+                "HAVING MAX\"t\".\"partner_id\" IN CAST7 AS int8 OR MAX\"t\".\"partner_id\" IS NULL",
+            ),
+            (
+                json!([["partner_id:max", "not in", [null, 7]]]),
+                "HAVING MAX\"t\".\"partner_id\" NOT IN CAST7 AS int8 AND MAX\"t\".\"partner_id\" IS NOT NULL",
+            ),
+            (
+                json!([["partner_id:max", "in", [false]]]),
+                "HAVING MAX\"t\".\"partner_id\" IS NULL",
+            ),
+            (json!([["__count", "=", false]]), "HAVING COUNT* IS NULL"),
+            (
+                json!([["flag:bool_or", "=", false]]),
+                "HAVING BOOL_OR\"t\".\"flag\" = FALSE",
+            ),
+        ];
+        for (having, want) in cases {
+            let got = sql(having);
+            assert!(got.ends_with(want), "{got}\n wants the tail {want}");
+        }
     }
 
     #[test]
