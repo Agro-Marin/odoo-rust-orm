@@ -614,7 +614,9 @@ impl<'a> Compiler<'a> {
         for (model, field) in self.rules.reads_of(&self.model.name) {
             self.ctx.touch(model, field);
         }
-        self.as_sudo().compile(node)
+        self.as_sudo()
+            .compile(node)
+            .with_context(|| format!("record rules on {}", self.model.name))
     }
 
     const MAX_DEPTH: usize = 32;
