@@ -15,4 +15,11 @@ fn main() {
         "cargo:rustc-env=ENGINE_PY_PROFILE={}",
         std::env::var("PROFILE").expect("PROFILE")
     );
+    // The unit-test binary and the probe tools embed the interpreter pyo3 built
+    // against; without a run path they load whichever libpython of the same
+    // name the system resolves first, another release with another stdlib.
+    // Loaded into that same interpreter, the extension finds it either way.
+    if let Some(lib_dir) = pyo3_build_config::get().lib_dir() {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{lib_dir}");
+    }
 }

@@ -4687,7 +4687,7 @@ where Python's SQL gets an index-only scan. The kernel now writes what
 
 After them, at the same tree, the whole battery is green. The fuzz passes 3 of 3 seeds. The registry sweep compares 19,209 shapes and routes 17,367 of them. The native search answers 4,644 cases and all 4,644 match. The ORM test modules fail 0 of 2,313 tests in both legs, with 931 calls routed. Byte parity diverges on 0 of 1,341 cases. The soak serves 1,833 req/s on 8 threads.
 
-`cargo test` in `gate.sh` cannot run on a venv whose interpreter is a python-build-standalone build: its `_ctypes` is linked into the executable, so a test binary embedding its `libpython` cannot import psycopg. The engine itself builds and installs.
+A binary that embeds Python (the unit tests, the probe tools) loads the `libpython` pyo3 built against through the run path `engine-py/build.rs` writes; without it the loader took the distribution's `libpython3.14.so.1.0`, another release, whose stdlib lacked `_ctypes` here (2026-11-11).
 
 ## The performance gate: routed must be at least as fast as Python
 

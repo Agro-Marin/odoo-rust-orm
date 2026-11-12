@@ -29,16 +29,16 @@
       ],
       "shape": "values",
       "rows": 1,
-      "sql": " UPDATE \"res_partner\"\n                SET \"title\" = CASE WHEN \"__tmp\".\"title\"::JSONB IS NULL THEN NULL ELSE\n                        COALESCE(\"res_partner\".\"title\", jsonb_build_object(\n                            'en_US', jsonb_path_query_first(\"__tmp\".\"title\"::JSONB, '$.*')\n                        )) || \"__tmp\".\"title\"::JSONB\n                    END\n                FROM (VALUES (%s, %s)) AS \"__tmp\"(\"id\", \"title\")\n                WHERE \"res_partner\".\"id\" = \"__tmp\".\"id\"\n            "
+      "sql": " UPDATE \"res_partner\"\n                SET \"title\" = CASE WHEN \"__tmp\".\"title\"::JSONB IS NULL THEN NULL ELSE (SELECT CASE\n                WHEN echo.lang IS NOT NULL AND (\n                    echo.lang = 'en_US'\n                    OR held.value ->> echo.lang IS DISTINCT FROM held.value ->> 'en_US'\n                )\n                THEN held.value - ('_echo:' || echo.lang)\n                ELSE held.value\n            END\n            FROM (SELECT COALESCE(\"res_partner\".\"title\", jsonb_build_object(\n                        'en_US', jsonb_path_query_first(\"__tmp\".\"title\"::JSONB, '$.*'),\n                        '_echo:' || (\n                            jsonb_path_query_first(\"__tmp\".\"title\"::JSONB, '$.keyvalue().key') #>> '{}'\n                        ), ''\n                    )) || \"__tmp\".\"title\"::JSONB AS value) AS held\n            LEFT JOIN LATERAL (\n                SELECT substr(key, 7) AS lang FROM jsonb_object_keys(held.value) AS key\n                WHERE left(key, 6) = '_echo:' LIMIT 1\n            ) AS echo ON TRUE) END\n                FROM (VALUES (%s, %s)) AS \"__tmp\"(\"id\", \"title\")\n                WHERE \"res_partner\".\"id\" = \"__tmp\".\"id\"\n            "
     },
     {
-      "name": "uniform, a whole-value translated column binds its value three times",
+      "name": "uniform, a whole-value translated column binds its value four times",
       "fields": [
         "title"
       ],
       "shape": "uniform",
       "rows": 2,
-      "sql": "UPDATE \"res_partner\" SET \"title\" = CASE WHEN %s::JSONB IS NULL THEN NULL ELSE\n                        COALESCE(\"res_partner\".\"title\", jsonb_build_object(\n                            'en_US', jsonb_path_query_first(%s::JSONB, '$.*')\n                        )) || %s::JSONB\n                    END WHERE \"id\" = ANY(%s)"
+      "sql": "UPDATE \"res_partner\" SET \"title\" = CASE WHEN %s::JSONB IS NULL THEN NULL ELSE (SELECT CASE\n                WHEN echo.lang IS NOT NULL AND (\n                    echo.lang = 'en_US'\n                    OR held.value ->> echo.lang IS DISTINCT FROM held.value ->> 'en_US'\n                )\n                THEN held.value - ('_echo:' || echo.lang)\n                ELSE held.value\n            END\n            FROM (SELECT COALESCE(\"res_partner\".\"title\", jsonb_build_object(\n                        'en_US', jsonb_path_query_first(%s::JSONB, '$.*'),\n                        '_echo:' || (\n                            jsonb_path_query_first(%s::JSONB, '$.keyvalue().key') #>> '{}'\n                        ), ''\n                    )) || %s::JSONB AS value) AS held\n            LEFT JOIN LATERAL (\n                SELECT substr(key, 7) AS lang FROM jsonb_object_keys(held.value) AS key\n                WHERE left(key, 6) = '_echo:' LIMIT 1\n            ) AS echo ON TRUE) END WHERE \"id\" = ANY(%s)"
     },
     {
       "name": "uniform, a term-translated column is replaced whole",

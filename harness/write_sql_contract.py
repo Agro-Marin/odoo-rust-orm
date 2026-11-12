@@ -26,6 +26,13 @@ class _Cursor:
     def execute(self, sql):
         self.seen.append((sql.code, sql.params))
 
+    def execute_counted(self, sql):
+        self.execute(sql)
+        return lambda: 0
+
+    def after_pipeline(self, check):
+        pass
+
     def fetchall(self):
         return []
 

@@ -29,31 +29,33 @@ fn refuse_column(field: &Field) -> Option<String> {
 // texts differ, or when the language written is en_US (settled_translation_echo).
 fn assignment(table: &str, field: &Field, expr: &str) -> String {
     let column = ident(&field.name);
-    if field.translate_whole {
-        let merged = format!(
-            "COALESCE({table}.{column}, jsonb_build_object(
-                'en_US', jsonb_path_query_first({expr}, '$.*'),
-                '_echo:' || (jsonb_path_query_first({expr}, '$.keyvalue().key') #>> '{{}}'), ''
-            )) || {expr}"
-        );
-        format!(
-            "{column} = CASE WHEN {expr} IS NULL THEN NULL ELSE (SELECT CASE
-                    WHEN echo.lang IS NOT NULL AND (
-                        echo.lang = 'en_US'
-                        OR held.value ->> echo.lang IS DISTINCT FROM held.value ->> 'en_US'
-                    )
-                    THEN held.value - ('_echo:' || echo.lang)
-                    ELSE held.value
-                END
-                FROM (SELECT {merged} AS value) AS held
-                LEFT JOIN LATERAL (
-                    SELECT substr(key, 7) AS lang FROM jsonb_object_keys(held.value) AS key
-                    WHERE left(key, 6) = '_echo:' LIMIT 1
-                ) AS echo ON TRUE) END"
-        )
-    } else {
-        format!("{column} = {expr}")
+    if !field.translate_whole {
+        return format!("{column} = {expr}");
     }
+    // byte for byte what the fork's backend sends (harness/write_sql_contract.json)
+    let merged = format!(
+        "COALESCE({table}.{column}, jsonb_build_object(
+                        'en_US', jsonb_path_query_first({expr}, '$.*'),
+                        '_echo:' || (
+                            jsonb_path_query_first({expr}, '$.keyvalue().key') #>> '{{}}'
+                        ), ''
+                    )) || {expr}"
+    );
+    format!(
+        "{column} = CASE WHEN {expr} IS NULL THEN NULL ELSE (SELECT CASE
+                WHEN echo.lang IS NOT NULL AND (
+                    echo.lang = 'en_US'
+                    OR held.value ->> echo.lang IS DISTINCT FROM held.value ->> 'en_US'
+                )
+                THEN held.value - ('_echo:' || echo.lang)
+                ELSE held.value
+            END
+            FROM (SELECT {merged} AS value) AS held
+            LEFT JOIN LATERAL (
+                SELECT substr(key, 7) AS lang FROM jsonb_object_keys(held.value) AS key
+                WHERE left(key, 6) = '_echo:' LIMIT 1
+            ) AS echo ON TRUE) END"
+    )
 }
 
 pub fn value_repeats(field: &Field) -> usize {

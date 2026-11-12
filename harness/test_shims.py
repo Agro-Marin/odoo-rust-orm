@@ -3793,6 +3793,10 @@ class _InsertCursor:
     def execute(self, sql, params=None) -> None:
         self.executed.append((sql, params))
 
+    def execute_counted(self, sql, params=None):
+        self.execute(sql, params)
+        return lambda: 0
+
     def fetchall(self):
         return []
 
@@ -4643,8 +4647,15 @@ def test_the_uniform_update_rule_is_the_forks_own() -> None:
     try:
         check("no second copy of the rule", hasattr(backend, "_uniform_values"), False)
         cr = _InsertCursor()
-        backend._update_rows_native(_InsertModel(cr), ("name",), [(1, "a"), (2, "a")])
+        expected = []
+        backend._update_rows_native(
+            _InsertModel(cr),
+            ("name",),
+            [(1, "a"), (2, "a")],
+            lambda _model, ids, matched: expected.append((ids, matched())),
+        )
         check("the fork's rule decided the update", bool(seen), True)
+        check("the rows it matched are checked", expected, [([1, 2], 0)])
         check("one uniform UPDATE", cr.executed, [("UPDATE", ["a", [1, 2]])])
     finally:
         backend.KERNEL_FOR = None

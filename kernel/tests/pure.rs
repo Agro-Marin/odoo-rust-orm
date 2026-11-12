@@ -3953,12 +3953,12 @@ fn an_insert_naming_a_column_this_registry_lacks_is_refused() {
 }
 
 #[test]
-fn a_whole_value_translated_column_binds_its_value_three_times() {
+fn a_whole_value_translated_column_binds_its_value_four_times() {
     let reg = write_registry();
     let m = reg.get("res.partner").unwrap();
     assert_eq!(
         odoo_kernel::write::value_repeats(m.fields.get("title").unwrap()),
-        3
+        4
     );
     assert_eq!(
         odoo_kernel::write::value_repeats(m.fields.get("body").unwrap()),
