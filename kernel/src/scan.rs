@@ -940,6 +940,12 @@ impl<'a> Orm<'a> {
                         Expr::cust_with_exprs("NULLIF($1, '')", [base])
                     } else if gb.field.ttype == FieldType::Boolean {
                         Expr::cust_with_exprs("COALESCE($1, FALSE)", [base])
+                    } else if gb
+                        .field
+                        .falsy_json()
+                        .is_some_and(|falsy| falsy.as_f64() == Some(0.0))
+                    {
+                        Expr::cust_with_exprs("COALESCE($1, 0)", [base])
                     } else {
                         base
                     }
