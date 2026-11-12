@@ -828,6 +828,10 @@ impl<'a> Orm<'a> {
             let Some(model) = self.registry.lookup(&model_name) else {
                 continue;
             };
+            if let Some(why) = self.restricting_tree_member(model, &user).await? {
+                rules.mark_unevaluated(model_name, why);
+                continue;
+            }
             if let Ok(mut touched) = ctx.touched.lock() {
                 touched.clear();
             }
@@ -908,6 +912,59 @@ impl<'a> Orm<'a> {
         self.caches.rule_cache.lock().await.insert(key, arc.clone());
         self.caches.evict(&security_signals).await;
         Ok(arc)
+    }
+
+    /// A table-inheritance root is also guarded by each kind whose access the
+    /// principal does not hold whole (`_access_tree_member_guards`): a root row
+    /// whose kind row the kind's rules hide is hidden. The kernel does not
+    /// compile that guard, so it refuses the root for a principal some kind
+    /// restricts, rather than reading the root's rows past the kinds' rules.
+    async fn restricting_tree_member(
+        &self,
+        model: &crate::registry::Model,
+        user: &UserCtx,
+    ) -> Result<Option<String>> {
+        if model.table_inheritance_root.as_deref() != Some(model.table.as_str()) {
+            return Ok(None);
+        }
+        let mut kinds: Vec<&str> = self
+            .registry
+            .models
+            .values()
+            .filter(|kind| {
+                kind.name != model.name
+                    && kind.table != model.table
+                    && kind.table_inheritance_root.as_deref() == Some(model.table.as_str())
+            })
+            .map(|kind| kind.name.as_str())
+            .collect();
+        kinds.sort_unstable();
+        for kind in kinds {
+            match security::rules_domain(self.registry, &self.db, kind, user).await {
+                Ok(None) => {}
+                Ok(Some(_)) => {
+                    return Ok(Some(format!(
+                        "the kind {kind} restricts uid {} beyond {}'s own rows, and the \
+                         guard of a table-inheritance root over its kinds is compiled in \
+                         Python",
+                        user.uid, model.name
+                    )));
+                }
+                Err(e)
+                    if e.downcast_ref::<tokio_postgres::Error>().is_some()
+                        || crate::error::needs_round_trip(&e) =>
+                {
+                    return Err(e);
+                }
+                Err(e) => {
+                    return Ok(Some(format!(
+                        "the rules of the kind {kind} of {} could not be evaluated ({e:#})",
+                        model.name
+                    )));
+                }
+            }
+        }
+        Ok(None)
     }
 
     fn reachable_seeds(&self, req: &Request, env: &Env) -> Result<Vec<String>> {
