@@ -9,7 +9,7 @@ use tokio_postgres::Client;
 use tracing::Instrument;
 
 use crate::db::Db;
-use crate::domain::{self};
+use crate::domain::{self, Node};
 use crate::registry::{FieldType, Model, Registry, SignalChange};
 use crate::security::{self, RuleSet, UserCtx};
 use crate::sqlgen::{Compiler, ExprCtx, col};
@@ -828,10 +828,13 @@ impl<'a> Orm<'a> {
             let Some(model) = self.registry.lookup(&model_name) else {
                 continue;
             };
-            if let Some(why) = self.restricting_tree_member(model, &user).await? {
-                rules.mark_unevaluated(model_name, why);
-                continue;
-            }
+            let kind_guards = match self.kind_guards(&ctx, model, &user, &mut memo).await? {
+                Ok(guards) => guards,
+                Err(why) => {
+                    rules.mark_unevaluated(model_name, why);
+                    continue;
+                }
+            };
             if let Ok(mut touched) = ctx.touched.lock() {
                 touched.clear();
             }
@@ -850,6 +853,14 @@ impl<'a> Orm<'a> {
                     Ok(None) => Ok(None),
                     Err(e) => Err(e),
                 };
+            let built = match built {
+                Ok(own) if !kind_guards.is_empty() => {
+                    let mut all: Vec<Node> = own.into_iter().collect();
+                    all.extend(kind_guards);
+                    Ok(Some(Node::And(all)))
+                }
+                other => other,
+            };
             match built {
                 Ok(Some(node)) => {
                     let reached = self.comodels_of_with(&ctx, model, &node);
@@ -916,18 +927,20 @@ impl<'a> Orm<'a> {
 
     /// A table-inheritance root is also guarded by each kind whose access the
     /// principal does not hold whole (`_access_tree_member_guards`): a root row
-    /// whose kind row the kind's rules hide is hidden. The kernel does not
-    /// compile that guard, so it refuses the root for a principal some kind
-    /// restricts, rather than reading the root's rows past the kinds' rules.
-    async fn restricting_tree_member(
+    /// whose kind row the kind's rules hide is hidden. One `KIND_GUARD` leaf per
+    /// such kind, carrying its rule domain; `Err` names a kind whose rules the
+    /// kernel cannot evaluate, and the root is refused with it.
+    async fn kind_guards(
         &self,
+        ctx: &ExprCtx<'_>,
         model: &crate::registry::Model,
         user: &UserCtx,
-    ) -> Result<Option<String>> {
+        memo: &mut HierMemo,
+    ) -> Result<std::result::Result<Vec<Node>, String>> {
         if model.table_inheritance_root.as_deref() != Some(model.table.as_str()) {
-            return Ok(None);
+            return Ok(Ok(Vec::new()));
         }
-        let mut kinds: Vec<&str> = self
+        let mut kinds: Vec<&crate::registry::Model> = self
             .registry
             .models
             .values()
@@ -936,35 +949,50 @@ impl<'a> Orm<'a> {
                     && kind.table != model.table
                     && kind.table_inheritance_root.as_deref() == Some(model.table.as_str())
             })
-            .map(|kind| kind.name.as_str())
             .collect();
-        kinds.sort_unstable();
+        kinds.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        let mut guards = Vec::new();
         for kind in kinds {
-            match security::rules_domain(self.registry, &self.db, kind, user).await {
-                Ok(None) => {}
-                Ok(Some(_)) => {
-                    return Ok(Some(format!(
-                        "the kind {kind} restricts uid {} beyond {}'s own rows, and the \
-                         guard of a table-inheritance root over its kinds is compiled in \
-                         Python",
-                        user.uid, model.name
-                    )));
-                }
+            let refused = |e: anyhow::Error| {
+                format!(
+                    "the rules of the kind {} of {} could not be evaluated ({e:#})",
+                    kind.name, model.name
+                )
+            };
+            let domain =
+                match security::rules_domain(self.registry, &self.db, &kind.name, user).await {
+                    Ok(None) => continue,
+                    Ok(Some(domain)) => domain,
+                    Err(e)
+                        if e.downcast_ref::<tokio_postgres::Error>().is_some()
+                            || crate::error::needs_round_trip(&e) =>
+                    {
+                        return Err(e);
+                    }
+                    Err(e) => return Ok(Err(refused(e))),
+                };
+            let resolved = match crate::domain::parse(&domain)
+                .and_then(|n| crate::domain::reject_internal_operators(&n))
+            {
+                Ok(()) => self.resolve_hierarchy(ctx, kind, &domain, memo, None).await,
+                Err(e) => Err(e),
+            };
+            match resolved {
+                Ok(resolved) => guards.push(Node::Leaf(crate::domain::Leaf {
+                    field: "id".into(),
+                    op: crate::domain::KIND_GUARD.into(),
+                    value: json!({"kind": kind.name, "domain": resolved}),
+                })),
                 Err(e)
                     if e.downcast_ref::<tokio_postgres::Error>().is_some()
                         || crate::error::needs_round_trip(&e) =>
                 {
                     return Err(e);
                 }
-                Err(e) => {
-                    return Ok(Some(format!(
-                        "the rules of the kind {kind} of {} could not be evaluated ({e:#})",
-                        model.name
-                    )));
-                }
+                Err(e) => return Ok(Err(refused(e))),
             }
         }
-        Ok(None)
+        Ok(Ok(guards))
     }
 
     fn reachable_seeds(&self, req: &Request, env: &Env) -> Result<Vec<String>> {

@@ -1247,6 +1247,9 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_leaf(&self, leaf: &Leaf) -> Result<Expr> {
+        if leaf.op == crate::domain::KIND_GUARD {
+            return self.kind_guard(leaf);
+        }
         if crate::fragment::is_fragment(&leaf.value) {
             return self.fragment_condition(leaf);
         }
@@ -1394,6 +1397,38 @@ impl<'a> Compiler<'a> {
             _ => cond,
         };
         Ok(self.company_dependent_guard(field, op, &values, cond))
+    }
+
+    /// `_tree_member_hidden_sql`: a root row whose kind row the kind's rules
+    /// hide is hidden, read as superuser with no active filter.
+    fn kind_guard(&self, leaf: &Leaf) -> Result<Expr> {
+        let kind = leaf
+            .value
+            .get("kind")
+            .and_then(Json::as_str)
+            .ok_or_else(|| refusal!("a kind guard names no kind: {}", leaf.value))?;
+        let domain = leaf
+            .value
+            .get("domain")
+            .ok_or_else(|| refusal!("the kind guard of {kind} carries no domain"))?;
+        let co = self.ctx.registry.get(kind)?;
+        let node = crate::domain::parse(domain)?;
+        let alias = format!("k{}_{}", self.depth, co.table);
+        let sub = self.sub_compiler(co, alias.clone()).as_sudo();
+        let hidden = sub.compile(&Node::Not(Box::new(node)))?;
+        let mut select = sea_query::Query::select();
+        select
+            .expr(Expr::cust("1"))
+            .from_as(Alias::new(&co.table), Alias::new(alias.as_str()))
+            .cond_where(Cond::all().add(hidden).add(
+                col(&alias, "id").equals((Alias::new(self.alias.as_str()), Alias::new("id"))),
+            ));
+        tracing::trace!(
+            target: "odoo_kernel::rules",
+            root = %self.model.name, %kind,
+            "compiled a table-inheritance root's guard over one of its kinds"
+        );
+        Ok(Expr::exists(select).not())
     }
 
     fn fragment_condition(&self, leaf: &Leaf) -> Result<Expr> {

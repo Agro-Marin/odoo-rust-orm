@@ -30,6 +30,8 @@ SEAMS = [
     ("odoo.db.pool", "ConnectionPool", ["borrow", "give_back"]),
     ("odoo.db.pool", None, ["_PsycopgPool"]),
     ("odoo.db.lifecycle", None, ["_load_json"]),
+    ("odoo.orm.domain.ast", None, ["DomainCustom", "DomainNary", "DomainNot"]),
+    ("odoo.orm.models.mixins.access", None, ["_tree_member_hidden_sql"]),
     ("odoo.orm.runtime.registry", "Registry", ["new", "cursor"]),
     (
         "odoo.orm.models.base",

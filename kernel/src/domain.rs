@@ -22,6 +22,11 @@ pub struct Leaf {
 
 pub const MAX_DOMAIN_NESTING: usize = 100;
 
+/// The operator of the leaf the rule walk gives a table-inheritance root for
+/// each kind that restricts the principal (`_access_tree_member_guards`); its
+/// value names the kind and carries the kind's rule domain.
+pub const KIND_GUARD: &str = "kind guard";
+
 struct Item {
     node: Pending,
     depth: usize,
@@ -294,7 +299,7 @@ pub fn reject_internal_operators(node: &Node) -> Result<()> {
         Node::And(v) | Node::Or(v) => v.iter().try_for_each(reject_internal_operators),
         Node::Not(n) => reject_internal_operators(n),
         Node::Leaf(l) => {
-            if matches!(l.op.as_str(), "any!" | "not any!") {
+            if matches!(l.op.as_str(), "any!" | "not any!" | KIND_GUARD) {
                 refuse!(
                     "{:?} is an internal operator that Domain() rejects from a caller",
                     l.op

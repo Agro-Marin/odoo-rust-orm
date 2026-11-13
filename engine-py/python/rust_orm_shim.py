@@ -1447,9 +1447,18 @@ def _resolved_rules(model, kw, encode):
             domain = env[name]._access_domain("read")
         statements = getattr(env.cr, "sql_statement_count", None)
         with _refusing("resolving the record rules on %s" % name):
-            rules = list(
-                domain.optimize_full(env[name].sudo().with_context(active_test=False))
+            optimized = domain.optimize_full(
+                env[name].sudo().with_context(active_test=False)
             )
+        customs = list(_custom_nodes(optimized))
+        if customs:
+            if not all(_is_kind_guard(node) for node in customs):
+                raise KernelRefused(
+                    "the record rules on %s hold SQL Python builds per request" % name
+                )
+            _RULES_NEED_PYTHON[_rules_key(env, name)] = False
+            continue
+        rules = list(optimized)
         try:
             json.dumps(rules, default=encode)
         except (TypeError, ValueError, KernelRefused) as exc:
@@ -1464,6 +1473,32 @@ def _resolved_rules(model, kw, encode):
                 _RESOLVED_RULES.clear()
             _RESOLVED_RULES[cache_key] = rules
     return resolved
+
+
+def _custom_nodes(domain):
+    from odoo.orm.domain.ast import DomainCustom, DomainNary, DomainNot
+
+    pending = [domain]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, DomainCustom):
+            yield node
+        elif isinstance(node, DomainNot):
+            pending.append(node.child)
+        elif isinstance(node, DomainNary):
+            pending.extend(node.children)
+
+
+# the kernel compiles a table-inheritance root's guard over its kinds itself
+# (kernel::orm kind_guards), from the kinds' rows; any other SQL in a resolved
+# rule domain is Python's alone
+def _is_kind_guard(node) -> bool:
+    import functools
+
+    from odoo.orm.models.mixins.access import _tree_member_hidden_sql
+
+    sql = node._sql
+    return isinstance(sql, functools.partial) and sql.func is _tree_member_hidden_sql
 
 
 def _resolution_is_pure(env, name, domain, rules, statements) -> bool:
