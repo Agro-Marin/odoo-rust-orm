@@ -241,6 +241,9 @@ def export_registry(reg):
             "display_name_access_pure": bool(display_name_access_pure),
             "check_access_pure": bool(check_access_pure),
             "access_guard_pure": bool(access_guard_pure),
+            # a record's ir.access.class label the reader may not hold hides
+            # it (_access_label_guard); the kernel compiles no label
+            "access_label_field": _s(m._access_label_field),
             # the field a grant limited to some companies compiles against
             "access_company_anchor": _s(m._get_company_anchor_path()),
             "access_anchors": _access_anchors(reg, name),

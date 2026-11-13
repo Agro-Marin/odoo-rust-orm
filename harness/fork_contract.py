@@ -30,7 +30,7 @@ SEAMS = [
     ("odoo.db.pool", "ConnectionPool", ["borrow", "give_back"]),
     ("odoo.db.pool", None, ["_PsycopgPool"]),
     ("odoo.db.lifecycle", None, ["_load_json"]),
-    ("odoo.orm.domain.ast", None, ["DomainCustom", "DomainNary", "DomainNot"]),
+    ("odoo.orm.domain.ast", None, ["Domain", "DomainCondition", "DomainCustom", "DomainNary", "DomainNot"]),
     ("odoo.orm.models.mixins.access", None, ["_tree_member_hidden_sql"]),
     ("odoo.orm.runtime.registry", "Registry", ["new", "cursor"]),
     (
@@ -94,6 +94,7 @@ SEAMS = [
             "fetch",
             "_fetch_query",
             "_active_name",
+            "_access_label_field",
         ],
     ),
     ("odoo.orm.fields", "Many2one", ["bypass_search_access"]),

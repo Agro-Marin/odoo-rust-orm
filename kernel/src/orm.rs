@@ -828,6 +828,11 @@ impl<'a> Orm<'a> {
             let Some(model) = self.registry.lookup(&model_name) else {
                 continue;
             };
+            // cleared before the kind guards resolve their hierarchies, so the
+            // reads those make are noted with the root's own
+            if let Ok(mut touched) = ctx.touched.lock() {
+                touched.clear();
+            }
             let kind_guards = match self.kind_guards(&ctx, model, &user, &mut memo).await? {
                 Ok(guards) => guards,
                 Err(why) => {
@@ -835,9 +840,6 @@ impl<'a> Orm<'a> {
                     continue;
                 }
             };
-            if let Ok(mut touched) = ctx.touched.lock() {
-                touched.clear();
-            }
             let built =
                 match security::rules_domain(self.registry, &self.db, &model_name, &user).await {
                     Ok(Some(domain_json)) => match domain::parse(&domain_json)
@@ -971,6 +973,13 @@ impl<'a> Orm<'a> {
                     }
                     Err(e) => return Ok(Err(refused(e))),
                 };
+            // the fork hides the kind's rows through the kind's own `_search`
+            if !kind.search_pure {
+                return Ok(Err(format!(
+                    "the kind {} of {} defines `_search` in Python",
+                    kind.name, model.name
+                )));
+            }
             let resolved = match crate::domain::parse(&domain)
                 .and_then(|n| crate::domain::reject_internal_operators(&n))
             {

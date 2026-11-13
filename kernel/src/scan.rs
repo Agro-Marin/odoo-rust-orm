@@ -985,6 +985,13 @@ impl<'a> Orm<'a> {
             } else {
                 ctx.read_expr(model, f, &model.table)?
             };
+            // the fork aggregates a boolean as COALESCE(<field>, FALSE): a
+            // record without a value counts, and counts as false
+            let inner = if f.ttype == FieldType::Boolean {
+                Expr::cust_with_exprs("COALESCE($1, FALSE)", [inner])
+            } else {
+                inner
+            };
             if numeric && matches!(func, "array_agg" | "array_agg_distinct") {
                 refuse!(
                     "{func} over the numeric column {}.{} returns Decimals in Python; \

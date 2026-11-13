@@ -467,18 +467,26 @@ async fn predicate_domain(
         &mut partner,
     ))
     .await?;
-    if !domain.is_array() {
-        refuse!(
-            "predicate {} on {model} answers {domain}, not a domain",
-            predicate.name
-        );
-    }
+    check_predicate_domain(model, &predicate.name, &domain)?;
     tracing::trace!(
         target: "odoo_kernel::rules",
         %model, predicate = %predicate.name, %domain,
         "compiled an access row's predicate for the principal"
     );
     Ok(domain)
+}
+
+// The row's other terms follow the predicate's in one prefix list: a dangling
+// operator in it would take them as its operands. Python's Domain() refuses
+// such a predicate, and its row admits nothing.
+fn check_predicate_domain(model: &str, name: &str, domain: &Json) -> Result<()> {
+    if !domain.is_array() {
+        refuse!("predicate {name} on {model} answers {domain}, not a domain");
+    }
+    crate::domain::parse(domain).map_err(|e| {
+        refusal!("predicate {name} on {model} answers a malformed domain {domain}: {e:#}")
+    })?;
+    Ok(())
 }
 
 async fn eval_predicate(
@@ -1095,6 +1103,41 @@ pub async fn rules_domain(
     Box::pin(rules_domain_inner(registry, db, model, user, 0)).await
 }
 
+async fn restricting_kind(
+    registry: &Registry,
+    db: &Db<'_>,
+    root: &str,
+    user: &UserCtx,
+    depth: usize,
+) -> Result<Option<String>> {
+    let Ok(root) = registry.get(root) else {
+        return Ok(None);
+    };
+    if root.table_inheritance_root.as_deref() != Some(root.table.as_str()) {
+        return Ok(None);
+    }
+    let mut kinds: Vec<&str> = registry
+        .models
+        .values()
+        .filter(|kind| {
+            kind.name != root.name
+                && kind.table != root.table
+                && kind.table_inheritance_root.as_deref() == Some(root.table.as_str())
+        })
+        .map(|kind| kind.name.as_str())
+        .collect();
+    kinds.sort_unstable();
+    for kind in kinds {
+        if Box::pin(rules_domain_inner(registry, db, kind, user, depth))
+            .await?
+            .is_some()
+        {
+            return Ok(Some(kind.to_owned()));
+        }
+    }
+    Ok(None)
+}
+
 async fn rules_domain_inner(
     registry: &Registry,
     db: &Db<'_>,
@@ -1109,6 +1152,16 @@ async fn rules_domain_inner(
         refuse!(
             "{model} adds an access guard in Python (_access_guard); the kernel \
              compiles only its ir.access rows"
+        );
+    }
+    if let Some(label) = registry
+        .get(model)
+        .ok()
+        .and_then(|m| m.access_label_field.as_deref())
+    {
+        refuse!(
+            "{model} hides a record whose access label ({label}) the principal does not \
+             hold, a guard the kernel does not compile"
         );
     }
     let dynamic = registry.dynamic();
@@ -1130,6 +1183,15 @@ async fn rules_domain_inner(
                  access through its search, which the kernel does not compile"
             ),
             None => refuse!("_inherits field {model}.{via} is not in the registry"),
+        }
+        if let Some(kind) =
+            Box::pin(restricting_kind(registry, db, parent, user, depth + 1)).await?
+        {
+            refuse!(
+                "{model} delegates to {parent}, a table-inheritance root whose kind {kind} \
+                 restricts the principal: the kernel guards a root's kinds only where it \
+                 reads the root"
+            );
         }
         if let Some(dom) =
             Box::pin(rules_domain_inner(registry, db, parent, user, depth + 1)).await?
@@ -1271,6 +1333,26 @@ fn check_read_access_inner(
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn a_predicate_answering_a_dangling_operator_is_refused() {
+        for domain in [json!(["|", ["id", "=", 1]]), json!(["!"]), json!("x")] {
+            let err = check_predicate_domain("m", "p", &domain).unwrap_err();
+            assert_eq!(
+                crate::error::ErrorKind::of(&err),
+                crate::error::ErrorKind::Refused,
+                "{domain}: {err:#}"
+            );
+        }
+        for domain in [
+            json!([]),
+            json!([["id", "=", 1]]),
+            json!(["|", ["id", "=", 1], ["id", "=", 2]]),
+            json!([["id", "=", 1], ["id", "=", 2]]),
+        ] {
+            check_predicate_domain("m", "p", &domain).unwrap();
+        }
+    }
 
     #[test]
     fn parentheses_group_expressions_unless_a_comma_makes_a_tuple() {

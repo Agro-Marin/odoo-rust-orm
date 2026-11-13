@@ -1317,7 +1317,7 @@ def _rules_need_python(env, name):
         # the resulting domain contains only ordinary stored fields (or TRUE).
         rows = env["ir.access"]._get_all_access()
         pending, seen = [name], set()
-        dynamic_reach = False
+        per_principal = False
         while pending:
             current = pending.pop()
             if current in seen:
@@ -1329,12 +1329,17 @@ def _rules_need_python(env, name):
                 row.reach not in (None, "", "all", "none")
                 for row in rows.get(current, ())
             ):
-                dynamic_reach = True
+                per_principal = True
                 break
             model = env[current]
+            # the kernel compiles no label guard (_access_label_guard); Python's
+            # resolved domain carries it as data
+            if model._access_label_field:
+                per_principal = True
+                break
             if model._inherits_rules:
                 pending.extend(model._inherits)
-        needed = dynamic_reach or (
+        needed = per_principal or (
             not domain.is_true()
             and _has_python_search_field_in_domain(env[name], domain)
         )
@@ -1476,7 +1481,13 @@ def _resolved_rules(model, kw, encode):
 
 
 def _custom_nodes(domain):
-    from odoo.orm.domain.ast import DomainCustom, DomainNary, DomainNot
+    from odoo.orm.domain.ast import (
+        Domain,
+        DomainCondition,
+        DomainCustom,
+        DomainNary,
+        DomainNot,
+    )
 
     pending = [domain]
     while pending:
@@ -1487,6 +1498,8 @@ def _custom_nodes(domain):
             pending.append(node.child)
         elif isinstance(node, DomainNary):
             pending.extend(node.children)
+        elif isinstance(node, DomainCondition) and isinstance(node.value, Domain):
+            pending.append(node.value)
 
 
 # the kernel compiles a table-inheritance root's guard over its kinds itself
@@ -2292,19 +2305,35 @@ def _wrap_search_count(orig_search_count):
     return search_count
 
 
-def _masked_many2one(model, groupby, aggregates):
+def _masked_many2one(model, groupby, aggregates, having=()):
     # the fork folds a many2one target the reader cannot read into the empty
-    # group (MASK_UNREADABLE_TARGETS, which web_read_group sets): the kernel
-    # would name that target, so such a grouping is answered by Python
+    # group (MASK_UNREADABLE_TARGETS, which web_read_group sets), wherever the
+    # many2one is read: a groupby or its path's hops, an aggregate, a having
+    # term. The kernel would name that target, so Python answers such a read
     if not model._read_group_is_masking_many2one():
         return None
-    specs = [*groupby, *(a.rsplit(":", 1)[0] for a in aggregates if a != "__count")]
+    specs = [*groupby, *aggregates, *_having_specs(having or ())]
     for spec in specs:
-        field = model._fields.get(spec.split(":")[0].split(".")[0])
-        if field is not None and field.type == "many2one":
-            if model._read_group_is_many2one_masked(field):
-                return f"{field.name}: its unreadable targets are masked"
+        if spec == "__count":
+            continue
+        path = spec.split(":", 1)[0] if ":" in spec else spec
+        if (masked := _masked_path(model, path)) is not None:
+            return masked
     return None
+
+
+def _masked_path(model, path):
+    fname, _, rest = path.partition(".")
+    field = model._fields.get(fname)
+    if field is None:
+        return None
+    if field.group_by_field:
+        return _masked_path(model, field.group_by_field + path[len(fname) :])
+    if field.type != "many2one":
+        return None
+    if model._read_group_is_many2one_masked(field):
+        return f"{model._name}.{field.name}: its unreadable targets are masked"
+    return _masked_path(model.env[field.comodel_name], rest) if rest else None
 
 
 def _wrap_read_group(orig_read_group):
@@ -2321,7 +2350,7 @@ def _wrap_read_group(orig_read_group):
         having = list(having or ())
         bad_aggregate = _bad_aggregate(self, aggregates)
         bad_having = _bad_having(self, having) if having else None
-        masked = _masked_many2one(self, groupby, aggregates)
+        masked = _masked_many2one(self, groupby, aggregates, having)
         if not groupby:
             supported = _refuse("no groupby")
         elif masked is not None:
@@ -2785,7 +2814,7 @@ def _prepare_formatted_group_planner(_group_hooks_clean):
             return _refuse(bad)
         if not groupby:
             return _refuse("no groupby")
-        if (masked := _masked_many2one(model, groupby, aggregates)) is not None:
+        if (masked := _masked_many2one(model, groupby, aggregates, having)) is not None:
             return _refuse(masked)
         if not _group_hooks_clean(model):
             return _refuse("read_group formatting hooks overridden in python")

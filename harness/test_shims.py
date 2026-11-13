@@ -1616,6 +1616,44 @@ def test_rows_ir_access_does_not_hold_send_the_read_to_python() -> None:
     )
 
 
+def test_a_labelled_model_or_delegated_parent_needs_python_rules() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    shim = _shims()[1]
+    domain = SimpleNamespace(is_true=lambda: True)
+    env = {
+        "ir.access": SimpleNamespace(_get_all_access=lambda: {}),
+        "child": SimpleNamespace(
+            _access_domain=lambda _op: domain,
+            _inherits_rules=True,
+            _inherits={"parent": "parent_id"},
+            _access_label_field=None,
+        ),
+        "parent": SimpleNamespace(
+            _access_domain=lambda _op: domain,
+            _inherits_rules=False,
+            _inherits={},
+            _access_label_field="access_inherited_label_id",
+        ),
+        "plain": SimpleNamespace(
+            _access_domain=lambda _op: domain,
+            _inherits_rules=False,
+            _inherits={},
+            _access_label_field=None,
+        ),
+    }
+    with (
+        patch.object(
+            shim, "_rules_key", side_effect=lambda _env, name: ("probe", name)
+        ),
+        patch.object(shim, "_RULES_NEED_PYTHON", {}),
+    ):
+        check("a labelled model", shim._rules_need_python(env, "parent"), True)
+        check("its delegating child", shim._rules_need_python(env, "child"), True)
+        check("a model without a label", shim._rules_need_python(env, "plain"), False)
+
+
 def test_dynamic_reach_rules_resolve_even_when_the_domain_is_true() -> None:
     import logging
     from types import SimpleNamespace
@@ -1630,9 +1668,12 @@ def test_dynamic_reach_rules_resolve_even_when_the_domain_is_true() -> None:
             _access_domain=lambda _op: domain,
             _inherits_rules=True,
             _inherits={"parent": "parent_id"},
+            _access_label_field=None,
         ),
         "parent": SimpleNamespace(
-            _access_domain=lambda _op: domain, _inherits_rules=False
+            _access_domain=lambda _op: domain,
+            _inherits_rules=False,
+            _access_label_field=None,
         ),
     }
     with (
@@ -2882,6 +2923,7 @@ def test_install_is_idempotent_and_keeps_stamps() -> None:
 
     class _Rules:
         _inherits_rules = False
+        _access_label_field = None
 
         def _get_all_access(self):
             return {}

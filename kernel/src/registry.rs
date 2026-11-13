@@ -298,6 +298,11 @@ pub struct Model {
     /// the database alone cannot see Python and takes the rows as the whole.
     pub access_guard_pure: bool,
 
+    /// `_access_label_field`: a record whose `ir.access.class` label the
+    /// principal does not hold is hidden by Python's label guard, which the
+    /// kernel does not compile, so it refuses the model's rules.
+    pub access_label_field: Option<String>,
+
     /// The field a grant limited to some companies compiles against
     /// (`_get_company_anchor_path`): `id` for res.company, else a company
     /// many2one/many2many; `None` for a model whose records belong to no
@@ -1096,6 +1101,7 @@ impl Registry {
                     display_name_access_pure: false,
                     check_access_pure: false,
                     access_guard_pure: true,
+                    access_label_field: None,
                     access_company_anchor: None,
                     access_anchors: None,
                     name_search_fields: None,
@@ -1371,6 +1377,10 @@ impl Registry {
                         .unwrap_or(false),
                     check_access_pure: em["check_access_pure"].as_bool().unwrap_or(false),
                     access_guard_pure: em["access_guard_pure"].as_bool().unwrap_or(false),
+                    access_label_field: em["access_label_field"]
+                        .as_str()
+                        .filter(|label| !label.is_empty())
+                        .map(str::to_owned),
                     access_company_anchor: em["access_company_anchor"]
                         .as_str()
                         .filter(|anchor| !anchor.is_empty())
