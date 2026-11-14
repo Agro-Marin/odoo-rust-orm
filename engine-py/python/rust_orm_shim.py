@@ -139,6 +139,10 @@ def _bound_db(env):
     return DBNAME is None or env.registry.db_name == DBNAME
 
 
+def _engine_holds_connection(env) -> bool:
+    return hasattr(getattr(env.cr, "_cnx", None), "_rust")
+
+
 def building_here():
     return threading.get_ident() == _KERNEL_BUILDING_THREAD
 
@@ -615,6 +619,7 @@ def _display_ok(model) -> bool:
 
 
 GATE_REASONS = collections.Counter()
+PSYCOPG_HOLDS_THE_CONNECTION = "a connection psycopg holds, as a replica's"
 _GATE_TL = threading.local()
 
 
@@ -810,6 +815,8 @@ def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: AR
         return _refuse("another database")
     if not getattr(model.env.registry, "ready", True):
         return _refuse("registry is loading")
+    if not _engine_holds_connection(model.env):
+        return _refuse(PSYCOPG_HOLDS_THE_CONNECTION)
     if not _initialize_kernel_if_ready(model.env):
         return _refuse("kernel not built")
     try:

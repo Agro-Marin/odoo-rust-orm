@@ -277,6 +277,9 @@ def _routing_allows(model, method) -> bool:
     if not _SHIM._policy_allows(model._name):
         _delegated(method, "routing policy excludes the model")
         return False
+    if not _SHIM._engine_holds_connection(model.env):
+        _delegated(method, _SHIM.PSYCOPG_HOLDS_THE_CONNECTION)
+        return False
     return True
 
 

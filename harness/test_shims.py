@@ -3425,12 +3425,77 @@ class _RecordingDelegate:
         return record
 
 
+class _EngineConnection:
+    _rust = object()
+
+
+class _PsycopgConnection:
+    pass
+
+
+def _env_on(connection, **registry):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        cr=SimpleNamespace(_cnx=connection, statements_observed=False),
+        registry=SimpleNamespace(db_name="probe", ready=True, **registry),
+        uid=1,
+    )
+
+
+def test_a_connection_psycopg_holds_is_served_from_python_on_both_paths() -> None:
+    orm_shim = _shims()[1]
+    backend = _backend()
+
+    class _Model:
+        _name = "probe.replica"
+        env = _env_on(_PsycopgConnection())
+
+    saved = (orm_shim.MODE, orm_shim.DBNAME)
+    try:
+        orm_shim.set_mode("on")
+        orm_shim.DBNAME = "probe"
+        orm_shim.GATE_REASONS.clear()
+        check(
+            "the gate refuses",
+            orm_shim._gate(_Model(), ["id"], method="search_read"),
+            False,
+        )
+        orm_shim._gated(_Model(), "search_read")
+        check(
+            "and says why",
+            orm_shim.GATE_REASONS[
+                (
+                    "probe.replica",
+                    "search_read",
+                    orm_shim.PSYCOPG_HOLDS_THE_CONNECTION,
+                )
+            ],
+            1,
+        )
+        backend.reset_stats()
+        check(
+            "the port delegates",
+            backend._routing_allows(_Model(), "search_raw"),
+            False,
+        )
+        check(
+            "and counts it",
+            backend.STATS["reasons"][orm_shim.PSYCOPG_HOLDS_THE_CONNECTION],
+            1,
+        )
+    finally:
+        orm_shim.set_mode(saved[0])
+        orm_shim.DBNAME = saved[1]
+
+
 def test_the_port_follows_the_routing_mode_and_policy() -> None:
     backend = _backend()
     orm_shim = _shims()[1]
 
     class _Model:
         _name = "probe.port"
+        env = _env_on(_EngineConnection())
 
     saved = (orm_shim.MODE, set(orm_shim.EXCEPT))
     try:
@@ -3484,6 +3549,7 @@ def test_a_loading_registry_is_served_from_python_on_both_paths() -> None:
 
     class _Env:
         registry = _Registry()
+        cr = _env_on(_EngineConnection()).cr
 
     class _Model:
         _name = "probe.model"
@@ -3791,7 +3857,7 @@ def test_a_column_group_the_kernel_refuses_falls_through_to_the_delegate() -> No
 
     class _Model:
         _name = "probe.model"
-        env = object()
+        env = _env_on(_EngineConnection())
 
     model = _Model()
     backend.KERNEL_FOR = lambda _env: None
@@ -4363,6 +4429,7 @@ def _observable_cursor():
         def __init__(self) -> None:
             self._thread = threading.current_thread()
             self._work = get_work(self._thread)
+            self._cnx = _EngineConnection()
 
     return _Cursor()
 
