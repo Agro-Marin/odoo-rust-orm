@@ -522,7 +522,7 @@ def _search_native(
 
     def reached():
         collector = _DependencyCollector()
-        collector.collect_domain(model, domain)
+        collector.try_collect_domain(model, domain)
         return {model._name, *collector.fields_by_model}
 
     if lacked := rust_orm_shim.access_the_kernel_lacks(env, reached):

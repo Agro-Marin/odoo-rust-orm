@@ -975,7 +975,7 @@ def _read_dependencies(model, domain, order, fields, labels=True, groupby=None):
     if not env.su:
         dom &= model._access_domain("read")
     collector = _DependencyCollector()
-    collector.collect_domain(model, dom)
+    collector.try_collect_domain(model, dom)
     if collector.opaque:
         raise ValueError("a custom domain hides what it reads")
     if groupby is not None:
@@ -988,7 +988,7 @@ def _read_dependencies(model, domain, order, fields, labels=True, groupby=None):
         f = model._fields.get(fname)
         if f is None or fname == "display_name":
             continue
-        collector.collect_field(model, fname)
+        collector.try_collect_field(model, fname)
         if f.type in ("one2many", "many2many"):
             comodel = env[f.comodel_name]
             if comodel._active_name:
@@ -2052,7 +2052,7 @@ def _bad_aggregate(model, aggregates):
             return spec
         if func not in AGGREGATE_FUNCS:
             return spec
-        if field is not None and model._aggregates_through_records(field, func):
+        if field is not None and model._is_aggregated_through_records(field, func):
             return spec
     return None
 
@@ -2317,7 +2317,7 @@ def _masked_many2one(model, groupby, aggregates, having=()):
     # group (MASK_UNREADABLE_TARGETS, which web_read_group sets), wherever the
     # many2one is read: a groupby or its path's hops, an aggregate, a having
     # term. The kernel would name that target, so Python answers such a read
-    if not model._read_group_is_masking_many2one():
+    if not model._is_read_group_masking_many2one():
         return None
     specs = [*groupby, *aggregates, *_having_specs(having or ())]
     for spec in specs:
@@ -2338,7 +2338,7 @@ def _masked_path(model, path):
         return _masked_path(model, field.group_by_field + path[len(fname) :])
     if field.type != "many2one":
         return None
-    if model._read_group_is_many2one_masked(field):
+    if model._is_read_group_many2one_masked(field):
         return f"{model._name}.{field.name}: its unreadable targets are masked"
     return _masked_path(model.env[field.comodel_name], rest) if rest else None
 

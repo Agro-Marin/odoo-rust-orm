@@ -1914,7 +1914,7 @@ def test_revive_temporal() -> None:
         }
 
         @staticmethod
-        def _aggregates_through_records(field, func):
+        def _is_aggregated_through_records(field, func):
             return not field.store and bool(field.compute) and func in {"sum", "avg"}
 
     bad = orm_shim._bad_aggregate
@@ -2446,13 +2446,13 @@ def test_a_routed_read_group_flushes_no_label_it_does_not_return() -> None:
             self.fields_by_model = collections.defaultdict(set)
             self.opaque = False
 
-        def collect_domain(self, _model, _domain) -> None:
+        def try_collect_domain(self, _model, _domain) -> None:
             return None
 
         def collect_order(self, _model, _order) -> None:
             return None
 
-        def collect_field(self, model, fname) -> None:
+        def try_collect_field(self, model, fname) -> None:
             self.fields_by_model[model._name].add(fname)
 
     class Partner:
@@ -2467,7 +2467,7 @@ def test_a_routed_read_group_flushes_no_label_it_does_not_return() -> None:
         _order = "id"
         _fields = {"partner_id": F("many2one", comodel_name="res.partner")}
 
-        def _read_group_is_masking_many2one(self):
+        def _is_read_group_masking_many2one(self):
             return False
 
     registry = {"res.partner": Partner(), "probe.line": Line()}
