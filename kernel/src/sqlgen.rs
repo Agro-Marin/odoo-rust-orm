@@ -2722,6 +2722,17 @@ pub fn granularity_expr(
             [inner],
         ));
     }
+    // odoo aeb8c17159e: a timezone carries the calendar's first and last hours
+    // before year 1 or past 9999, where Python has no datetime for the group key
+    let inner = match (is_date, tz) {
+        (false, Some(_)) => Expr::cust_with_exprs(
+            "CASE WHEN $1 < TIMESTAMP '0001-01-01' THEN TIMESTAMP '0001-01-01' \
+             WHEN $2 > TIMESTAMP '9999-12-31 23:59:59.999999' \
+             THEN TIMESTAMP '9999-12-31 23:59:59.999999' ELSE $3 END",
+            [inner.clone(), inner.clone(), inner],
+        ),
+        _ => inner,
+    };
     let e = match gran {
         "hour" | "day" | "month" | "quarter" | "year" => {
             Expr::cust_with_exprs(format!("date_trunc('{gran}', $1::timestamp)"), [inner])
@@ -2736,9 +2747,13 @@ pub fn granularity_expr(
             let first = ws - 1;
             let days = if first == 0 { 0 } else { 7 - first };
             Expr::cust_with_exprs(
+                // the fork's form: the week holding 0001-01-01 starts before the
+                // calendar, and is held at its first day with a NULL kept NULL
                 format!(
-                    "(date_trunc('week', $1::timestamp - INTERVAL '-{days} DAY') + \
-                     INTERVAL '-{days} DAY')"
+                    "NULLIF(GREATEST(COALESCE(\
+                     date_trunc('week', $1::timestamp - INTERVAL '-{days} DAY') + \
+                     INTERVAL '-{days} DAY', TIMESTAMP '0001-01-01 00:00:01'), \
+                     TIMESTAMP '0001-01-01'), TIMESTAMP '0001-01-01 00:00:01')"
                 ),
                 [inner],
             )

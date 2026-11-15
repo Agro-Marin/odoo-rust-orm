@@ -1755,6 +1755,26 @@ fn a_datetime_groupby_is_truncated_in_the_context_timezone_and_a_date_is_not() {
         dt.contains("timezone('America/Mexico_City'::text, timezone('UTC', \"t\".\"x\"))"),
         "{dt}"
     );
+    assert!(
+        dt.contains("date_trunc('month', CASE WHEN timezone(")
+            && dt.contains("< TIMESTAMP '0001-01-01' THEN TIMESTAMP '0001-01-01'")
+            && dt.contains("> TIMESTAMP '9999-12-31 23:59:59.999999'"),
+        "the wall time is held within the calendar before it is truncated: {dt}"
+    );
+    let number = render(
+        granularity_expr(
+            "hour_number",
+            col("t", "x"),
+            false,
+            Some("America/Mexico_City"),
+            None,
+        )
+        .unwrap(),
+    );
+    assert!(
+        number.contains("timezone(") && !number.contains("CASE"),
+        "a part of the wall time is a number, read as it is: {number}"
+    );
     let date = render(
         granularity_expr(
             "month",
@@ -1864,6 +1884,11 @@ fn a_week_starts_on_the_languages_first_weekday_and_number_granularities_are_dat
     assert!(
         sunday.contains("INTERVAL '-1 DAY'"),
         "en_US starts on Sunday: {sunday}"
+    );
+    assert!(
+        sunday.contains("NULLIF(GREATEST(COALESCE(date_trunc('week',")
+            && sunday.contains("TIMESTAMP '0001-01-01'), TIMESTAMP '0001-01-01 00:00:01')"),
+        "the week holding the calendar's first day starts on it: {sunday}"
     );
     let monday = render(granularity_expr("week", col("t", "x"), false, None, Some(1)).unwrap());
     assert!(
