@@ -7,6 +7,7 @@ import json
 import os
 import pathlib
 import sys
+import time
 import unittest
 
 HERE = pathlib.Path(pathlib.Path(__file__).resolve()).parent
@@ -775,6 +776,15 @@ def _os_threads() -> int:
     return len(list(pathlib.Path("/proc/self/task").iterdir()))
 
 
+def _settled_os_threads(want, seconds=1.0) -> int:
+    # Thread.join returns once the thread's state is released, a moment before
+    # the kernel drops its task: a thread joined just now may still be listed
+    deadline = time.monotonic() + seconds
+    while (count := _os_threads()) > want and time.monotonic() < deadline:
+        time.sleep(0.001)
+    return count
+
+
 def test_a_transient_switch_failure_warns_and_a_lasting_one_is_an_error() -> None:
     import logging
 
@@ -838,7 +848,7 @@ def test_a_fork_carries_no_tick_thread_and_only_the_parent_resumes_it() -> None:
     mod._STATE["switch_conn"] = (os.getpid(), _Switch())
     baseline = _os_threads()
     at_fork = []
-    os.register_at_fork(before=lambda: at_fork.append(_os_threads()))
+    os.register_at_fork(before=lambda: at_fork.append(_settled_os_threads(baseline)))
     os.register_at_fork(
         before=mod._before_fork,
         after_in_parent=mod._after_fork_in_parent,
@@ -1623,7 +1633,7 @@ def test_a_labelled_model_or_delegated_parent_needs_python_rules() -> None:
     shim = _shims()[1]
     domain = SimpleNamespace(is_true=lambda: True)
     env = {
-        "ir.access": SimpleNamespace(_get_all_access=lambda: {}),
+        "ir.access": SimpleNamespace(_get_all_access=dict),
         "child": SimpleNamespace(
             _access_domain=lambda _op: domain,
             _inherits_rules=True,
@@ -3256,8 +3266,11 @@ def test_the_pool_closes_the_idle_connections_odoo_asks_it_to() -> None:
     shim = _shims()[0]
     pool = shim._RustPool(max_size=4)
     pool._new_connection = lambda: shim.FakeConnection(_RustConn())
-    check("odoo reaps this pool through its own methods",
-          isinstance(pool, reaper.SelfReapingPool), True)
+    check(
+        "odoo reaps this pool through its own methods",
+        isinstance(pool, reaper.SelfReapingPool),
+        True,
+    )
     old, recent, busy = pool.getconn(), pool.getconn(), pool.getconn()
     old.idle_since, recent.idle_since = 10.0, 90.0
     pool.putconn(old)
@@ -3272,7 +3285,9 @@ def test_the_pool_closes_the_idle_connections_odoo_asks_it_to() -> None:
     pool.putconn(busy)
     check("the oldest idle goes first", (pool.close_idle(1), recent.closed), (1, True))
     check("no more than asked", busy.closed, False)
-    check("an empty pool closes nothing", (pool.close_idle(5), pool.close_idle(5)), (1, 0))
+    check(
+        "an empty pool closes nothing", (pool.close_idle(5), pool.close_idle(5)), (1, 0)
+    )
     pool.close()
 
 
