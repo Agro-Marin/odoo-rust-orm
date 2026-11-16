@@ -3249,6 +3249,33 @@ def test_pool_drain_retires_borrowed_connections() -> None:
     check("close retires idle connections", fresh.closed, True)
 
 
+def test_the_pool_closes_the_idle_connections_odoo_asks_it_to() -> None:
+    _odoo()
+    from odoo.db import reaper
+
+    shim = _shims()[0]
+    pool = shim._RustPool(max_size=4)
+    pool._new_connection = lambda: shim.FakeConnection(_RustConn())
+    check("odoo reaps this pool through its own methods",
+          isinstance(pool, reaper.SelfReapingPool), True)
+    old, recent, busy = pool.getconn(), pool.getconn(), pool.getconn()
+    old.idle_since, recent.idle_since = 10.0, 90.0
+    pool.putconn(old)
+    pool.putconn(recent)
+    closed = pool.close_idle_past(50.0, lambda conn: getattr(conn, "idle_since", None))
+    check("one connection was idle past the cutoff", closed, 1)
+    check("the stale one is closed", old.closed, True)
+    check("the recent one is kept", recent.closed, False)
+    check("a borrowed one is not touched", busy.closed, False)
+    check("the kept one is handed out again", pool.getconn() is recent, True)
+    pool.putconn(recent)
+    pool.putconn(busy)
+    check("the oldest idle goes first", (pool.close_idle(1), recent.closed), (1, True))
+    check("no more than asked", busy.closed, False)
+    check("an empty pool closes nothing", (pool.close_idle(5), pool.close_idle(5)), (1, 0))
+    pool.close()
+
+
 def test_an_idle_connection_failing_its_check_is_replaced_not_raised() -> None:
     import psycopg
 

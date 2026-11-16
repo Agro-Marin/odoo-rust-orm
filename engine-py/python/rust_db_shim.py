@@ -850,6 +850,24 @@ class _RustPool:
         for conn, _gen in idle:
             _close_quietly(conn, "pool evicted or closed")
 
+    def close_idle(self, count):
+        with self._cond:
+            idle, self._idle = self._idle[:count], self._idle[count:]
+        for conn, _gen in idle:
+            _close_quietly(conn, "trimmed to the backend ceiling")
+        return len(idle)
+
+    def close_idle_past(self, cutoff, idle_since):
+        stale, kept = [], []
+        with self._cond:
+            for entry in self._idle:
+                since = idle_since(entry[0])
+                (stale if since is not None and since < cutoff else kept).append(entry)
+            self._idle = kept
+        for conn, _gen in stale:
+            _close_quietly(conn, "idle past max_idle")
+        return len(stale)
+
     def drain(self):
         _logger.debug(
             "draining the pool: %d idle, %d out, generation %d -> %d",
