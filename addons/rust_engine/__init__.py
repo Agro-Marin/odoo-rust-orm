@@ -376,27 +376,29 @@ def _read_switch(orm_shim, failures: int) -> int:
                 exc,
             )
         return failures
-    except Exception:
+    except psycopg.Error:
         _logger.exception("rust_engine: could not read the kill switch")
         return failures + 1
     return 0
 
 
-def _tick(orm_shim, seconds, stop) -> None:
+def _tick(orm_shim, seconds, stop, guard) -> None:
     failures = 0
     while not stop.wait(seconds):
         failures = _read_switch(orm_shim, failures)
-        try:
+        with guard(_logger, "rust_engine: the routing reporter failed"):
             _report(orm_shim)
-        except Exception:
-            _logger.exception("rust_engine: the routing reporter failed")
 
 
 def _start_tick(orm_shim, seconds) -> None:
+    # imported here, not in the tick thread: an import still running there when
+    # the process forks outlives the join that stops the tick before the fork
+    from odoo.libs.logging import best_effort
+
     stop = threading.Event()
     thread = threading.Thread(
         target=_tick,
-        args=(orm_shim, seconds, stop),
+        args=(orm_shim, seconds, stop, best_effort),
         name="rust_engine.tick",
         daemon=True,
     )
