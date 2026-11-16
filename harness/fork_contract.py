@@ -65,8 +65,8 @@ SEAMS = [
             "is_one2one",
         ],
     ),
-    ("odoo.fields", "Many2many", ["relation", "column1", "column2"]),
-    ("odoo.fields", "One2many", ["inverse_name"]),
+    ("odoo.fields", "Many2many", ["relation", "column1", "column2", "subset"]),
+    ("odoo.fields", "One2many", ["inverse_name", "subset"]),
     ("odoo.fields", "Many2oneReference", ["model_field"]),
     ("odoo.orm.runtime.backend", None, ["COPY_THRESHOLD"]),
     (

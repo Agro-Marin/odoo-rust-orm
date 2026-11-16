@@ -101,7 +101,8 @@ def export_registry(reg):
             related = f.related
             if related and not isinstance(related, str):
                 related = ".".join(related)
-            domain = getattr(f, "domain", None)
+            # which rows an x2many holds is its subset; its domain only narrows what a form offers
+            domain = getattr(f, "subset" if f.type in ("one2many", "many2many") else "domain", None)
             if callable(domain):
                 domain = {"__callable__": True}
             elif isinstance(domain, str):

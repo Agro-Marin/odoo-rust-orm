@@ -68,6 +68,29 @@ def flush_names(query):
     return {"%s.%s" % (f.model_name, f.name) for f in query.where_clause.to_flush}
 
 
+def recomputed_from(query, env):
+    """What the stored computed fields a query flushes are computed from: flushing
+    one recomputes it, so the query need not flush those itself."""
+    names, pending, seen = set(), list(query.where_clause.to_flush), set()
+    while pending:
+        field = pending.pop()
+        if field in seen or not (field.store and (field.compute or field.related)):
+            continue
+        seen.add(field)
+        for path in env.registry.field_depends.get(field, ()):
+            model = env[field.model_name]
+            for name in path.split("."):
+                step = model._fields.get(name)
+                if step is None:
+                    break
+                names.add("%s.%s" % (step.model_name, step.name))
+                pending.append(step)
+                if not step.relational:
+                    break
+                model = env[step.comodel_name]
+    return names
+
+
 with pathlib.Path(CORPUS).open(encoding="utf-8") as fh:
     corpus = json.load(fh)
 
@@ -186,7 +209,7 @@ for case in corpus:
         )
         continue
 
-    missing = flush_names(p_query) - flush_names(n_query)
+    missing = flush_names(p_query) - flush_names(n_query) - recomputed_from(n_query, cenv)
     if missing:
         failures.append(
             "%s %s: the native WHERE does not flush %s"
