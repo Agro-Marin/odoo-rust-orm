@@ -1601,7 +1601,7 @@ fn declared_type(v: &Bound<'_, PyAny>) -> Type {
         return match first {
             None => Type::UNKNOWN,
             Some(x) if x.is_instance_of::<PyBool>() => Type::BOOL_ARRAY,
-            Some(x) if x.extract::<i64>().is_ok() => Type::INT8_ARRAY,
+            Some(x) if x.is_instance_of::<PyInt>() => int_array_type(v),
             Some(x) if x.extract::<f64>().is_ok() => Type::FLOAT8_ARRAY,
             Some(x) if x.is_instance_of::<PyBytes>() => Type::BYTEA_ARRAY,
             _ => Type::UNKNOWN,
@@ -1615,6 +1615,34 @@ fn declared_type(v: &Bound<'_, PyAny>) -> Type {
     match tyname.as_str() {
         "Json" | "Jsonb" => Type::JSONB,
         _ => Type::UNKNOWN,
+    }
+}
+
+/// psycopg sizes a list of ints by its widest member, as it sizes one int, so
+/// `unnest(%s)` over small ids yields what a function taking `integer` accepts.
+fn int_array_type(v: &Bound<'_, PyAny>) -> Type {
+    use pyo3::types::{PyBool, PyInt};
+    let (mut low, mut high) = (0_i64, 0_i64);
+    for item in v.try_iter().into_iter().flatten().flatten() {
+        if item.is_none() {
+            continue;
+        }
+        if item.is_instance_of::<PyBool>() || !item.is_instance_of::<PyInt>() {
+            return Type::INT8_ARRAY;
+        }
+        let Ok(n) = item.extract::<i64>() else {
+            return Type::NUMERIC_ARRAY;
+        };
+        low = low.min(n);
+        high = high.max(n);
+    }
+    let widest = high.max(low.saturating_neg().saturating_sub(1));
+    if i16::try_from(widest).is_ok() {
+        Type::INT2_ARRAY
+    } else if i32::try_from(widest).is_ok() {
+        Type::INT4_ARRAY
+    } else {
+        Type::INT8_ARRAY
     }
 }
 

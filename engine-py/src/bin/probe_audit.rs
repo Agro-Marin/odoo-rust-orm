@@ -291,6 +291,18 @@ for name, params in (("multi/none", None), ("multi/empty-tuple", ()), ("multi/em
     pcur.execute("DROP INDEX IF EXISTS probe_multi_a; DROP INDEX IF EXISTS probe_multi_b")
 pcur.execute("DROP TABLE probe_multi")
 
+# a list of ints is sized by its widest member, as psycopg sizes it: a pid list
+# under unnest() must reach pg_terminate_backend(integer) as integers
+for value in ([1, 2], [1, None, 70000], [-32769], [2**40], [2**70], [True, False]):
+    checked += 1
+    query = "SELECT pg_typeof(%s)::text"
+    rcur.execute(query, (value,))
+    by_rust = rcur.fetchone()[0]
+    rust.commit()
+    by_py = pcur.execute(query, (value,)).fetchone()[0]
+    if by_rust != by_py:
+        bad.append(("int array", repr(value), repr(by_rust), repr(by_py)))
+
 for value in (["a", "b"], [], ["NULL", None, "a,b", 'a"b', "a\\b"]):
     checked += 1
     rcur.execute("SELECT %s", (value,))
