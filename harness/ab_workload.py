@@ -66,7 +66,7 @@ def validate_pickings(env, su, orders, count):
     for pick in pickings.sorted("id")[:count]:
         for move in pick.move_ids:
             move.write({"quantity": move.product_uom_qty, "picked": True})
-        pick.with_context(skip_backorder=True, skip_immediate=True).button_validate()
+        pick.with_context(skip_backorder=True, skip_immediate=True).action_validate()
     env.flush_all()
     return len(pickings.sorted("id")[:count])
 
