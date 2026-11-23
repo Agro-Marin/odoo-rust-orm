@@ -1027,10 +1027,10 @@ fn held_scope(rule_groups: &[i32], user: &UserCtx) -> Option<Vec<i32>> {
     Some(companies)
 }
 
-/// `ir.access._scoped`: a permission held in some companies reaches their
-/// records and the shared ones; a guard of the members binds them there only.
-fn scoped(domain: Json, anchor: &str, companies: &[i32], guard: bool) -> Json {
-    let within: Vec<Json> = if anchor == "id" {
+/// `ir.access._company_scope_domain`: the records of these companies and the
+/// shared ones.
+fn within(anchor: &str, companies: &[i32]) -> Vec<Json> {
+    if anchor == "id" {
         vec![json!(["id", "in", companies])]
     } else {
         vec![
@@ -1038,7 +1038,19 @@ fn scoped(domain: Json, anchor: &str, companies: &[i32], guard: bool) -> Json {
             json!([anchor, "in", companies]),
             json!([anchor, "=", false]),
         ]
-    };
+    }
+}
+
+/// `ir.access._exemption_domain`: the records a guard's held exempt groups
+/// lift it from, `None` when they lift it from every record.
+fn exemption_within(exempt: &[i32], anchor: Option<&str>, user: &UserCtx) -> Option<Vec<Json>> {
+    Some(within(anchor?, &held_scope(exempt, user)?))
+}
+
+/// `ir.access._scoped`: a permission held in some companies reaches their
+/// records and the shared ones; a guard of the members binds them there only.
+fn scoped(domain: Json, anchor: &str, companies: &[i32], guard: bool) -> Json {
+    let within = within(anchor, companies);
     if guard {
         let mut outside = vec![json!("!")];
         outside.extend(within);
@@ -1219,9 +1231,13 @@ async fn rules_domain_inner(
             skipped += 1;
             continue;
         }
+        let mut exempt_within: Option<Vec<Json>> = None;
         if rule.restrict && rule.exempt.iter().any(|g| user_groups.contains(g)) {
-            skipped += 1;
-            continue;
+            exempt_within = exemption_within(&rule.exempt, anchor.map(|a| a.as_str()), user);
+            if exempt_within.is_none() {
+                skipped += 1;
+                continue;
+            }
         }
         any_applied = true;
         let mut dom = match &rule.parsed {
@@ -1244,6 +1260,9 @@ async fn rules_domain_inner(
             && let (Some(anchor), Some(companies)) = (anchor, held_scope(&rule.groups, user))
         {
             dom = scoped(dom, anchor, &companies, rule.restrict);
+        }
+        if let Some(exempt) = exempt_within {
+            dom = or_domains(vec![dom, Json::Array(exempt)]);
         }
         if is_group && !rule.restrict {
             group_domains.push(dom);
@@ -1630,6 +1649,27 @@ mod tests {
             scoped(dom("[]"), "company_id", &[3], true),
             dom("[]"),
             "a guard admitting everything stays TRUE"
+        );
+    }
+
+    #[test]
+    fn an_exemption_held_in_some_companies_lifts_the_guard_there_only() {
+        let user = principal(&[1, 2], &[(2, &[4, 3])]);
+        assert_eq!(
+            exemption_within(&[2], Some("company_id"), &user).map(Json::Array),
+            Some(dom(
+                r#"["|",["company_id","in",[3,4]],["company_id","=",false]]"#
+            ))
+        );
+        assert_eq!(
+            exemption_within(&[1, 2], Some("company_id"), &user),
+            None,
+            "held in every company through one of them"
+        );
+        assert_eq!(
+            exemption_within(&[2], None, &user),
+            None,
+            "a model without a company anchor is lifted everywhere"
         );
     }
 
