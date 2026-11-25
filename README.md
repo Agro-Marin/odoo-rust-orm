@@ -1438,7 +1438,7 @@ exactly: a many2one asking for any sub-field beyond `display_name` or carrying
 a `context`; an x2many asking for sub-fields, `order`, `limit` or `context`; a
 `reference` or `properties` field with any spec at all; and a model
 that overrides any of web's own read hooks (`web_read`, `_web_read`,
-`_format_web_search_read_results`, `_screen_fields_spec`, the two resolvers),
+`_format_web_search_read_results`, `_filter_fields_spec`, the two resolvers),
 because a kernel answer would skip the override. The `length` rule is Odoo's
 verbatim: a page shorter than the limit is its own length, a full page needs a
 count capped at `count_limit`, `force_search_count` in the context always
@@ -1446,7 +1446,7 @@ counts, and a count limit already reached by the page is the length. The count
 is the kernel's `search_count` with the same limit.
 
 A key the model does not have is not the route's to decide. Before planning,
-the route hands the specification to web's own `_screen_fields_spec` -- the
+the route hands the specification to web's own `_filter_fields_spec` -- the
 same call Python's `web_search_read` opens with, so web stays the one place
 that screens -- which drops an unknown key at the top level or nested under a
 relational field's `fields` and logs one WARNING naming them all
@@ -3230,7 +3230,7 @@ README, kernel/tests      fresh     fresh       fresh
 `read()` and `web_read` answer a many2one whose target the user may not read
 differently. `read()` goes through `Many2one.convert_to_read_multi`, which
 redacts that target to `False`. `web_read` reads with `load=None`, keeping the
-raw foreign key, then `_web_read_resolve_many2one` returns the id for a plain
+raw foreign key, then `_web_read_update_many2one` returns the id for a plain
 spec, and `{"id": id}` when a name was asked for, adding the name only where
 `_filtered_display_name_access` allows it.
 
@@ -3259,7 +3259,7 @@ back as its id instead of `False`. The shim chooses per column:
 - **A plain many2one** is the raw id, which is what `web_read` returns.
 - **A named many2one to a comodel the kernel can name** keeps the label when
   the target is visible, which is `web_read`'s answer too. Only the rows whose
-  target was hidden go to web's own `_web_read_resolve_many2one`.
+  target was hidden go to web's own `_web_read_update_many2one`.
 - **A named many2one to a comodel whose name Python computes** goes to web's
   resolver whole. Those calls used to fall back, so 16 more calls of the
   recorded traffic route.
@@ -3452,7 +3452,7 @@ cursor parity                          383 tests, ONLY-RUST 0, nothing excluded
 ## `web_read` routes, and labels visible many2one targets in the kernel
 
 A form view loads its record through `web_read`, and only the `read` inside it
-was routed: web's `_web_read_resolve_many2one` then ran Python access checks and
+was routed: web's `_web_read_update_many2one` then ran Python access checks and
 name reads for every many2one, and routed `web_read` stayed at 0.97x Python on
 recorded traffic. The shim now routes `web_read` the way it routes
 `web_search_read`: the kernel reads the ids with active_test off, plain

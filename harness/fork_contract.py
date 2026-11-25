@@ -149,7 +149,7 @@ BEHAVIOURS = [
         "addons/web/models/web_read.py",
         "Base._web_read",
         {"keywords": {("read", "load", "None")}},
-        {"_web_read_resolve_many2one"},
+        {"_web_read_update_many2one"},
         "read(load=None) is asked for raw many2ones, resolved by web's own resolver",
     ),
     (

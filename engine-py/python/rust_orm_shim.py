@@ -1803,9 +1803,9 @@ _WEB_HOOKS = (
     "web_read",
     "_web_read",
     "_format_web_search_read_results",
-    "_screen_fields_spec",
-    "_web_read_resolve_many2one",
-    "_web_read_resolve_x2many",
+    "_filter_fields_spec",
+    "_web_read_update_many2one",
+    "_web_read_update_x2many",
 )
 
 
@@ -1900,7 +1900,7 @@ def _web_pseudo_fields(specification):
 
 
 def _web_screened_plan(model, specification):
-    screened = model._screen_fields_spec(specification)
+    screened = model._filter_fields_spec(specification)
     if screened != specification:
         _call_logger.debug(
             "%s.web_search_read: planning the specification web screened: %s",
@@ -1969,7 +1969,7 @@ def _web_resolve_many2ones(model, records, specification, raw, unredacted):
     for name in raw:
         spec = specification[name] or {}
         if "fields" in spec:
-            model._web_read_resolve_many2one(records, model._fields[name], name, spec)
+            model._web_read_update_many2one(records, model._fields[name], name, spec)
     for name in unredacted:
         hidden = []
         for rec in records:
@@ -1979,7 +1979,7 @@ def _web_resolve_many2ones(model, records, specification, raw, unredacted):
             elif val:
                 hidden.append(rec)
         if hidden:
-            model._web_read_resolve_many2one(
+            model._web_read_update_many2one(
                 hidden, model._fields[name], name, specification[name]
             )
     return records
@@ -1991,11 +1991,11 @@ def _web_resolve_hidden_many2ones(model, records, specification, raw, hidden):
     for name in raw:
         spec = specification[name] or {}
         if "fields" in spec:
-            model._web_read_resolve_many2one(records, model._fields[name], name, spec)
+            model._web_read_update_many2one(records, model._fields[name], name, spec)
     for name in hidden:
         unlabelled = [rec for rec in records if type(rec[name]) is int]
         if unlabelled:
-            model._web_read_resolve_many2one(
+            model._web_read_update_many2one(
                 unlabelled, model._fields[name], name, specification[name]
             )
     return records

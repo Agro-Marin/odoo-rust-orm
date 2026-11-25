@@ -526,7 +526,7 @@ enterprise test lane in CI.
 A many2one whose target the user cannot read needs no policy of its own: the
 kernel answers what Python answers, per method. `read` and `search_read` give
 `False` (`Many2one.convert_to_read_multi`); `web_read` and `web_search_read`
-give `{"id": id}` without a name (`_web_read_resolve_many2one`); sudo only
+give `{"id": id}` without a name (`_web_read_update_many2one`); sudo only
 renders the name of a target already allowed. A comodel that decides read
 access or display-name visibility in Python (`_get_records_forbidden_and_error_factory`,
 `_get_display_name_visible_ids`) is refused and labelled by Python. README:

@@ -1028,7 +1028,7 @@ def test_web_many2ones_resolve_through_web_read() -> None:
             "group_id": F("many2one"),
         }
 
-        def _web_read_resolve_many2one(self, values_list, field, name, spec) -> None:
+        def _web_read_update_many2one(self, values_list, field, name, spec) -> None:
             calls.append((name, field.type, bool(spec), [v["id"] for v in values_list]))
             for vals in values_list:
                 vals[name] = {"id": vals[name]}
@@ -1805,7 +1805,7 @@ def test_web_search_read_plans_what_web_screened() -> None:
 
     class Partner:
         _name = "probe.partner"
-        _screen_fields_spec = web_onchange.Base._screen_fields_spec
+        _filter_fields_spec = web_onchange.Base._filter_fields_spec
         _fields = {
             "display_name": F("char", store=False),
             "name": F("char"),
