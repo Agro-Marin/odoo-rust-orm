@@ -406,7 +406,7 @@ def _start_tick(orm_shim, seconds) -> None:
     thread.start()
 
 
-def _stop_tick():
+def _stop_tick() -> int | None:
     tick, _STATE["tick"] = _STATE["tick"], None
     if tick is None:
         return None
@@ -594,7 +594,7 @@ def _arm_port(engine_py, orm_shim, config, db_name) -> None:
         port = install_backend()
         port.KERNEL_FOR = lambda env: (
             orm_shim.KERNEL
-            if orm_shim._bound_db(env) and orm_shim._initialize_kernel_if_ready(env)
+            if orm_shim.bound_db(env) and orm_shim.initialize_kernel_if_ready(env)
             else None
         )
         port.install(dbname=db_name)

@@ -252,9 +252,9 @@ def _kernel(env):
         import rust_orm_shim
     except ImportError:
         return None
-    if not rust_orm_shim._bound_db(
+    if not rust_orm_shim.bound_db(env) or not rust_orm_shim.initialize_kernel_if_ready(
         env
-    ) or not rust_orm_shim._initialize_kernel_if_ready(env):
+    ):
         return None
     return rust_orm_shim.KERNEL
 

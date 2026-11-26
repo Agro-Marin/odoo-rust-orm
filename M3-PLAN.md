@@ -165,8 +165,8 @@ maintained asset and the fallback architecture means nothing regresses.
 
 ## Phase 1 kickoff — spike results (2026-07-05)
 
-Both gate spikes are DONE and PASS (they were `src/bin/spike_embed.rs` and
-`src/bin/spike_cursor.rs`, deleted once `export_registry` and `phase1_shell`
+Both gate spikes are DONE and PASS (they were src/bin/spike_embed.rs and
+src/bin/spike_cursor.rs, deleted once `export_registry` and `phase1_shell`
 superseded them; `git log` has them, pyo3 0.29 against the venv's Python 3.14.4).
 
 **Spike A — embedding + registry export: PASS.**
@@ -236,7 +236,7 @@ superseded them; `git log` has them, pyo3 0.29 against the venv's Python 3.14.4)
   method-override identity (`_search`/`read`/... below BaseModel),
   display-name fidelity (custom `_compute_display_name`, custom
   `display_name` compute, non-stored `_rec_name` like res.groups
-  `full_name`), order fidelity (`_order_spec_clean`: non-stored order
+  `full_name`), order fidelity (_order_spec_clean: non-stored order
   fields like account.account `code`, nested-m2o comodel ordering), plus
   transparent fallback on any kernel error. Wire values revived to
   in-process Python objects (datetimes, m2o tuples, browse records for
@@ -249,7 +249,7 @@ superseded them; `git log` has them, pyo3 0.29 against the venv's Python 3.14.4)
   param types (unknown oid for strings; fixes polymorphic `unnest($1)`
   without aborting transactions), execute must use the prepared statement
   (not re-prepare by SQL text), numeric loads as float
-  (`_NumericToFloatLoader` parity).
+  (_NumericToFloatLoader parity).
 
 In-process timing (median): typical search_read 2.6–3.1×; gated models
 1.0× (fallback, by design); small read_group 0.6× — `env.flush_all()` +
@@ -291,7 +291,7 @@ path), not shim-caused. Targeted flush landed
 ## Correctness and cache audit (2026-07-26)
 
 Six defects found by testing the claims above against a rebuilt database
-(`rustorm_probe`, 77 modules from `tpl_p314o19marin`). All fixed, all covered
+(`rustorm_probe`, 77 modules from tpl_p314o19marin). All fixed, all covered
 by tests; the corpus is 78/78 on the rebuilt fixture.
 
 1. **unaccent — silent wrong results.** The kernel hardcoded "the target DB
@@ -350,7 +350,7 @@ subquery — omitting a comodel rule widens the outer result just as badly.
 Both paths now error, which in the hybrid means transparent Python fallback.
 
 **Everything is re-derivable again.** The five embedding bins hardcoded
-`sm_statemachine_test` and absolute paths, so none of the Phase 1/2 evidence
+sm_statemachine_test and absolute paths, so none of the Phase 1/2 evidence
 could be reproduced. `odoo_kernel::config` now derives every path from
 `RUSTORM_WORKSPACE` with per-value environment overrides, and discovers the
 `pythonX.Y` component rather than pinning it. Re-derived on `rustorm_probe`:
@@ -393,7 +393,7 @@ runs differ in more than the thing being tested. Here they also differed in
 the *test runner*.
 
 **Right method:** hold the runner fixed and vary only the stack. Running the
-same test through a bare `unittest.TextTestRunner` inside `odoo-bin shell` —
+same test through a bare unittest.TextTestRunner inside `odoo-bin shell` —
 i.e. stock psycopg, hybrid's runner — separates them cleanly.
 
 - `test_rec_names_search`: **harness artifact, not ours.** It fails identically
@@ -447,7 +447,7 @@ It found three kernel defects and one shim defect on its first run:
    handles inherited/related rec_names), and synthesizes `"model,id"` only when
    there is genuinely no `_rec_name`, matching `_compute_display_name`.
 3. **Fields with `search=`.** `mail.activity.mixin.activity_summary` is a
-   stored varchar whose domain Odoo delegates to `_search_activity_summary`
+   stored varchar whose domain Odoo delegates to _search_activity_summary
    (which traverses `mail_activity`). The kernel compared the column and
    returned 81 rows where Python returned 0. The export now carries a
    `custom_search` flag and such fields are refused. `ir_model_fields` does not
@@ -720,7 +720,7 @@ defect**: the column does not exist, so the kernel refuses (`cannot traverse
 non-stored res.partner.image_1920`) and the shim falls back. Measured, not
 assumed.
 
-`_String` ANDs a **trigram accelerator** onto every positive `like` / `ilike`
+_String ANDs a **trigram accelerator** onto every positive `like` / `ilike`
 over a translated `index="trigram"` field. 11 trigram-indexed stored fields
 here, of which the translated ones include `product.template.name`,
 `account.account.name` and `account.analytic.account.name`. The kernel emitted
@@ -788,7 +788,7 @@ autocomplete is, stops being two orders of magnitude slower than the Python
 it replaced.
 
 The single-valued `in` -- which is what an `=` becomes -- is wired up too,
-through `value_to_translated_trigram_pattern`, compared with LIKE rather
+through value_to_translated_trigram_pattern, compared with LIKE rather
 than ILIKE because the equality it accompanies is case-sensitive. Odoo's own
 emitted SQL was the reference for where it is WITHHELD as much as for where
 it applies: a value shorter than a trigram, a falsy operand, more than one
@@ -1276,7 +1276,7 @@ own source, then implement THAT rule rather than the behaviour the test
 happens to assert.
 
 **The prepared-statement cache is the one that mattered.**
-`psycopg/_preparing.py` clears the cache when a command's status TAG is
+psycopg/_preparing.py clears the cache when a command's status TAG is
 `ROLLBACK` or starts with `DROP `, because a plan prepared against an object
 that a rollback or drop removed gets looked up internally by PostgreSQL and
 fails. That single rule produces all three of the assertions the tests make:
@@ -1370,7 +1370,7 @@ different claims, and only the second one mattered. The check is whether HEAD
 is STILL, and stillness has to be sampled over time rather than read once.
 
 **A transient cross-repo break is worth reporting even when it evaporates.**
-Mid-flight, `odoo.tools.view_validation.register_validator` was absent from
+Mid-flight, odoo.tools.view_validation.register_validator was absent from
 odoo while three enterprise modules still called it (web_cohort, web_grid,
 web_map) -- an IMPORT failure, so it takes out every `odoo-bin` touching
 those modules rather than surfacing as one red test. It resolved itself two
@@ -1427,7 +1427,7 @@ read path built its way in: by replacing methods on `BaseModel`.
 It does not. `odoo/orm/runtime/backend.py` declares `StorageBackend` — twelve
 methods and five capability flags through which every row read and every row
 write in the ORM passes — and
-`odoo/orm/tests/test_backend_dispatch_surface.py` pins it: fifteen sites
+odoo/orm/tests/test_backend_dispatch_surface.py pins it: fifteen sites
 across nine files, each one annotated with what the in-memory branch does NOT
 do, plus an assertion that the mixins hold no row I/O SQL of their own. Two
 implementors ship, `PostgresBackend` and `InMemoryBackend`, so the port is
@@ -1650,7 +1650,7 @@ method, not on what the override touches.
 
 The six replayed commits were verified against trees 30 (odoo) and 45
 (enterprise) commits older than the ones they now sit on. On the pushed tips,
-odoo `b39df298cdf2` / enterprise `347828acc10`, siblings live, engine `9c3d13e`:
+odoo `b39df298cdf2` / enterprise 347828acc10, siblings live, engine `9c3d13e`:
 
     test_orm + the four ORM test modules   1508    630   0   (0 failed either leg)
     /document, Python + JS over HTTP        516    180   0   (1 error either leg:
@@ -1716,7 +1716,7 @@ full run found two things nothing else had** (engine `7452d97`):
   Four defects in all (the reset seam, pipeline mode as a nullcontext, a
   terminated backend raising the socket's error instead of the server's
   FATAL, a dropped cursor pinned by its own error's `__context__` traceback);
-  write-up in `agromarin-knowledge/research/2026-09-18-rust-cursor-parity-regressions.md`.
+  write-up in agromarin-knowledge/research/2026-09-18-rust-cursor-parity-regressions.md.
 
     cursor parity   ran psycopg=387 rust=387   both=20   ONLY-RUST 11 -> 0
     race test       3 of 3 clean (was SIGABRT 2 of 3)
@@ -1729,7 +1729,7 @@ corruption that no assertion would have caught.
 ## A thirty-minute prefork burn-in per leg, routing on (2026-09-19)
 
 `harness/burnin.sh --workers 4 --threads 16 --seconds 1800 --sample 0.05` on
-`rustorm_fe_burn` (139 modules with demo: mail, crm, project, sale, calendar),
+rustorm_fe_burn (139 modules with demo: mail, crm, project, sale, calendar),
 engine `e09f172`, odoo `b39df298cdf2`:
 
     leg   requests    req/s   p50     p95     p99     errors  routed   verified  divergences
@@ -1826,10 +1826,10 @@ Two defects the attempt found are kept:
 - **the kernel build deadlocked on itself once the port could search.**
   Building the kernel exports the registry; the export reads the company
   and the company-dependent fallbacks through the ORM; those reads reached
-  the port, which asked `_initialize_kernel_if_ready` for the kernel being built, under
+  the port, which asked `initialize_kernel_if_ready` for the kernel being built, under
   a lock the same thread held. One second of CPU in twenty minutes, every
   connection idle. `building()` marks the thread for both build paths (the
-  addon's registry hook and `_initialize_kernel_if_ready`) and a read from it is served
+  addon's registry hook and `initialize_kernel_if_ready`) and a read from it is served
   by Python;
 - **every unlink tainted the transaction as a security write.**
   `ir.default.discard_records` runs `stale.unlink()` on every unlink of any

@@ -48,7 +48,7 @@ refusal list is the replacement backlog.
     subqueries in SELECT / ORDER BY (fixes e.g. ordering by `res.users.name`)
   - **display-name searches**: `('partner_id','ilike',v)` and
     `('display_name','ilike',v)`, compiled the way Odoo compiles them --
-    `_optimize_relational_name_search` moves the negation onto the `any` and
+    _optimize_relational_name_search moves the negation onto the `any` and
     keeps the inner operator positive, `_search_display_name` expands it into
     the model's `_rec_names_search` (or `[_rec_name]`). Compilable for 87 of a
     base+mail database's 181 models; the rest refuse, and the export says
@@ -75,7 +75,7 @@ refusal list is the replacement backlog.
   members of the guard's group) but those whose `exempt_group_ids` it holds,
   a privilege of the environment included, AND each delegated parent's access, with a
   table-inheritance root's rows binding the models under it. The model-level
-  check denies where Python's `_access_allowed` would: no permission held
+  check denies where Python's _access_allowed would: no permission held
   whose domain is not `[(0, '=', 1)]`, a guard of that domain binding the
   principal, or a denied parent. A class that adds to its rows in Python
   (`_access_guard`) is refused wherever its access would apply. A row's
@@ -187,7 +187,7 @@ None of them found a defect, which is the outcome to hope for and not the
 reason to have looked: an operator the kernel implements and no lane compares
 is surface nobody is checking. `child_of` on a `_parent_store` model is kept
 in the query as `parent_path =like` prefixes since 2026-09-10 (as
-`_operator_child_of_domain` writes it, through `any!` on a relational field);
+_operator_child_of_domain writes it, through `any!` on a relational field);
 the other direction and the non-stored case still walk the tree in
 `resolve_hierarchy` and rewrite the leaf as an `in`, so a walk that stops one
 level early returns a plausible row set.
@@ -404,7 +404,7 @@ makes both sides error, i.e. passes vacuously.
 
 **Result: 275/275 with nothing failing** (the corpus of the time; it holds
 435 cases today), re-verified 2026-08-28 against THREE
-databases built from this workspace's `tpl_p314o19marin` template — base-only;
+databases built from this workspace's tpl_p314o19marin template — base-only;
 base+mail+account+uom; and **agromarin + enterprise** (129 modules, 790 models,
 222 ruled models, 15,674 fields). All runs use a live-registry export.
 
@@ -490,7 +490,7 @@ names that one, not the database `--db` was pointed at. Every stage needing a
 routed call then gates on "another database" and reports `routed=0`, and
 `replay gate controls`, `load into odoo` and `copy encoder` fail for a reason
 that has nothing to do with the code. Measured on `p314o19m.conf` armed for
-`rustorm_5e_scale`. The battery now derives a copy armed for its own database
+rustorm_5e_scale. The battery now derives a copy armed for its own database
 and says so on the first line:
 
 ```
@@ -839,7 +839,7 @@ hold at zero while still covering the half that works.
 ## The prepared-statement cache outlived what it was prepared against
 
 psycopg clears its cache when a command's STATUS TAG is `ROLLBACK` or starts
-with `DROP ` (`psycopg/_preparing.py`), because a plan prepared against an
+with `DROP ` (psycopg/_preparing.py), because a plan prepared against an
 object a rollback or a drop removed is looked up internally by PostgreSQL and
 fails. `ROLLBACK TO SAVEPOINT` reports the tag `ROLLBACK` and so clears;
 `RELEASE SAVEPOINT` reports `RELEASE` and does not. This cursor cleared on
@@ -963,7 +963,7 @@ The four `rustorm-db` threads were a multi-threaded tokio runtime `RustDb`
 built in its constructor and never ran anything on: since each connection
 drives its own single-thread runtime on the calling thread (the "one runtime
 per connection" milestone in `M3-PLAN.md`), `connect` fetched the handle and
-dropped it. The runtime is gone, and with it `rust_engine_threads`, which sized
+dropped it. The runtime is gone, and with it rust_engine_threads, which sized
 it; a conf that still sets the key now gets Odoo's unknown-option warning. A
 connection's runtime keeps no idle blocking thread either
 (`thread_keep_alive(0)`), so resolving a host name leaves nothing behind.
@@ -1149,7 +1149,7 @@ harness/burnin.sh`, or `http_bench.py --profile heavy`: 5000 rows × 12 fields,
 | default | 122.0 req/s, p50 62.3 ms | 134.5 req/s, p50 55.6 ms | **+10.2%** | **−10.8%** |
 | heavy | 2.8 req/s, p50 2051 ms | 3.7 req/s, p50 1694 ms | **+32%** | **−17%** |
 
-**On the whole tree, in the rollout's own setting** (`rustorm_5e_scale`, 1593
+**On the whole tree, in the rollout's own setting** (rustorm_5e_scale, 1593
 modules, 2 workers, 8 threads, 300 s legs, `rust_engine_verify_sample = 0.2`,
 2026-09-11): routing off 13.8 req/s p50 586 ms, routing on 16.7 req/s p50
 475 ms -- **+21 % throughput, −19 % p50** -- 6207 reads routed, 1097 of them
@@ -1224,7 +1224,7 @@ report "too many parameters" — they wrapped the protocol's int16 count and the
 server answered `invalid message length: parameters is not drained`. A plan
 invalidated by DDL is dropped and retried instead of failing for the life of
 the process, and `_Prepared.clear()` in the shim now routes Odoo's
-`discard_cached_plans()` to the Rust caches instead of reporting success and
+discard_cached_plans() to the Rust caches instead of reporting success and
 doing nothing.
 
 **Record rules compile for the models a request can reach.** A `search_count`
@@ -1417,8 +1417,8 @@ now fatal to the burn-in.
 
 The class is small enough to enumerate, so it was:
 `grep -rnE "request\._[a-z_]+ *=" --include='*.py'` over `odoo/` and
-`addons/` returns `_response_version` and `ir_qweb_assets`' four
-`_esm_import_map_*` / `_esm_page_bundles` writes, and nothing else. The
+`addons/` returns _response_version and `ir_qweb_assets`' four
+`_esm_import_map_*` / _esm_page_bundles writes, and nothing else. The
 second group is asset rendering, which no routed read reaches. So this was
 the only request-scoped side effect on a read path the kernel serves, and
 there is not a second one waiting.
@@ -2205,7 +2205,7 @@ refusal; every one was a plausible wrong answer.
   label the kernel would hide where Python may show it. `TRANSPARENT_HOOKS`
   in `export.rs` names the overrides that were read and found to dispatch on
   one field and delegate the rest -- the mail activity mixin, the properties
-  mixin, `res.device`, the user-favorite mixin, `crm.lead`, `hr.employee`
+  mixin, res.device, the user-favorite mixin, `crm.lead`, `hr.employee`
   (`_field_to_sql`, and hr_appraisal's `_search` / `fetch` on
   `next_appraisal_date`), `document.document`, the analytic mixin,
   `account.analytic.account`, `res.groups` (`_search` sorts in Python only
@@ -2333,9 +2333,9 @@ the raw leaf. Measured on base+mail against Python, 22 shapes:
 and nine shapes that refused where Odoo coerces: `'32'` against an integer,
 `1` and `'false'` against a boolean, `> False` on a number (falsy) and on a
 many2one (FALSE), `('code', '=', ['BE', 'FR'])`, `('code', 'in', 'BE')`,
-`('x', '=', [])`. `Compiler::optimize_leaf` now mirrors `_operator_equal_as_in`,
-`_optimize_in_set`, `_optimize_like_str`, `_optimize_numeric_comparand`,
-`_optimize_relational_falsy_id`, `_optimize_boolean_in` and
+`('x', '=', [])`. `Compiler::optimize_leaf` now mirrors _operator_equal_as_in,
+`_optimize_in_set`, `_optimize_like_str`, _optimize_numeric_comparand,
+_optimize_relational_falsy_id, _optimize_boolean_in and
 `_optimize_inequality_against_null`, and the 22 shapes are in
 `harness/corpus.json`. Two stay refusals on purpose: `child_of` seeded with a
 name resolves through a name search in Python, and `display_name =ilike ''`
@@ -2422,7 +2422,7 @@ timezone: 16 shapes equal, in `harness/corpus.json`.
 
 The battery on a 428-model database (hr, crm, project, stock, mrp) passed
 every stage but phase 1, which read the pre-seeding baseline the
-warm-computes stage writes to `harness/expected.json`; it reads the run's
+warm-computes stage writes to harness/expected.json; it reads the run's
 own now.
 
 ## The connector speaks TLS
@@ -2457,7 +2457,7 @@ for read_group, and the four limit-and-offset shapes are in the corpus.
 
 ## `child_of` and `parent_of` seeded by a name
 
-`_operator_hierarchy` turns a string seed into `display_name ilike` on the
+_operator_hierarchy turns a string seed into `display_name ilike` on the
 comodel and searches it at the caller's identity -- a many2one's comodel
 without the active filter, an x2many's under the field's context, `id`
 under the request's -- and a many2many runs its id seeds through that
@@ -2513,8 +2513,8 @@ stays refused.
   kernel that refuses everything. `Registry::load` remains for `inspect` and
   for the export's own cross-check.
 - Redundancies removed: `Orm` held the client twice, `Model.has_active`
-  restated `active_name`, `inverse_column` duplicated `o2m_inverse`,
-  `query_cached` was a pass-through, and the order-by-related alias used a
+  restated `active_name`, inverse_column duplicated `o2m_inverse`,
+  query_cached was a pass-through, and the order-by-related alias used a
   hard-coded depth of 16 to dodge the read alias family; it has its own
   prefix now. `project.task._read_group`, which only renames a `triage_id`
   groupby, joined the transparent-hook table.
@@ -2655,14 +2655,14 @@ above).
   compiled and fall back to Python — `account.move`, `account.move.line`,
   `sale.order`, `sale.order.line`, `hr.employee` among them. Every one is now
   the same cause: a rule interpolating a **non-stored Python compute**
-  (`res.users.crm_team_ids`, `res.users.employee_id`,
+  (res.users.crm_team_ids, `res.users.employee_id`,
   `res.company.country_id`). The first two also declare `search=`, so both the
   value and the domain leaf need Python. This is the measured size of the
   business-logic problem, not an estimate.
 - **`edit_translations` is served from Python.** The shim sends `env._lang`
   rather than `context['lang']`; the two agree except under
   `edit_translations` / `check_translations`, where Odoo reads translated
-  columns through a `_xx_XX` pseudo-language the kernel's `res_lang` check
+  columns through a _xx_XX pseudo-language the kernel's `res_lang` check
   refuses — which is the fallback that mode needs. Before, the plain language
   was served there and the translation editor showed translated values where
   Odoo shows the sources.
@@ -2720,7 +2720,7 @@ above).
   index Odoo built for it, and now does.** This is the one entry here that is
   about SPEED rather than answers, and it points the wrong way: the kernel
   was slower than the Python it replaces, on the path a product autocomplete
-  takes. Odoo's `_String.condition_to_sql` ANDs a conjunct onto every
+  takes. Odoo's `BaseString.condition_to_sql` ANDs a conjunct onto every
   positive `like` / `ilike`, and the GIN index is declared over that
   conjunct's expression and nothing else:
 
@@ -2755,7 +2755,7 @@ above).
   The conjunct is implied by the condition it accompanies -- the array of
   every translation contains the one the base condition tests -- so it
   changes no row. `crate::trigram` ports Odoo's two pattern builders;
-  `_TRIGRAM_PATTERN_RE`'s lookbehind is not expressible in Rust's `regex`, so
+  _TRIGRAM_PATTERN_RE's lookbehind is not expressible in Rust's `regex`, so
   the scanner is hand-written and was validated differentially against
   Odoo's own functions over **40,040** inputs (0 mismatches) before any of it
   was written in Rust. Two behaviours that cost three rounds to find and are
@@ -2763,7 +2763,7 @@ above).
   segment ends there -- *unless* a backslash escaped it; and a dangling
   backslash drops only the segment it ends, not the whole pattern.
   A single-valued `in` -- which is what an `=` becomes -- is accelerated the
-  same way, through `value_to_translated_trigram_pattern` and compared with
+  same way, through value_to_translated_trigram_pattern and compared with
   LIKE rather than ILIKE, because the equality it accompanies is
   case-sensitive. Checked against Odoo's own emitted SQL, including where it
   is WITHHELD: a value shorter than a trigram, a falsy operand, more than one
@@ -2790,7 +2790,7 @@ above).
   `account.analytic.account.line_ids` inverts
   `account.analytic.line.auto_account_id`, a non-stored many2one with a
   `search=` method, and no such column exists. The kernel read the one2many's
-  own flag, emitted `s0_account_analytic_line.auto_account_id`, and learned
+  own flag, emitted s0_account_analytic_line.auto_account_id, and learned
   from PostgreSQL that it does not exist -- fail-safe, since the shim falls
   back on the error, but one wasted round trip per call and a database ERROR
   in the log for something the compiler can see. It now asks the COMODEL's
@@ -2845,7 +2845,7 @@ above).
   `standard` tag and ordered by `test_sequence` as `prepare_suite` does, under
   the `SuiteRuntime` `OdooSuite.run` installs -- and records each failure's name with
   an `OdooTestResult` subclass. Until 2026-10-05 it used a bare
-  `unittest.TextTestRunner`, which left `odoo.modules.module.current_test`
+  unittest.TextTestRunner, which left `odoo.modules.module.current_test`
   unset: `test_20_x_active` errored with routing off and on alike, because its
   `reset_changes` cleanup rebuilds the registry through `registry.cursor()`,
   a `TestCursor` in test mode, which refuses to open with no test running --
@@ -2901,7 +2901,7 @@ above).
   registry-only baseline, so the doubling is real but small at this scale;
   it is a question for a scan an order of magnitude larger, not this one.
 - The routing shim no longer models what the kernel supports.
-  `_order_spec_clean` and `_domain_clean` are gone: the kernel raises on every
+  _order_spec_clean and _domain_clean are gone: the kernel raises on every
   case they covered, so the fallback happens through the error path instead of
   being predicted in Python where it could drift. What remains genuinely needs
   the Python registry — method overrides and `_compute_display_name`.
@@ -3118,7 +3118,7 @@ all                   1822   0.94x
 
 Four `iap.account.web_search_read` calls of about half a second each are
 most of the `web_search_read` total on both legs. They fall back, and their
-time is `iap.account`'s own `web_read` override, not the ORM's. A fallback
+time is iap.account's own `web_read` override, not the ORM's. A fallback
 pays the refused dispatch on top of Python's call, 3 to 16 percent.
 
 ## An extension built before its sources is refused
@@ -3269,7 +3269,7 @@ Handing every many2one to web's resolver was correct and cost the speed:
 routed `web_search_read` went from 0.56x to 1.06x Python. Keeping visible
 labels brings it back to 0.56x.
 
-`harness/web_many2one.py` ran the probe as a battery stage; on the previous
+harness/web_many2one.py ran the probe as a battery stage; on the previous
 build it compared 1,778 calls and failed on `res.users` at uid 9 and
 `res.country` at uid 4, and on this build it compared 1,966 with none
 mismatching. It is now `harness/every_user.py`, the stage "every user": the
@@ -3296,7 +3296,7 @@ The contract fails on the previous build.
 
 ## The Rust cursor sent `%%` inside a quoted literal as it was written
 
-The same comparison over `/base`, 3,947 tests on `rustorm_o31`, had eight tests
+The same comparison over `/base`, 3,947 tests on rustorm_o31, had eight tests
 failing only under routing. Two were `res.partner` addresses rendered as their
 format string and one a CHECK constraint that let a row through:
 
@@ -3334,7 +3334,7 @@ more things.
 - **A closed Rust connection kept its backend.** `RustConn.close()` rolled back
   and set a flag; the socket closed only when the last `Arc<Client>` dropped,
   which a live Python reference could put off for the life of the process.
-  `/base` held 88 idle backends on `rustorm_o31`, the shared cluster refused
+  `/base` held 88 idle backends on rustorm_o31, the shared cluster refused
   every new connection, and a peer's suite failed. `close()` now takes the
   client out of the connection, and tokio-postgres sends Terminate. A runtime
   contract closes a connection and requires its backend gone from
@@ -3347,7 +3347,7 @@ more things.
   "too many clients already" as a RuntimeError on the first try. It now retries
   with backoff until the deadline, then raises `PoolTimeout`.
 - **The fork's persistence protocol grew four members** --
-  `supports_recursive_queries`, `columns`, `descendants` and
+  supports_recursive_queries, `columns`, `descendants` and
   `read_group_rows` -- and `RustBackend` lacked them: 646 errors, every import
   among them. The port now delegates them explicitly, and delegates any member
   it does not know through `__getattr__`, counted under "not in this port's
@@ -3473,11 +3473,11 @@ all 1822 calls         2.721 s        2.049 s    0.75x   (was 0.82x)
 The every-user stage reads `web_read` plain, named and on x2manys at every user
 and context: 2,995 of its 23,216 comparisons, none differing.
 
-The same sync added `ancestors`, `read_m2m_groups`, `set_parent_paths`,
-`move_parent_paths` and `records_with_parent_changed` to `StorageBackend`,
-removed `read_m2m_pairs`, and dropped four support flags
-(`supports_parent_store`, `supports_record_rules`, `supports_joined_m2m_read`,
-`supports_translation_terms`). The port's pass-through delegated the new methods
+The same sync added `ancestors`, `read_m2m_groups`, set_parent_paths,
+move_parent_paths and `records_with_parent_changed` to `StorageBackend`,
+removed read_m2m_pairs, and dropped four support flags
+(supports_parent_store, supports_record_rules, supports_joined_m2m_read,
+supports_translation_terms). The port's pass-through delegated the new methods
 from the first call; the conformance test named them, and the port now lists
 exactly the fork's protocol again.
 
@@ -3527,7 +3527,7 @@ not the second -- gave up on a conflict it exists to absorb (`mail`'s
 `discuss.channel.member.is_self`). Pinned by
 `test_a_database_error_resolving_a_search_method_reaches_the_caller`.
 
-Across every user of `rustorm_o31`, six such domains through `search_count`
+Across every user of rustorm_o31, six such domains through `search_count`
 and `search_read`: 108 comparisons, 19 routed where 3 were, none differing.
 `discuss.channel` itself still falls back -- its record rules name `is_member`
 and the kernel compiles rules from the export -- and `res.groups` overrides
@@ -3556,7 +3556,7 @@ routing on      34 failed, 4 errors      20 tests failing only under routing
 
 Three were the engine's.
 
-- **The Rust cursor wrote a tuple inside JSON as its `str()`.** `py_to_json`
+- **The Rust cursor wrote a tuple inside JSON as its `str()`.** py_to_json
   had cases for dicts and lists and none for tuples, so a properties
   definition's `selection: [("draft", "Draft")]` was stored as
   `["('draft', 'Draft')"]`, and the next write of the record raised `Wrong
@@ -3581,7 +3581,7 @@ test transaction's backend to `POSTGRES_BACKEND` (odoo cc4741849aff).
 
 A read during module loading also made the shim build a kernel from a
 half-loaded registry: an ERROR traceback, and the process's one build attempt
-spent. `_initialize_kernel_if_ready` now declines while the registry is not ready, and the
+spent. `initialize_kernel_if_ready` now declines while the registry is not ready, and the
 gate reports "registry still loading".
 
 ```
@@ -3852,7 +3852,7 @@ calls Odoo served. On the grouped-view tours 358 of 414 qualify, and routing rea
 ## A subquery Python resolved reaches the kernel as a bound fragment
 
 A search method may answer with SQL rather than ids: knowledge's
-`_search_user_has_access` is one recursive query, so the record rules on
+_search_user_has_access is one recursive query, so the record rules on
 `knowledge.article` and every model that reads through it optimise to
 `('id', 'any!', SQL(...))`. The shim had no wire form for an `SQL` or a `Query`,
 so those rules stayed unresolved and the kernel refused them as a traversal of a
@@ -3969,7 +3969,7 @@ INERROR, then INTRANS after the rollback to it, and no mark from a client-side
 error; the build before this fails it on the missing attribute.
 
 The fork's persistence protocol moved under the port twice meanwhile: it gained
-`count_m2m_groups`, now delegated, and lost `supports_column_scan`, now gone from
+`count_m2m_groups`, now delegated, and lost supports_column_scan, now gone from
 `RustBackend` too.
 
 ## Record rules Python resolves to data are handed to the kernel
@@ -4157,7 +4157,7 @@ kernel supports is that ceiling written down.
 The fork offers a better seam, and this engine was not on it.
 `odoo/orm/runtime/backend.py` declares `StorageBackend`: twelve methods and
 five capability flags through which **every row read and every row write in
-the ORM** passes. It is not a convention. `test_backend_dispatch_surface.py`
+the ORM** passes. It is not a convention. test_backend_dispatch_surface.py
 enumerates the fifteen sites across nine files that choose between the SQL
 path and the port, says for each what the in-memory branch does NOT do, and
 asserts that the mixins hold no row I/O SQL of their own. Two implementors
@@ -4386,7 +4386,7 @@ query execution, either version    ~1.5 s        ~1.5 s
 The first version optimized every traversed comodel's rule domain on every
 call to collect its columns, and optimizing a rule can SEARCH -- the
 `ir.attachment` and mail access checks do -- so that was two thirds of the
-cost. `_get_domain_accessible_records` is an ormcache that returns the same
+cost. _get_domain_accessible_records is an ormcache that returns the same
 object until the rules change, so its identity is now the cache key. What
 remains, profiled: the savepoint around the kernel call, two statements per
 search and the largest single cost, then the kernel's own compile, which
@@ -4592,7 +4592,7 @@ the kernel routing and none of 4,222 without it. Every one was the kernel's:
 - **A field related through an x2many negates by complement.**
   `DomainCondition._negate` flips the operator only where
   `_negates_by_operator` and inverts an inequality only where
-  `_searches_one_value`; anything else stays `NOT (...)`, compiled as
+  _searches_one_value; anything else stays `NOT (...)`, compiled as
   Python's `(...) IS NOT TRUE`. A one2many hop is single-valued when it is a
   one2one: the export carries `one2one`, and a registry without it refuses
   that negation rather than guess.
@@ -4619,7 +4619,7 @@ list's order and differs from `in` with the same list. The kernel answers
 ## `prepare=False` is honoured, and the kernel writes the SQL plans need
 
 Three ways the port's SQL lost a plan Python's kept, found measuring the fork
-against PostgreSQL 18 (`agromarin-knowledge/research/2026-11-07-postgresql-16-19-leverage.md`),
+against PostgreSQL 18 (agromarin-knowledge/research/2026-11-07-postgresql-16-19-leverage.md),
 and why nothing routed while they were found.
 
 **Every model read as overriding its read path.** Since the fork's operation
@@ -4779,7 +4779,7 @@ No refusal is removed: `early` moves one earlier, `count` refuses a model
 overriding `search_count` as the separate dispatch did, and shadow mode and
 verification samples always warm the cache.
 
-In process, uid 2, `oneread_120k` (120k partners), median of interleaved
+In process, uid 2, oneread_120k (120k partners), median of interleaved
 legs, python time / routed time (higher is faster):
 
 | shape | `doors` | + `rules` | + `count` | + `labels` | + `nowarm` |

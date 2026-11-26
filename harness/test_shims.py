@@ -1145,12 +1145,12 @@ def test_an_incomplete_registry_does_not_spend_the_kernel_build() -> None:
         env = Env()
         check(
             "no kernel from an incomplete registry",
-            orm_shim._initialize_kernel_if_ready(env),
+            orm_shim.initialize_kernel_if_ready(env),
             False,
         )
         check(
             "...asked again, no second export",
-            orm_shim._initialize_kernel_if_ready(env),
+            orm_shim.initialize_kernel_if_ready(env),
             False,
         )
         check("...one attempt so far", built, [1])
@@ -1158,7 +1158,7 @@ def test_an_incomplete_registry_does_not_spend_the_kernel_build() -> None:
         Registry.models = {"a": 1, "b": 2}
         check(
             "the grown registry builds it",
-            orm_shim._initialize_kernel_if_ready(env),
+            orm_shim.initialize_kernel_if_ready(env),
             True,
         )
         check("...on the second export", built, [1, 2])

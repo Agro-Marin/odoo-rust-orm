@@ -135,7 +135,7 @@ def reset_breaker(model_name=None) -> None:
             STATS["quarantined"].remove(model_name)
 
 
-def _bound_db(env):
+def bound_db(env):
     return DBNAME is None or env.registry.db_name == DBNAME
 
 
@@ -158,7 +158,7 @@ def building():
         _KERNEL_BUILDING_THREAD = previous
 
 
-def _initialize_kernel_if_ready(env) -> bool:
+def initialize_kernel_if_ready(env) -> bool:
     """Return whether a kernel is available, initializing it when the registry is ready."""
     global KERNEL, _KERNEL_TRIED_PID, _PROCESS_PID
     if os.getpid() != _PROCESS_PID and PROCESS_HOOK is not None:
@@ -811,13 +811,13 @@ def _reached_models(model, fields):
 def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: ARG001  order and domain are the routed call shape, kept for the reasons log
     if not _policy_allows(model._name):
         return False
-    if not _bound_db(model.env):
+    if not bound_db(model.env):
         return _refuse("another database")
     if not getattr(model.env.registry, "ready", True):
         return _refuse("registry is loading")
     if not _engine_holds_connection(model.env):
         return _refuse(PSYCOPG_HOLDS_THE_CONNECTION)
-    if not _initialize_kernel_if_ready(model.env):
+    if not initialize_kernel_if_ready(model.env):
         return _refuse("kernel not built")
     try:
         if is_tainted(model.env):

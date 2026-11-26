@@ -202,7 +202,7 @@ try:
         time.sleep(3)
     env.cr.rollback()  # noqa: F821
     env.invalidate_all()  # noqa: F821
-    rust_orm_shim._initialize_kernel_if_ready(env)  # noqa: F821
+    rust_orm_shim.initialize_kernel_if_ready(env)  # noqa: F821
     if rust_orm_shim.KERNEL is None:
         print("GRANT SCOPES FAILED: no kernel is built for this database")
         sys.exit(1)
