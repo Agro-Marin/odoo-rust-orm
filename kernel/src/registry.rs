@@ -1849,7 +1849,6 @@ impl Registry {
                         })
                 })
             });
-            // guard binding everyone is a global rule; a guard binding the
             security.rules.entry(model).or_default().push(Rule {
                 groups: if guard && !members_only {
                     Vec::new()

@@ -1441,7 +1441,6 @@ where
     Ok(stack.pop())
 }
 
-// A number carries its own type: the server would otherwise give the parameter
 fn having_value(value: &Json) -> Result<Expr> {
     Ok(match value {
         Json::Number(n) if n.is_i64() => Expr::val(n.as_i64().expect("i64")).cast_as("int8"),
