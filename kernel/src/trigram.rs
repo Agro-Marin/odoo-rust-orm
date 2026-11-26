@@ -14,13 +14,6 @@ fn escape_wildcards(s: &str) -> String {
     out
 }
 
-/// Whether this port's patterns are exact for `term`. Odoo's prefilter now
-/// unaccents each literal run with the database's own table and, where a `"`
-/// or `\` may stand for a stored character unaccent folded into it (″ “ ＼),
-/// ORs both readings (odoo 9b42923793ab). This port has no unaccent table: it
-/// matches Odoo only on plain ASCII without quotes, backslashes or control
-/// characters, which unaccent leaves alone and JSON writes unchanged. Any
-/// other term gets no prefilter -- slower, never wrong.
 pub fn is_exact_on(term: &str) -> bool {
     term.chars()
         .all(|c| c.is_ascii() && !c.is_ascii_control() && c != '"' && c != '\\')

@@ -29,8 +29,6 @@ fn subquery(select: sea_query::SelectStatement) -> Expr {
     Expr::SubQuery(None, Box::new(select.into()))
 }
 
-/// Whose access a non-sudo compile checks: the principal, the groups it
-/// holds, and the companies the grant-limited ones are held in.
 #[derive(Clone)]
 pub struct Access {
     pub uid: i32,
@@ -442,8 +440,6 @@ fn to_value(f: &Field, v: &Json) -> Result<Value> {
 
 const IN_TO_ANY_THRESHOLD: usize = 100;
 
-/// `_float_to_pattern_text`, for the values whose `.15g` rendering is their
-/// integer digits; any other float is left to Python's formatting.
 fn float_pattern_text(number: &serde_json::Number) -> Result<String> {
     match number.as_f64() {
         Some(x) if x.fract() == 0.0 && x.abs() < 1e15 => Ok(format!("{}", x as i64)),
@@ -664,10 +660,6 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    /// The values an `=`/`in` leaf matches, when OR-ing it with another leaf on
-    /// the same column is the column's one `IN` list: a stored scalar column,
-    /// and values Odoo reads as themselves (no falsy value, which means unset,
-    /// and no name for a many2one, which is a name search).
     fn or_set_values<'n>(&self, node: &'n Node) -> Option<OrSet<'n>> {
         let Node::Leaf(leaf) = node else {
             return None;
@@ -1387,8 +1379,6 @@ impl<'a> Compiler<'a> {
         Ok(self.company_dependent_guard(field, op, &values, cond))
     }
 
-    /// `_tree_member_hidden_sql`: a root row whose kind row the kind's rules
-    /// hide is hidden, read as superuser with no active filter.
     fn kind_guard(&self, leaf: &Leaf) -> Result<Expr> {
         let kind = leaf
             .value
@@ -1558,8 +1548,6 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    /// `_negates_by_operator`: a field related through a multivalued hop
-    /// reads its negation as a complement, never as the negated operator.
     fn negates_by_operator(&self, f: &Field) -> Result<bool> {
         let Some(rel) = f.related.as_deref() else {
             return Ok(true);
@@ -2586,7 +2574,6 @@ impl<'a> Compiler<'a> {
     }
 }
 
-/// Python's `==` between two comparands: `False == 0` and `1 == 1.0`.
 fn py_eq(a: &Json, b: &Json) -> bool {
     let number = |v: &Json| match v {
         Json::Bool(b) => Some(f64::from(u8::from(*b))),
@@ -2598,8 +2585,6 @@ fn py_eq(a: &Json, b: &Json) -> bool {
     }
 }
 
-/// `_holds_on_missing_step`: whether the condition holds for a record that a
-/// related field reaches no value of, whose value reads as the falsy one.
 fn holds_on_missing_step(f: &Field, op: &str, value: &Json) -> bool {
     let positive = positive_operator(op).unwrap_or(op);
     let falsy = f.falsy_json();

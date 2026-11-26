@@ -1,9 +1,3 @@
-//! Opaque regions of PostgreSQL SQL with standard_conforming_strings enabled.
-//!
-//! This only finds lexical boundaries; callers retain their own placeholder
-//! dialect, supported-syntax and malformed-input policies. In particular,
-//! psycopg printf substitution must still run inside quoted text and comments.
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     String,

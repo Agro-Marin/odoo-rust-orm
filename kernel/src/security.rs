@@ -14,14 +14,11 @@ pub enum PyExpr {
     None,
     Seq(Vec<PyExpr>),
     Name(Vec<String>),
-    /// `ref('module.name')`: the record an xml id names (`ir.access._ref_id`).
     Ref(String),
 
     Add(Box<PyExpr>, Box<PyExpr>),
 }
 
-/// Whether the expression reads a name of the evaluation context (`user`,
-/// `company_ids`...), as opposed to literals and `ref()` calls alone.
 pub fn reads_names(expr: &PyExpr) -> bool {
     match expr {
         PyExpr::Name(_) => true,
@@ -219,8 +216,6 @@ fn parse_atom(c: &[char], p: &mut usize) -> Result<PyExpr> {
     }
 }
 
-/// The companies each group is held in, for the groups a grant limits to
-/// some companies; a held group absent from it is held in every company.
 pub type GroupScopes = std::collections::BTreeMap<i32, Vec<i32>>;
 
 pub struct UserCtx {
@@ -231,19 +226,12 @@ pub struct UserCtx {
     pub groups: std::sync::Arc<std::collections::HashSet<i32>>,
     pub scopes: std::sync::Arc<GroupScopes>,
 
-    /// The partner and commercial partner a reach compares with
-    /// (`ir.access._access_bind_partner` / `_commercial_partner`), as Python
-    /// sent them: an acting partner replaces the user's own. `None` reads the
-    /// user's own from the database.
     pub access_partner: Option<(i32, i32)>,
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct RuleSet {
     domains: std::collections::HashMap<String, crate::domain::Node>,
-    /// The columns a model's rules read while they were resolved (a
-    /// hierarchy's parent link): the cached domain holds ids only, so each
-    /// request applying it must still flush them, as Python does.
     reads: std::collections::HashMap<String, Vec<(String, String)>>,
     unevaluated: std::collections::HashMap<String, String>,
 
@@ -367,9 +355,6 @@ pub async fn eval_py(
     })
 }
 
-/// `ir.model.data._xmlid_to_res_id(xmlid, raise_if_not_found=True)`: Python
-/// raises for an unknown xml id, and the row then admits nothing; the kernel
-/// refuses instead, which Python answers.
 async fn resolve_ref(xmlid: &str, db: &Db<'_>) -> Result<i32> {
     let Some((module, name)) = xmlid.split_once('.') else {
         refuse!("ref({xmlid:?}) names no module; Python raises");
@@ -386,7 +371,6 @@ async fn resolve_ref(xmlid: &str, db: &Db<'_>) -> Result<i32> {
     }
 }
 
-/// The anchor key a rung reads when the row names none (`REACH_ANCHOR`).
 fn rung_anchor(rung: &str) -> Result<&'static str> {
     Ok(match rung {
         "own" => "owner",
@@ -396,10 +380,6 @@ fn rung_anchor(rung: &str) -> Result<&'static str> {
     })
 }
 
-/// `ir.access._reach_domain` for the rungs the kernel binds: `own` through an
-/// owner, a creator or a partner anchor, `company` through a company anchor
-/// read up or down its hierarchy, and `partner` down the commercial partner's
-/// tree; a shared anchor also admits the records where it is unset.
 async fn reach_domain(
     registry: &Registry,
     db: &Db<'_>,
@@ -419,9 +399,6 @@ async fn reach_domain(
     reach_leaves(model, reach, anchor, user.uid, &user.company_ids, partner)
 }
 
-/// The anchor a row's reach reads on the model it applies to: the one it
-/// names, else its rung's (`REACH_ANCHOR`). Python's row admits nothing when
-/// the model declares no such anchor; the kernel refuses.
 fn reach_anchor<'a>(
     model: &str,
     anchors: Option<&'a std::collections::HashMap<String, crate::registry::AccessAnchor>>,
@@ -446,10 +423,6 @@ fn reach_anchor<'a>(
     })
 }
 
-/// `ir.access.compile_predicate` for a template: `P.<bind>` is the principal's
-/// bind (`ir.access._bind_value`) and `args.<name>` the row's argument. The
-/// kernel binds what base settles from the user alone; `employees`, `teams` and
-/// `units` are hr's and team's, and Python answers a row reading them.
 async fn predicate_domain(
     model: &str,
     predicate: &crate::registry::Predicate,
@@ -596,8 +569,6 @@ async fn access_partner(db: &Db<'_>, user: &UserCtx) -> Result<(i32, i32)> {
     user_access_partner(db, user.uid).await
 }
 
-/// The user's own partner and commercial partner, as `ir.access` binds them
-/// when no acting partner is named.
 pub(crate) async fn user_access_partner(db: &Db<'_>, uid: i32) -> Result<(i32, i32)> {
     let row = db
         .query_opt(
@@ -1006,8 +977,6 @@ pub fn or_leaves(leaves: Vec<Json>) -> Vec<Json> {
     out
 }
 
-/// The companies the rule's group is held in, `None` when it is held in
-/// every company (by a grant not limited, or through a group that is not).
 fn held_scope(rule_groups: &[i32], user: &UserCtx) -> Option<Vec<i32>> {
     let mut companies: Vec<i32> = Vec::new();
     for group in rule_groups.iter().filter(|g| user.groups.contains(g)) {
@@ -1018,8 +987,6 @@ fn held_scope(rule_groups: &[i32], user: &UserCtx) -> Option<Vec<i32>> {
     Some(companies)
 }
 
-/// `ir.access._company_scope_domain`: the records of these companies and the
-/// shared ones.
 fn within(anchor: &str, companies: &[i32]) -> Vec<Json> {
     if anchor == "id" {
         vec![json!(["id", "in", companies])]
@@ -1032,14 +999,10 @@ fn within(anchor: &str, companies: &[i32]) -> Vec<Json> {
     }
 }
 
-/// `ir.access._exemption_domain`: the records a guard's held exempt groups
-/// lift it from, `None` when they lift it from every record.
 fn exemption_within(exempt: &[i32], anchor: Option<&str>, user: &UserCtx) -> Option<Vec<Json>> {
     Some(within(anchor?, &held_scope(exempt, user)?))
 }
 
-/// `ir.access._scoped`: a permission held in some companies reaches their
-/// records and the shared ones; a guard of the members binds them there only.
 fn scoped(domain: Json, anchor: &str, companies: &[i32], guard: bool) -> Json {
     let within = within(anchor, companies);
     if guard {

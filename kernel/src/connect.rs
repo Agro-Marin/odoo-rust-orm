@@ -177,13 +177,6 @@ impl rustls::client::danger::ServerCertVerifier for EncryptOnly {
     }
 }
 
-/// What the connection task leaves for its owner: the fault that ended a live
-/// connection, and whether the owner had already released it. A released
-/// connection's task still ends with an error when the server closed the
-/// session first (its idle_session_timeout, a termination): the Terminate it
-/// writes on close meets a closed socket. That is the expected end, not a drop.
-/// A live connection's end is a warning: its owner meets the fault on next use
-/// and judges it there, as Python's driver raises it.
 #[derive(Default)]
 pub struct ConnState {
     pub fault: Option<String>,
@@ -228,9 +221,6 @@ pub async fn connect(dsn: &str) -> Result<Client> {
     connect_with_fault(dsn).await.map(|(client, _, _)| client)
 }
 
-/// The connection task's handle comes back too: a caller that drives the
-/// task on its own single-thread runtime has to poll it once more after
-/// dropping the client, or the socket stays open and the backend with it.
 pub type Driver = tokio::task::JoinHandle<()>;
 
 pub async fn connect_with_fault(dsn: &str) -> Result<(Client, FaultSlot, Driver)> {

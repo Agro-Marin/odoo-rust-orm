@@ -94,8 +94,6 @@ pub struct Field {
     pub column2: Option<String>,
 
     pub relation_field: Option<String>,
-    /// A one2many holding at most one record: `None` where the registry
-    /// source cannot tell it from a plain one2many.
     pub one2one: Option<bool>,
     pub company_dependent: bool,
 
@@ -128,7 +126,6 @@ pub struct Field {
     pub context: Option<serde_json::Value>,
 
     pub groups: Option<String>,
-    /// Python class policies can include per-record masking and have no groups= equivalent.
     pub python_read_access: Option<bool>,
 
     pub falsy: Option<serde_json::Value>,
@@ -292,27 +289,12 @@ pub struct Model {
 
     pub check_access_pure: bool,
 
-    /// False when the class adds to its ir.access rows in Python
-    /// (`_access_guard`): the kernel compiles only the rows, so it refuses
-    /// the model wherever its access would be applied. A registry read from
-    /// the database alone cannot see Python and takes the rows as the whole.
     pub access_guard_pure: bool,
 
-    /// `_access_label_field`: a record whose `ir.access.class` label the
-    /// principal does not hold is hidden by Python's label guard, which the
-    /// kernel does not compile, so it refuses the model's rules.
     pub access_label_field: Option<String>,
 
-    /// The field a grant limited to some companies compiles against
-    /// (`_get_company_anchor_path`): `id` for res.company, else a company
-    /// many2one/many2many; `None` for a model whose records belong to no
-    /// company, which takes such a grant's rows whole.
     pub access_company_anchor: Option<String>,
 
-    /// Where the model's records meet a principal, by anchor key
-    /// (`registry.model_anchors`): what an access row's reach compiles
-    /// against. `None` when the registry cannot know them (the `ir_model`
-    /// bootstrap, an export without them), which refuses every reach.
     pub access_anchors: Option<HashMap<String, AccessAnchor>>,
 
     pub active_name: Option<String>,
@@ -359,9 +341,6 @@ impl Model {
     }
 }
 
-/// One of a model's anchors as `infer_company_variant` leaves it: the path
-/// from a record to the anchor's kind of record, whether an unset anchor is
-/// shared, and the company hierarchy a company reach reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessAnchor {
     pub path: String,
@@ -370,9 +349,6 @@ pub struct AccessAnchor {
     pub hierarchy: String,
 }
 
-/// An access row's reach that the kernel compiles per principal: the rung
-/// (`own`, `company`, `partner`, `predicate`), the anchor it names, if not its
-/// rung's, and on `predicate` the template it evaluates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reach {
     pub rung: String,
@@ -380,8 +356,6 @@ pub struct Reach {
     pub predicate: Option<Predicate>,
 }
 
-/// A named predicate's template and the row's arguments to it
-/// (`ir.access.compile_predicate`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Predicate {
     pub name: String,
@@ -389,8 +363,6 @@ pub struct Predicate {
     pub args: serde_json::Map<String, serde_json::Value>,
 }
 
-/// What an access row names of its predicate, as `ir_access` and
-/// `ir_access_predicate` store it.
 #[derive(Debug, Default)]
 pub struct PredicateRow {
     pub name: Option<String>,
@@ -405,56 +377,35 @@ pub struct Rule {
     pub restrict: bool,
     pub domain_force: Option<String>,
     pub parsed: Option<std::result::Result<crate::security::PyExpr, String>>,
-    /// The row's reach, ANDed with its fixed filter (`parsed`).
     pub reach: Option<Reach>,
-    /// On a guard: whoever holds one of these groups or privileges is not
-    /// bound by it (`ir.access.exempt_group_ids`).
     pub exempt: Vec<i32>,
 }
 
-/// A read guard whose domain is literally FALSE: the group whose members it
-/// binds (`None`: everyone), and the groups whose holders it spares.
 pub type DenyingGuard = (Option<i32>, Vec<i32>);
 
 #[derive(Debug, Default, Clone)]
 pub struct Security {
     pub implied: HashMap<i32, Vec<i32>>,
 
-    /// `base.group_everyone`, which every user holds, one of no user type too:
-    /// Python's group state adds it to whoever holds no group implying it.
     pub everyone: Option<i32>,
 
     pub user_groups: HashMap<i32, Vec<i32>>,
 
-    /// The groups holding a read permission on the model whose domain is not
-    /// literally FALSE: holding one is what `_access_is_model_allowed` asks.
     pub access: HashMap<String, Vec<i32>>,
 
-    /// Read guards whose domain is literally FALSE: `None` binds everyone,
-    /// `Some(g)` the members of `g`, both but whoever holds one of the
-    /// exempt groups beside it. Bound by one, the model is refused.
     pub denying_guards: HashMap<String, Vec<DenyingGuard>>,
 
-    /// The delegated parents whose read access the model's access needs.
     pub parents: HashMap<String, Vec<String>>,
 
     pub rules: HashMap<String, Vec<Rule>>,
 
     pub user_companies: HashMap<i32, Vec<i32>>,
 
-    /// Each model's `_get_company_anchor_path`, for the models that have one.
     pub anchors: HashMap<String, String>,
 
-    /// The users holding a live or scheduled grant that is limited to some
-    /// companies or dated. `res_groups_users_rel` projects their grants
-    /// without the limit, so their groups are only Python's to give: a
-    /// request for one of them that does not carry them is refused.
     pub bounded_users: std::collections::HashSet<i32>,
 }
 
-/// Which rows beyond its own govern a model's read access: a model under a
-/// table-inheritance root is also bound by the rows of the models owning the
-/// root's table, and a delegating model by its parents' access.
 #[derive(Debug, Default, Clone)]
 pub struct AccessTopology {
     pub bound_by: HashMap<String, Vec<String>>,
@@ -615,9 +566,6 @@ pub struct Registry {
 
     pub source: Source,
 
-    /// Whether each model's `access_company_anchor` is Python's answer: false
-    /// for a registry read from the database alone or an export that predates
-    /// the key, where "no anchor" would take a limited grant's rows whole.
     pub anchors_known: bool,
 
     signal_tables: Vec<String>,
@@ -684,11 +632,6 @@ impl Registry {
         }
     }
 
-    /// A field's `groups=` spec, judged as `ir.access._field_group_spec_allowed`
-    /// judges the anonymous class the registry compiles it into: `has_groups`
-    /// for a principal whose groups all hold everywhere, and for one holding
-    /// a group through a grant limited to some companies, a verdict that may
-    /// hold on some records only, which Python masks per record.
     pub fn field_readable(
         &self,
         field: &Field,
@@ -1951,19 +1894,8 @@ impl Registry {
     }
 }
 
-/// `[(0, '=', 1)]` and its spellings: the domain the ir.access conversion
-/// gives a row that grants nothing, which `Domain` reads as FALSE.
 const NOTHING: &str = "[(0, '=', 1)]";
 
-/// An access row's domain as the kernel can apply it, from its `reach`, its
-/// `anchor` and its `domain` (`ir.access._row_domains`): no reach or `all` is
-/// the domain alone, `none` is nothing whatever the domain says, and `own`,
-/// `company` and `partner` reach through the model's anchor, compiled per
-/// principal (`security::reach_domain`) and ANDed with the domain as a fixed
-/// filter. A named predicate's template is evaluated per principal too
-/// (`security::predicate_domain`); a predicate that is a method is Python code,
-/// and `team`, `unit` and `unit_tree` compare the anchor with what hr and team
-/// bind: the kernel refuses those rows instead of reading them as unrestricted.
 fn reach_domain(
     reach: Option<&str>,
     anchor: Option<&str>,
@@ -2031,8 +1963,6 @@ fn predicate_template(row: PredicateRow) -> std::result::Result<Predicate, Strin
     })
 }
 
-/// The anchors an export states for a model; `None` when it states none, a
-/// registry that cannot know them.
 fn access_anchors(
     model: &str,
     exported: &serde_json::Value,

@@ -223,26 +223,12 @@ pub struct Request {
     #[serde(default)]
     pub allowed_company_ids: Option<Vec<i32>>,
 
-    /// Python's group state for the principal (`_get_group_scopes`): each
-    /// held group, with the companies a grant limits it to or `null`. It is
-    /// what the live grants, their dates, the companies in use and the
-    /// environment's privileges make of the memberships; without it the
-    /// kernel reads the memberships, and refuses a principal they misstate.
     #[serde(default)]
     pub principal_groups: Option<std::collections::BTreeMap<i32, Option<Vec<i32>>>>,
 
-    /// The partner and commercial partner an access row's reach compares
-    /// with, as Python binds them (`ir.access._access_bind_partner` and
-    /// `_access_bind_commercial_partner`): an acting partner in the context
-    /// replaces the user's own. Without it the kernel reads the user's own.
     #[serde(default)]
     pub access_partner: Option<(i32, i32)>,
 
-    /// With no `access_partner`, bind the user's own partner and commercial
-    /// partner read in this dispatch, which is what `ir.access` binds when no
-    /// acting partner is named: the caller states that nothing pending in its
-    /// ORM could make the columns differ. The binds read are what the rule
-    /// cache is keyed on, as if they had been sent.
     #[serde(default)]
     pub access_partner_of_user: bool,
 
@@ -282,23 +268,13 @@ pub struct Request {
     #[serde(default)]
     pub order_fragments: Vec<serde_json::Value>,
 
-    /// Decide `web_search_read`'s `length` in this same dispatch, by web's own
-    /// rule (`_format_web_search_read_results`), counting on the condition the
-    /// page was read with. The answer becomes `{"length": n, "records": [...]}`.
     #[serde(default)]
     pub web_length: Option<WebLength>,
 
-    /// Render each `unredacted_many2one` value the kernel labels as web's
-    /// `{"id": id, "display_name": name}` instead of `[id, name]`. The answer
-    /// becomes `{"records": [...]}`, with `"hidden"` naming the fields where
-    /// some target was left a bare id for Python to resolve.
     #[serde(default)]
     pub web_many2one: bool,
 }
 
-/// What `_format_web_search_read_results` reads besides the page itself: the
-/// `count_limit` its `search_count` is capped at, and the context's
-/// `force_search_count`.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebLength {
@@ -309,9 +285,6 @@ pub struct WebLength {
 }
 
 impl WebLength {
-    /// The length of a page of `n` records read at `offset` with `limit`:
-    /// `Ok` when the page decides it, `Err(cap)` when web asks
-    /// `search_count(domain, limit=count_limit)` for it.
     pub fn decide(&self, n: u64, offset: u64, limit: Option<u64>) -> Result<u64, Option<u64>> {
         if n == 0 {
             return if offset == 0 {
@@ -923,11 +896,6 @@ impl<'a> Orm<'a> {
         Ok(arc)
     }
 
-    /// A table-inheritance root is also guarded by each kind whose access the
-    /// principal does not hold whole (`_access_tree_member_guards`): a root row
-    /// whose kind row the kind's rules hide is hidden. One `KIND_GUARD` leaf per
-    /// such kind, carrying its rule domain; `Err` names a kind whose rules the
-    /// kernel cannot evaluate, and the root is refused with it.
     async fn kind_guards(
         &self,
         ctx: &ExprCtx<'_>,

@@ -18,9 +18,6 @@ fn rerr(e: impl std::fmt::Display) -> PyErr {
 
 const NUL_IN_TEXT: &str = "PostgreSQL text fields cannot contain NUL (0x00) bytes";
 
-/// A text parameter holding a NUL, which psycopg refuses before sending and
-/// PostgreSQL would refuse as an encoding error; lists are walked as psycopg
-/// dumps them, element by element.
 fn holds_nul_text(v: &Bound<'_, PyAny>) -> PyResult<bool> {
     if let Ok(s) = v.cast::<pyo3::types::PyString>() {
         return Ok(s.to_str().is_ok_and(|text| text.contains('\0')));
@@ -35,8 +32,6 @@ fn holds_nul_text(v: &Bound<'_, PyAny>) -> PyResult<bool> {
     Ok(false)
 }
 
-/// psycopg's own error for it, so a caller reading the message (odoo's import
-/// reports it per field) sees what it sees without the engine.
 fn refuse_nul_text(py: Python<'_>, values: &[Bound<'_, PyAny>]) -> PyResult<()> {
     for v in values {
         if holds_nul_text(v)? {
@@ -1240,10 +1235,6 @@ pub struct RustResult {
 #[pyclass]
 pub struct RustConn {
     client: std::sync::RwLock<Option<Arc<Client>>>,
-    /// One single-thread runtime per connection, driven on the calling
-    /// thread: a statement is a `block_on` here, with no handoff to a
-    /// worker thread and back, which cost about eight microseconds of a
-    /// twenty-microsecond round trip under the shared multi-thread runtime.
     rt: Arc<tokio::runtime::Runtime>,
     stmt_cache: std::sync::Mutex<HashMap<String, tokio_postgres::Statement>>,
 
@@ -1323,8 +1314,6 @@ impl RustConn {
         self.rt.clone()
     }
 
-    /// Drive a future on this connection's runtime, which also drives the
-    /// connection task the runtime owns; the only way a statement runs.
     pub fn block_on<F: std::future::Future>(&self, fut: F) -> F::Output {
         self.rt.block_on(fut)
     }
@@ -1611,8 +1600,6 @@ fn declared_type(v: &Bound<'_, PyAny>) -> Type {
     }
 }
 
-/// psycopg sizes a list of ints by its widest member, as it sizes one int, so
-/// `unnest(%s)` over small ids yields what a function taking `integer` accepts.
 fn int_array_type(v: &Bound<'_, PyAny>) -> Type {
     use pyo3::types::{PyBool, PyInt};
     let (mut low, mut high) = (0_i64, 0_i64);
@@ -1670,11 +1657,6 @@ fn returns_rows(sql: &str) -> bool {
     }
 }
 
-/// A `WITH` statement returns rows unless its primary statement -- the first
-/// keyword after the common table expressions, at the depth `WITH` sits at -- is
-/// a data-modifying one without its own `RETURNING`. Taking every `WITH` for a
-/// query sent `WITH ... UPDATE` through the query path, whose `rowcount` counts
-/// the rows returned (none) instead of the rows the command affected.
 fn with_statement_returns_rows(sql: &str) -> bool {
     let words = statement_level_keywords(sql);
     let Some(primary) = words.iter().skip(1).position(|word| {
@@ -1695,9 +1677,6 @@ fn with_statement_returns_rows(sql: &str) -> bool {
     words[primary + 1..].iter().any(|word| word == "RETURNING")
 }
 
-/// The keywords at the nesting depth of the statement's leading keyword: those
-/// inside a common table expression's or a subquery's parentheses, a string, a
-/// quoted identifier or a comment are not the statement's own.
 fn statement_level_keywords(sql: &str) -> Vec<String> {
     let bytes = sql.as_bytes();
     let mut words = Vec::new();

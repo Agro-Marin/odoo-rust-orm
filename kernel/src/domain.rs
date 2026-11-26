@@ -22,9 +22,6 @@ pub struct Leaf {
 
 pub const MAX_DOMAIN_NESTING: usize = 100;
 
-/// The operator of the leaf the rule walk gives a table-inheritance root for
-/// each kind that restricts the principal (`_access_tree_member_guards`); its
-/// value names the kind and carries the kind's rule domain.
 pub const KIND_GUARD: &str = "kind guard";
 
 struct Item {
