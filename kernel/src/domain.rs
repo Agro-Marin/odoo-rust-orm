@@ -32,9 +32,6 @@ struct Item {
     depth: usize,
 }
 
-// Keep a junction's children appendable at either end while parsing. A long
-// right-associated prefix expression otherwise copies its entire suffix at
-// every operator. Public nodes remain compact vectors after construction.
 enum Pending {
     Node(Node),
     Junction { and: bool, children: VecDeque<Node> },
@@ -90,7 +87,6 @@ fn nary(and: bool, operands: impl IntoIterator<Item = Item>) -> Result<Item> {
                 and: other,
                 children: mut inner,
             } if and == other => {
-                // Move the smaller side; prepending in reverse preserves order.
                 if children.len() < inner.len() {
                     for child in children.into_iter().rev() {
                         inner.push_front(child);
@@ -223,9 +219,6 @@ fn parse_leaf(leaf: &[Json]) -> Result<Node> {
         .ok_or_else(|| refusal!("leaf operator must be a string"))?
         .to_string();
 
-    // Domain accepts only TRUE_LEAF (1, '=', 1) and FALSE_LEAF (0, '=', 1),
-    // using Python tuple equality, including numerically equal bools/floats.
-    // Other non-string operands are invalid, not expressions to evaluate.
     let sentinel_number = |v: &Json| match v {
         Json::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
         Json::Number(n) => n.as_f64(),
@@ -281,9 +274,6 @@ pub fn referenced_fields(node: &Node, out: &mut Vec<String>) {
     }
 }
 
-// whether the domain selects no row whatever the rows hold, as Python's
-// optimization finds it (an `in` of nothing is FALSE on every field): a search
-// for it is answered without a statement
 pub fn is_false(node: &Node) -> bool {
     match node {
         Node::False => true,

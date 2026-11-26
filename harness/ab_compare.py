@@ -37,7 +37,6 @@ SKIP_COLUMNS = {
     "write_date",
     "login_date",
     "last_update",
-    # random per run, measured by the python-vs-python control
     "message_id",
     "access_token",
     "html_field_history",
@@ -89,8 +88,6 @@ def main() -> int:
         a.cursor() as ca,
         b.cursor() as cb,
     ):
-        # a comparison of two snapshots nothing was committed to reads as a
-        # perfect agreement; the workload's own rows must be in both
         for cur, name in ((ca, args.db_a), (cb, args.db_b)):
             cur.execute(
                 "SELECT count(*) FROM res_partner WHERE name LIKE 'AB Partner%%'"

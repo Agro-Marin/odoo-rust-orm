@@ -317,7 +317,6 @@ else:
 
 import signal
 
-# the probe exists to prove the kernel handle survives a fork
 child = os.fork()
 if child == 0:
     try:

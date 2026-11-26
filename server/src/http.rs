@@ -142,8 +142,6 @@ impl Pool {
             .pop()
             .expect("a permit guarantees a free connection");
         permit.forget();
-        // Own the slot before any await: a timeout during reconnect must return
-        // both the old connection and its permit through Lease::drop.
         let mut lease = Lease {
             pool: self,
             conn: Some(conn),
@@ -567,9 +565,6 @@ fn token_matches(given: &str, expected: &str) -> bool {
     (diff | same_len) == 0 && !expected.is_empty()
 }
 
-// This is a public protocol, unlike Request, which also carries assertions
-// produced by trusted Python code. An allowlist keeps future internal fields
-// from silently becoming client-controlled authority.
 fn public_request(body: serde_json::Value) -> Result<Request, (StatusCode, String)> {
     let object = body.as_object().ok_or_else(|| {
         (
@@ -848,8 +843,6 @@ mod tests {
         pool.free.lock().unwrap()[0]
             .poisoned
             .store(true, Ordering::SeqCst);
-        // Accept TCP but never complete the PostgreSQL handshake, so cancellation
-        // occurs during reconnect rather than while waiting for a pool permit.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         pool.dsn = format!(
             "host=127.0.0.1 port={} user=probe dbname=probe sslmode=disable",
@@ -891,7 +884,6 @@ mod tests {
         assert!(pool.try_acquire().await.is_err());
         assert_eq!(pool.permits.available_permits(), 0);
         assert_eq!(pool.free.lock().unwrap().len(), 0);
-        // Waiting for a permit must not return the held connection prematurely.
         held.client.simple_query("SELECT 1").await.unwrap();
         held.poisoned.store(true, Ordering::SeqCst);
         drop(held);
@@ -940,9 +932,6 @@ mod tests {
             .get(0);
         assert!(killed);
         assert!(held.client.simple_query("SELECT 1").await.is_err());
-        // The async driver need not have set is_closed yet. Production holds
-        // a request guard and poisons failed cleanup; acquisition alone cannot
-        // guarantee a remote peer stays alive after the local health check.
         drop(guard);
         assert!(held.is_unusable());
         drop(held);

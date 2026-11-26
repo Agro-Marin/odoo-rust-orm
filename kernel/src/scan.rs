@@ -262,8 +262,6 @@ impl<'a> Orm<'a> {
             .build_condition(model, domain_json, env, &rules, req.trusted_domain)
             .await?;
         let cond_ms = t_cond.elapsed().as_secs_f64() * 1000.0;
-        // the count web may ask for is taken on the very condition the page is
-        // read with, as Python's search_count compiles the same domain again
         let count_cond = req.web_length.as_ref().map(|_| cond.clone());
         let ctx = self.ctx(env);
 
@@ -735,8 +733,6 @@ impl<'a> Orm<'a> {
             }
         }
         if field.ttype == FieldType::Many2many {
-            // a relation that is a model's own table can hold a pair twice,
-            // and the pair is one link
             for ids in out.values_mut() {
                 let mut seen = std::collections::HashSet::with_capacity(ids.len());
                 ids.retain(|id| seen.insert(*id));
@@ -985,8 +981,6 @@ impl<'a> Orm<'a> {
             } else {
                 ctx.read_expr(model, f, &model.table)?
             };
-            // the fork aggregates a boolean as COALESCE(<field>, FALSE): a
-            // record without a value counts, and counts as false
             let inner = if f.ttype == FieldType::Boolean {
                 Expr::cust_with_exprs("COALESCE($1, FALSE)", [inner])
             } else {
@@ -1448,7 +1442,6 @@ where
 }
 
 // A number carries its own type: the server would otherwise give the parameter
-// the aggregate's (int4 for MAX of a many2one) and refuse the eight bytes sent.
 fn having_value(value: &Json) -> Result<Expr> {
     Ok(match value {
         Json::Number(n) if n.is_i64() => Expr::val(n.as_i64().expect("i64")).cast_as("int8"),
@@ -1525,7 +1518,6 @@ mod tests {
             sql.contains("NOT SUM\"t\".\"value\"::float8 < CAST9 AS int8"),
             "{sql}"
         );
-        // two bare triples AND together, as python's stack does
         let sql = flat(
             having_sql(json!([["__count", "<", 3], ["value:sum", ">=", 4]]))
                 .unwrap()

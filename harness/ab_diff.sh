@@ -1,18 +1,4 @@
 #!/usr/bin/env bash
-# usage: harness/ab_diff.sh [--modules LIST] [--keep]
-#
-# The A/B database differential: one demo snapshot, three clones, the same
-# committed business workload on each -- A with the engine on (routing and
-# the persistence port), B on Python, C on Python as the control -- then
-# every table of A compared with B cell by cell, and B with C to show what
-# the workload itself does not reproduce. Exit 0 only when A equals B and
-# B equals C.
-#
-#   --modules LIST   the snapshot's modules (default below); demo data is on
-#   --keep           keep the four databases
-#
-# environment: RUSTORM_AB_PREFIX (default rustorm_ab), RUSTORM_AB_OUT,
-#   RUSTORM_WORKSPACE / RUSTORM_ODOO_ROOT / RUSTORM_PYTHON / RUSTORM_ODOO_CONF
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE="${RUSTORM_WORKSPACE:-$(cd "$ROOT/.." && pwd)}"
@@ -56,8 +42,6 @@ for x in a b c; do
   psql -U marin -d postgres -c "CREATE DATABASE ${PREFIX}_$x TEMPLATE $BASE" >/dev/null || { echo "clone $x failed"; exit 1; }
 done
 
-# the engine leg's conf: the workspace conf with the addon, armed for A,
-# routing on and the port on; the python legs use the conf as given
 {
   grep -vE '^(addons_path|server_wide_modules|rust_engine_[a-z_]*)[[:space:]]*=' "$CONF"
   addons=$(sed -nE 's/^addons_path[[:space:]]*=[[:space:]]*//p' "$CONF" | tail -1)
@@ -72,7 +56,7 @@ done
   echo "server_wide_modules = base,web"
 } > "$OUT/python.conf"
 
-leg() {  # leg DB CONF
+leg() {
   "$PY" "$ODOO/odoo-bin" shell -c "$2" -d "$1" --no-http --db_maxconn=8 \
       <<< "exec(open('$ROOT/harness/ab_workload.py').read())" > "$OUT/$1.log" 2>&1
   local rc=$?

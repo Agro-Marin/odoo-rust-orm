@@ -4,8 +4,6 @@ use std::time::Instant;
 use odoo_kernel::orm::{Caches, Orm, Request, StmtCache};
 use odoo_kernel::registry::Registry;
 
-// A retained control for the old cache-hit path. Both caches hold the same
-// real prepared statements; timing excludes PostgreSQL preparation/execution.
 #[derive(Default)]
 struct QueueCache {
     inner: std::sync::Mutex<(

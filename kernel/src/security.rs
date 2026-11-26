@@ -95,8 +95,6 @@ fn parse_atom(c: &[char], p: &mut usize) -> Result<PyExpr> {
                 match c.get(*p) {
                     Some(',') => *p += 1,
                     Some(')') if ch == '(' && items.len() == 1 => {
-                        // Without a comma, parentheses group an expression;
-                        // a singleton tuple takes the comma branch instead.
                         *p += 1;
                         return Ok(items.remove(0));
                     }
@@ -476,9 +474,6 @@ async fn predicate_domain(
     Ok(domain)
 }
 
-// The row's other terms follow the predicate's in one prefix list: a dangling
-// operator in it would take them as its operands. Python's Domain() refuses
-// such a predicate, and its row admits nothing.
 fn check_predicate_domain(model: &str, name: &str, domain: &Json) -> Result<()> {
     if !domain.is_array() {
         refuse!("predicate {name} on {model} answers {domain}, not a domain");
@@ -678,8 +673,6 @@ async fn resolve_name(
             other => refuse!("unknown name {other:?} in rule expression"),
         };
 
-    // A mapped relation followed by ordinary scalar access still requires a
-    // singleton. Only a scalar inside the terminal mapped() returns a list.
     let mapped = rest.last().is_some_and(|segment| segment.starts_with('*'));
     let mut path: Vec<String> = rest
         .iter()
@@ -987,8 +980,6 @@ fn float_json(value: f64) -> Result<Json> {
 
 fn scalar_json(field: &crate::registry::Field, value: Option<&str>) -> Result<Json> {
     let Some(s) = value else {
-        // Field record conversion differs from search comparands: text NULL
-        // remains false, whereas numeric NULL becomes a typed zero.
         return Ok(match field.ttype {
             FieldType::Integer | FieldType::Many2oneReference => json!(0),
             FieldType::Float | FieldType::Monetary => json!(0.0),
@@ -1283,8 +1274,6 @@ async fn rules_domain_inner(
         "combining the access rows that bind this identity"
     );
 
-    // ir.access: the OR of the permissions the principal holds, which is
-    // FALSE when it holds none, AND every guard binding it, AND each parent
     let mut combined: Vec<Json> = inherited;
     for d in global_domains {
         combined.extend(d.as_array().cloned().unwrap_or_default());
@@ -1295,8 +1284,6 @@ async fn rules_domain_inner(
             .cloned()
             .unwrap_or_default(),
     );
-    // TRUE is no restriction: a parent that admits everything adds no `any`
-    // subquery, as Python appends a parent's domain only when it is not TRUE
     Ok((!combined.is_empty()).then_some(Json::Array(combined)))
 }
 
@@ -1574,8 +1561,6 @@ mod tests {
 
     #[test]
     fn a_members_guard_held_in_some_companies_denies_only_there() {
-        // FALSE | ~within is ~within: the model stays readable outside the
-        // companies the guard's group is held in, unless nothing anchors it
         let mut security = access_security();
         let scoped: GroupScopes = [(3, vec![7])].into_iter().collect();
         assert!(

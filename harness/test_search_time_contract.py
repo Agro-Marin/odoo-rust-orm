@@ -173,7 +173,6 @@ def port(monkeypatch):
             assert name == model._name
             return model
 
-    # Trigger capability caching needs a weak-referenceable registry.
     class Registry:
         pass
 
@@ -231,7 +230,6 @@ def port(monkeypatch):
     )
     monkeypatch.setattr(backend, "_search_native", compile_where)
     monkeypatch.setattr(rust_orm_shim, "_rust_conn", lambda _env: conn)
-    # Fixtures use temporary relations: no persistent application tables touched.
     conn.execute("CREATE TEMP TABLE audit_search_target (id serial PRIMARY KEY)")
     conn.execute(
         "CREATE TEMP TABLE audit_search_ref (id serial PRIMARY KEY, res_model text, res_id int, target_id int REFERENCES audit_search_target)"

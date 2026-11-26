@@ -280,8 +280,6 @@ def seed_grouped_user(su, IM, Rule):
     for name, model, group, composition, dom in rules:
         if Rule.search([("name", "=", name)]):
             continue
-        # a grant widens what the group reads, OR-ed with its other
-        # permissions; a restriction binds the group's members, AND-ed
         Rule.create(
             {
                 "name": name,

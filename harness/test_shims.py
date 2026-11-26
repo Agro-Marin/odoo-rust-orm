@@ -384,7 +384,6 @@ def test_give_back_resets_the_session() -> None:
         [(db_shim.RESET_SESSION_STATE_SQL, False)],
     )
     check("reset clears the read-only flag", cnx.read_only, False)
-    # what the fork's pool does on return: re-set only when the getter differs
     cnx.read_only = True
     if cnx.read_only is not False:
         cnx.read_only = False
@@ -777,8 +776,6 @@ def _os_threads() -> int:
 
 
 def _settled_os_threads(want, seconds=1.0) -> int:
-    # Thread.join returns once the thread's state is released, a moment before
-    # the kernel drops its task: a thread joined just now may still be listed
     deadline = time.monotonic() + seconds
     while (count := _os_threads()) > want and time.monotonic() < deadline:
         time.sleep(0.001)

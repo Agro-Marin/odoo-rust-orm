@@ -62,15 +62,12 @@ mkdir -p "$OUT"
 echo "perf gate on '$DB', $ROUNDS pairs   (artifacts in $OUT)"
 echo "  $(uptime)"
 
-# the freshly built extension when there is one, as verify.sh and parity.sh do
 if [ -f "$ROOT/target/release/libengine_py.so" ]; then
   mkdir -p "$OUT/pymod"
   cp "$ROOT/target/release/libengine_py.so" "$OUT/pymod/engine_py.so"
   export PYTHONPATH="$OUT/pymod${PYTHONPATH:+:$PYTHONPATH}"
 fi
 
-# Cron threads and background workers commit between legs; a leg that waits on
-# one reads as the kernel's cost.
 {
   grep -vE '^(addons_path|server_wide_modules|rust_engine_[a-z_]+|max_cron_threads|workers|db_maxconn) *=' "$CONF"
   printf 'addons_path = %s,%s/addons\n' "$(sed -nE 's/^addons_path *= *//p' "$CONF" | tail -1)" "$ROOT"
@@ -87,7 +84,6 @@ if [ -z "$WORKLOAD" ]; then
        <<< "exec(open('$ROOT/harness/parity_corpus.py').read())" > "$OUT/corpus.log" 2>&1; then
     echo "PERF SETUP FAILED: corpus generation; see $OUT/corpus.log"; exit 2
   fi
-  # the context an HTTP client sends, so the replay reads what parity reads
   "$PY" - "$OUT/corpus.json" "$OUT/workload.jsonl" <<'PYEOF'
 import json, sys
 cases = json.load(open(sys.argv[1]))
@@ -121,8 +117,6 @@ bench() {
 judge_args=(--confidence "${RUSTORM_PERF_CONFIDENCE:-0.99}")
 [ -n "$FLOORS" ] && judge_args+=(--floors "$FLOORS")
 
-# one leg pair, judged twice: first to name the suspects, then with the
-# suspects re-timed on their own
 gate() {
   local name="$1" control="$2"; shift 2
   bench "$name" "$control" "$WORKLOAD"

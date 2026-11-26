@@ -546,8 +546,6 @@ fn an_equality_on_display_name_searches_the_name_columns_and_handles_unset_names
 
 #[test]
 fn a_negative_operator_on_a_relational_display_name_keeps_the_unset_relation() {
-    // ir.actions.act_window.view's name is its view_id: Python negates the positive match on
-    // view_id.display_name, so a row without a view matches `not =like 'a'`
     let mut reg = base_registry();
     reg.models
         .get_mut("res.partner")
@@ -2156,7 +2154,6 @@ fn class_based_field_access_is_not_mistaken_for_an_unrestricted_field() {
                 .to_string()
                 .contains("Python read-access class policy")
         );
-        // Superuser compilation may still use the field.
         let _ = compile(&reg, dom);
     }
 }
@@ -2180,8 +2177,6 @@ fn missing_or_malformed_field_policy_metadata_cannot_enable_user_reads() {
             .fields
             .get_mut("name")
             .unwrap();
-        // The same optional boolean decoded by Registry::from_export. Database
-        // bootstrap also leaves it unknown rather than asserting public access.
         field.python_read_access = metadata["python_read_access"].as_bool();
         let domain = json!([["name", "ilike", ""]]);
         let error = compile_as_user(&reg, domain.clone())
@@ -2855,10 +2850,6 @@ fn count_sql_on(reg: &Registry, model: &str, dom: serde_json::Value) -> String {
 #[test]
 fn a_relational_rec_name_searches_the_comodel_display_name_on_the_path() {
     let reg = relational_rec_name_registry();
-    // _search_display_name_match writes a negative operator on a relational name field as
-    // ~Domain(country_id.display_name, positive, value): a link without a country has no name
-    // to match and is kept (measured on ir.actions.act_window.view, whose name is its view_id:
-    // `display_name not ilike 'a'` gave Python 6 rows and the kernel 5, the one without a view)
     let sql = count_sql_on(&reg, "m.link", json!([["display_name", "not ilike", "a"]]));
     assert!(
         sql.contains(r#""m_link"."country_id" NOT IN (SELECT"#),
@@ -4090,7 +4081,6 @@ fn dialect_conversion_preserves_identifiers_emitted_by_the_query_builder() {
         .with_env_filter("debug")
         .with_test_writer()
         .try_init();
-    // Dollar signs are permitted by the fork's table and column validators.
     let table = "audit$1";
     let column = "amount$2";
     let (sql, values) = Query::select()

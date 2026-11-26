@@ -82,8 +82,6 @@ pub fn dsn_for(db_name: Option<&str>) -> String {
 }
 
 fn with_dbname(dsn: &str, db_name: &str) -> String {
-    // Both conninfo syntaxes use the last occurrence of a parameter. Preserve
-    // the original credentials/options verbatim and append a quoted override.
     if dsn.starts_with("postgres://") || dsn.starts_with("postgresql://") {
         let mut out = format!("{dsn}{}dbname=", if dsn.contains('?') { "&" } else { "?" });
         for byte in db_name.bytes() {

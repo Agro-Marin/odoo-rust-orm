@@ -57,20 +57,6 @@ BREAKER = int(os.environ.get("RUSTORM_ROUTE_BREAKER", "0") or 0)
 SAMPLE = float(os.environ.get("RUSTORM_ROUTE_SAMPLE", "0") or 0)
 _RNG = random.Random()
 
-# opt-in reshapings of the routed web reads, each measured on its own; none of
-# them changes an answer, and an empty set keeps the routed path as it was:
-#   doors  a registry operation door that passes through is not a web override
-#   early  the gate refuses a read path the kernel's own export would refuse,
-#          before the request is built
-#   rules  record rules Python resolves to plain data are kept across requests
-#          under the access domain's own key, and the user's own partner binds
-#          are read by the kernel in the dispatch instead of through the ORM
-#   count  web_search_read's length is decided in the page's own dispatch
-#   labels the kernel renders the many2ones it labels as web's dicts and names
-#          the fields it left a target unlabelled in, so Python walks no record
-#          but those, and revives only the date and datetime columns
-#   nowarm a routed web read does not copy its answer into the ORM cache; the
-#          next attribute access reads from the database instead
 WEB_FASTPATH_FEATURES = frozenset(
     {"doors", "early", "rules", "count", "labels", "nowarm"}
 )
@@ -385,17 +371,9 @@ def _taint_users(cr, uids) -> None:
     DIRTY_USERS.setdefault(key, set()).update(uids)
 
 
-#: The columns the kernel's snapshot reads from a security model whose other
-#: columns it never looks at: a write touching none of them cannot stale
-#: anything the kernel holds. res.lang is read as `code, week_start` of the
-#: active rows (registry.rs); res.users answers through its own invalidation
-#: fields. A model absent here taints on every write.
 KERNEL_READ_FIELDS = {
     "res.lang": frozenset({"code", "week_start", "active"}),
-    # membership comes from res_company_users_rel joined on c.active; a rule's
-    # path through a company record is queried at evaluation time
     "res.company": frozenset({"user_ids", "active"}),
-    # the columns registry.rs selects from ir_model_fields
     "ir.model.fields": frozenset(
         {
             "model",
@@ -532,11 +510,6 @@ _READ_PATH_NEEDS = {
 }
 
 
-# hooks the kernel's `Model::overridden_for("search_read")` refuses and the
-# path's own needs leave out, read from the same purity walk the export runs:
-# these paths dispatch a kernel search_read, so a model failing one of them is
-# refused there anyway. `fetch` stays with the kernel on the search paths,
-# which do not go through it in Python
 _KERNEL_SEARCH_READ_NEEDS = {
     "read": ("_search", "search_read", "search_fetch", "_field_to_sql"),
     "search_read": ("_field_to_sql",),
@@ -699,17 +672,10 @@ def _rules_read_through_x2many(model, fields):
     )
 
 
-# the kernel's statements run on the connection, not through the cursor, so a
-# recorder or a query hook would see a routed read issue none; while the
-# cursor's statements are observed python serves the read and the observer
-# sees its SQL
 STATEMENTS_OBSERVED = "the cursor's statements are being observed"
 
 
 def _unaccent_overridden(registry) -> bool:
-    # the kernel folds accents when the database has unaccent, as the probe
-    # decides; a registry whose unaccent was swapped (assertQueries sets it to
-    # the identity) asks for SQL the kernel does not emit
     from odoo.orm.runtime import _registry_capabilities as capabilities
 
     probed = (
@@ -786,8 +752,6 @@ def access_the_kernel_lacks(env, reached):
 
 
 def _privilege_frames_of(env):
-    # the blocks privileged() opens add their grants as python judges the
-    # access, so any read that reaches a model one holds is python's to answer
     transaction = getattr(env, "transaction", None)
     if not getattr(transaction, "_privilege_frames", None):
         return None
@@ -848,7 +812,6 @@ def _gate(model, fields=None, order=None, domain=None, method=None):  # noqa: AR
         return _refuse("registry.unaccent is not the one its capability probe set")
     for fname in fields or ():
         if method == "_read_group":
-            # a groupby spec carries its granularity: `date_deadline:month`
             fname = fname.split(":")[0]
         if fname == "display_name" and not _display_ok(model):
             return _refuse("display_name computed in python")
@@ -1134,10 +1097,6 @@ def _resolve_display_name_exact(model, domain):
     return out
 
 
-# the wire carries a date as its ISO text, and these read the two apart: a
-# boolean takes a date as true and the text through str2bool, a relational
-# field refuses a date and searches the text as a name, and an `=like`
-# pattern must be a string
 _DATE_TEXT_DIFFERS = frozenset(("boolean", "many2one", "one2many", "many2many"))
 _PATTERN_OPERATORS = frozenset(("=like", "=ilike", "not =like", "not =ilike"))
 
@@ -1245,8 +1204,6 @@ _RULES_NEED_PYTHON = {}
 
 
 def _rules_key(env, name):
-    # the access domain's own cache key: the principal's group state, the
-    # companies in use and its privileges decide it, not the uid alone
     lru = env.registry.ormcache_lrus.get("default")
     return (
         id(env.registry),
@@ -1257,9 +1214,6 @@ def _rules_key(env, name):
 
 
 def _principal_groups(env):
-    # what the live grants, their dates, the companies in use and the
-    # environment's privileges make of the memberships; the kernel's own copy
-    # of the memberships cannot state a grant limited to some companies
     user = env.user
     if not hasattr(type(user), "_get_group_scopes"):
         return None
@@ -1270,9 +1224,6 @@ def _principal_groups(env):
 
 
 def _access_partner(env):
-    # the partner and commercial partner an access row's reach compares with,
-    # as ir.access binds them: a contact the code acts on behalf of replaces
-    # the user's own, which the kernel cannot read from the database
     access = env["ir.access"]
     if not hasattr(type(access), "_access_bind_commercial_partner"):
         return None
@@ -1283,9 +1234,6 @@ _BASE_PARTNER_BINDS = {}
 
 
 def _binds_are_the_users_own(env) -> bool:
-    # ir.access binds the user's own partner and commercial partner unless the
-    # context names an acting one; with nothing pending in the ORM the columns
-    # the kernel reads in the caller's transaction are what the ORM would read
     from odoo.orm.constants import ACTING_PARTNER_KEY
 
     if env.context.get(ACTING_PARTNER_KEY) or _is_flush_required(env):
@@ -1320,8 +1268,6 @@ def _rules_need_python(env, name):
     needed = _RULES_NEED_PYTHON.get(key)
     if needed is None:
         domain = env[name]._access_domain("read")
-        # Reach policies are compiled for the live principal by Odoo even when
-        # the resulting domain contains only ordinary stored fields (or TRUE).
         rows = env["ir.access"]._get_all_access()
         pending, seen = [name], set()
         per_principal = False
@@ -1330,8 +1276,6 @@ def _rules_need_python(env, name):
             if current in seen:
                 continue
             seen.add(current)
-            # The native loader also handles the constant FALSE reach (none).
-            # Only principal-dependent reaches need a resolved Python domain.
             if any(
                 row.reach not in (None, "", "all", "none")
                 for row in rows.get(current, ())
@@ -1339,8 +1283,6 @@ def _rules_need_python(env, name):
                 per_principal = True
                 break
             model = env[current]
-            # the kernel compiles no label guard (_access_label_guard); Python's
-            # resolved domain carries it as data
             if model._access_label_field:
                 per_principal = True
                 break
@@ -1509,9 +1451,6 @@ def _custom_nodes(domain):
             pending.append(node.value)
 
 
-# the kernel compiles a table-inheritance root's guard over its kinds itself
-# (kernel::orm kind_guards), from the kinds' rows; any other SQL in a resolved
-# rule domain is Python's alone
 def _is_kind_guard(node) -> bool:
     import functools
 
@@ -1522,9 +1461,6 @@ def _is_kind_guard(node) -> bool:
 
 
 def _resolution_is_pure(env, name, domain, rules, statements) -> bool:
-    # kept only when the resolution read nothing: no statement ran, no Python
-    # search method took part, and the result is literals alone (no subquery
-    # or SQL fragment built against this request's state)
     if statements is None or getattr(env.cr, "sql_statement_count", None) != statements:
         return False
     if _has_python_search_field_in_domain(env[name], domain):
@@ -1600,10 +1536,7 @@ def _request(model, method, **kw):
 
 
 def report_kernel_statements(env, conn, before, delay) -> None:
-    # the kernel's statements run on the connection, beside the cursor: counted
-    # as the cursor's own, a count taken on it holds whichever path served
     sent = conn.kernel_statements - before
-    # an odoo older than the cursor's record_foreign_statements counts none
     if sent and (record := getattr(env.cr, "record_foreign_statements", None)):
         record(sent, delay)
 
@@ -1620,8 +1553,6 @@ def _dispatch(model, method, **kw):
     sent_before = conn.kernel_statements
     raw = dispatch(conn, request)
     dispatched = time.monotonic() if timing else 0
-    # with debug logging off the call reads no clock: the statements count,
-    # their time does not
     report_kernel_statements(model.env, conn, sent_before, dispatched - prepared)
     result = json_loads(raw)
     if timing:
@@ -1697,8 +1628,6 @@ def _revive_records(model, records):
 
 
 def _revive_web_records(model, records):
-    # _revive_records for an answer whose many2ones are web's dicts already:
-    # only the date and datetime columns are walked, and none when there are none
     if not records:
         return records
     fields = model._fields
@@ -1828,9 +1757,6 @@ def _web_clean(model):
 
 
 def _resolves_to(cls, name, method) -> bool:
-    # the registry puts an operation door over web_read on every model class; a
-    # door that passes through calls the next class's method, so it is not an
-    # override, and the identity alone read every model as overriding web
     import purity
 
     for klass in cls.__mro__:
@@ -1986,8 +1912,6 @@ def _web_resolve_many2ones(model, records, specification, raw, unredacted):
 
 
 def _web_resolve_hidden_many2ones(model, records, specification, raw, hidden):
-    # _web_resolve_many2ones once the kernel rendered its labels as web's dicts:
-    # only a field it left a bare id in is walked, as the unredacted loop does
     for name in raw:
         spec = specification[name] or {}
         if "fields" in spec:
@@ -2168,9 +2092,6 @@ def _name_search_clean(model):
 
 
 def _signed_as(new, orig):
-    # a patch replaces the method on its class for every registry in the
-    # process, so an override anywhere is read against it: it must show the
-    # original's signature, annotations and defaults included
     import annotationlib
     import inspect
 
@@ -2313,10 +2234,6 @@ def _wrap_search_count(orig_search_count):
 
 
 def _masked_many2one(model, groupby, aggregates, having=()):
-    # the fork folds a many2one target the reader cannot read into the empty
-    # group (MASK_UNREADABLE_TARGETS, which web_read_group sets), wherever the
-    # many2one is read: a groupby or its path's hops, an aggregate, a having
-    # term. The kernel would name that target, so Python answers such a read
     if not model._is_read_group_masking_many2one():
         return None
     specs = [*groupby, *aggregates, *_having_specs(having or ())]
@@ -2580,9 +2497,6 @@ def _wrap_signal_changes(orig_signal_changes):
 
 
 def _wrap_web_search_read(orig_web_read, orig_web_search_read):
-    # the one stamp is the versioned_dispatched this wrapper is installed under:
-    # the fallback and the shadow baseline call the undecorated original so that
-    # a dispatched answer is stamped once and an in-process one never
     unstamped = getattr(orig_web_search_read, "__wrapped__", orig_web_search_read)
 
     def web_search_read(
@@ -2596,8 +2510,6 @@ def _wrap_web_search_read(orig_web_read, orig_web_search_read):
     ):
         plan = None
         if pseudo := _web_pseudo_fields(specification):
-            # screening drops web_read's pseudo-fields (__verbs, __checksums),
-            # which it computes per record before returning them
             _refuse(f"pseudo-fields {sorted(pseudo)} are computed in python")
         elif not _web_clean(self):
             _refuse("web read hooks overridden in python")
@@ -2827,7 +2739,6 @@ def _prepare_formatted_group_planner(_group_hooks_clean):
             return _refuse("read_group formatting hooks overridden in python")
         fill_temporal = model.env.context.get("fill_temporal")
         if (fill_temporal or isinstance(fill_temporal, dict)) and (limit or offset):
-            # python raises on this combination; let it
             return _refuse("fill_temporal with a limit or an offset")
         for aggregate in aggregates:
             if (
@@ -2843,8 +2754,6 @@ def _prepare_formatted_group_planner(_group_hooks_clean):
                 return _refuse(f"groupby {spec}")
             name, _, granularity = spec.partition(":")
             if granularity:
-                # a date or datetime bucketed by the kernel's date_trunc;
-                # the fork's own formatter labels it afterwards
                 field = model._fields.get(name)
                 if (
                     field is None
@@ -3026,8 +2935,6 @@ def _wrap_formatted_read_group(
                         groups = expanded
                 fill_temporal = self.env.context.get("fill_temporal")
                 if fill_temporal or isinstance(fill_temporal, dict):
-                    # the fork's own filler over the kernel's groups, as
-                    # web_read_group applies it over python's
                     groups = self._web_read_group_fill_temporal(
                         groups,
                         list(groupby),
@@ -3035,9 +2942,6 @@ def _wrap_formatted_read_group(
                         **(fill_temporal if isinstance(fill_temporal, dict) else {}),
                     )
                 if any(":" in spec for spec in groupby):
-                    # a temporal bucket carries a label and a __range the
-                    # fork's formatter builds; python's own path, over
-                    # the kernel's groups
                     result = self._web_read_group_format(groupby, aggregates, groups)
                 else:
                     result = _format_routed_groups(

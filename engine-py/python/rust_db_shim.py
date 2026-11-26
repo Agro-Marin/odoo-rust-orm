@@ -352,11 +352,6 @@ class FakeConnection:
 
     @property
     def read_only(self) -> bool:
-        # The fork's pool re-sets this flag on return only when the getter says
-        # it differs (odoo.db.lifecycle._set_transaction_flags), so the shim
-        # must answer what was set: a False here while the Rust cursor still
-        # held True left the flag on the pooled connection, and the next
-        # borrower's first BEGIN opened READ ONLY.
         return self._read_only
 
     @read_only.setter

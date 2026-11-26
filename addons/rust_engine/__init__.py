@@ -391,8 +391,6 @@ def _tick(orm_shim, seconds, stop, guard) -> None:
 
 
 def _start_tick(orm_shim, seconds) -> None:
-    # imported here, not in the tick thread: an import still running there when
-    # the process forks outlives the join that stops the tick before the fork
     from odoo.libs.logging import best_effort
 
     stop = threading.Event()
@@ -503,8 +501,6 @@ def _arm_registry_hook() -> None:
         if db_name == _STATE["db"]:
             orm_shim = _STATE["shims"][1]
             try:
-                # the export reads through the ORM; a read that reaches the
-                # port must be served by python while the kernel is built
                 with orm_shim.building():
                     orm_shim.KERNEL = _create_kernel(registry)
                 orm_shim.forget_gates()
@@ -564,8 +560,6 @@ def _apply_config(orm_shim, config) -> None:
         orm_shim.BREAKER = DEFAULT_BREAKER
     fastpath = config.get("rust_engine_web_fastpath")
     if fastpath is None:
-        # unset in the conf: RUSTORM_WEB_FASTPATH, read when the shim loaded,
-        # stays what it was
         return
     try:
         orm_shim.set_web_fastpath(str(fastpath).split(","))
@@ -648,9 +642,6 @@ def start(config=None) -> None:
     try:
         _start(config, requested)
     except _Unarmed as exc:
-        # opting in to routing (or misspelling it) and running without it are
-        # not the same server: a server-wide module's exception is only
-        # logged, so this one exits
         if requested != "off":
             raise SystemExit(
                 f"rust_engine: {exc}; rust_engine_mode is {requested!r}, so the "

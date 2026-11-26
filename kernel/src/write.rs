@@ -23,16 +23,11 @@ fn refuse_column(field: &Field) -> Option<String> {
     None
 }
 
-// The Python backend's translated UPDATE (odoo/orm/runtime/_backend_pg_write.py):
-// a column still NULL takes the written language's text as its en_US source and
-// records base 1.288's echo marker `_echo:<lang>`; the marker goes once the two
-// texts differ, or when the language written is en_US (settled_translation_echo).
 fn assignment(table: &str, field: &Field, expr: &str) -> String {
     let column = ident(&field.name);
     if !field.translate_whole {
         return format!("{column} = {expr}");
     }
-    // byte for byte what the fork's backend sends (harness/write_sql_contract.json)
     let merged = format!(
         "COALESCE({table}.{column}, jsonb_build_object(
                         'en_US', jsonb_path_query_first({expr}, '$.*'),

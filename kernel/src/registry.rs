@@ -1849,9 +1849,7 @@ impl Registry {
                         })
                 })
             });
-            // a permission is a group rule the principal's permissions OR; a
             // guard binding everyone is a global rule; a guard binding the
-            // members of its group is a group rule ANDed for those members
             security.rules.entry(model).or_default().push(Rule {
                 groups: if guard && !members_only {
                     Vec::new()

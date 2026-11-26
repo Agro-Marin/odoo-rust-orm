@@ -803,8 +803,6 @@ impl<'a> Orm<'a> {
         let t_rules = std::time::Instant::now();
 
         let mut ctx = self.ctx(env).for_rules();
-        // the rules record their own reads, per model, in the RuleSet; the
-        // request's set is left to what the request itself compiles
         ctx.touched = Default::default();
         let ruled: std::collections::HashSet<String> =
             env.dynamic.security.rules.keys().cloned().collect();
@@ -828,8 +826,6 @@ impl<'a> Orm<'a> {
             let Some(model) = self.registry.lookup(&model_name) else {
                 continue;
             };
-            // cleared before the kind guards resolve their hierarchies, so the
-            // reads those make are noted with the root's own
             if let Ok(mut touched) = ctx.touched.lock() {
                 touched.clear();
             }
@@ -973,7 +969,6 @@ impl<'a> Orm<'a> {
                     }
                     Err(e) => return Ok(Err(refused(e))),
                 };
-            // the fork hides the kind's rows through the kind's own `_search`
             if !kind.search_pure {
                 return Ok(Err(format!(
                     "the kind {} of {} defines `_search` in Python",
@@ -1257,8 +1252,6 @@ impl<'a> Orm<'a> {
                     let Some(parent_link) = parent_link else {
                         refuse!("{} has no parent field for {op}", target_model.name);
                     };
-                    // the walk reads the parent link, so a pending write to it
-                    // must reach the database first, as Python flushes it
                     ctx.touch(&target_model.name, &parent_link);
                     let down = op == "child_of";
                     let key = (
@@ -1627,9 +1620,6 @@ impl<'a> Orm<'a> {
         let cond = self
             .build_condition(model, &req.domain, &env, &rules, req.trusted_domain)
             .await?;
-        // after the compile, which refuses what Python's search would raise
-        // on (an unknown field, a caller's internal operator), as Python
-        // validates a condition before optimizing it to FALSE
         if !matches!(req.domain, Json::Null) && domain::is_false(&domain::parse(&req.domain)?) {
             tracing::debug!(
                 target: "odoo_kernel::compile",
@@ -1875,7 +1865,6 @@ mod web_length_tests {
         .decide(n, offset, limit)
     }
 
-    // the cases harness/test_shims.py test_web_length holds _web_length to
     #[test]
     fn the_length_is_webs_rule() {
         assert_eq!(decide(0, 0, Some(80), None, false), Ok(0));
@@ -1887,7 +1876,6 @@ mod web_length_tests {
         assert_eq!(decide(3, 10, None, None, false), Ok(13));
     }
 
-    // Python's truthiness: a zero limit or count_limit is no limit at all
     #[test]
     fn a_zero_limit_or_count_limit_is_falsy() {
         assert_eq!(decide(3, 0, Some(0), None, true), Ok(3));

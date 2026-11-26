@@ -314,7 +314,6 @@ def _update_rows_native(model, fnames, rows, expect_rows_matched) -> bool:
             params.append(ids)
             statements.append(("update_rows.uniform", sql, params, ids))
         else:
-            # rows are locked in id order, as the Python backend takes them
             ordered = sorted(rows, key=lambda row: row[0])
             for start in range(0, len(ordered), UPDATE_BATCH_SIZE):
                 batch = ordered[start : start + UPDATE_BATCH_SIZE]
@@ -388,8 +387,6 @@ def _create_rows_native(model, stored_list, columns, col_fields):
         rows = [()] * len(stored_list)
         insert_columns = []
 
-    # one statement per batch, as the Python INSERT path does: a single one
-    # binding every value overflows PostgreSQL's 65535 parameters
     statements = []
     try:
         for start in range(0, len(rows), INSERT_BATCH_SIZE):

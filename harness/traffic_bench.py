@@ -13,10 +13,7 @@ REPLAY = os.environ.get("RUSTORM_REPLAY")
 ROUNDS = int(os.environ.get("RUSTORM_TRAFFIC_ROUNDS", "3"))
 if ROUNDS <= 0:
     raise ValueError("RUSTORM_TRAFFIC_ROUNDS must be positive")
-# every call's time in every leg of every pair, for harness/perf_gate.py
 DUMP = os.environ.get("RUSTORM_TRAFFIC_JSON")
-# The control leg serves Python against Python under the same protocol, so a
-# verdict drawn from it measures the instrument and not the kernel.
 CONTROL = os.environ.get("RUSTORM_TRAFFIC_CONTROL") == "1"
 if not REPLAY or not pathlib.Path(REPLAY).exists():
     print("TRAFFIC SKIP: set RUSTORM_REPLAY to a capture file")
@@ -40,8 +37,6 @@ calls = [
 
 
 ROUTED = {}
-# a routed call that also handed part of its work back to Python: a web read
-# whose search routed and whose read did not is neither routed nor a fallback
 PARTIAL = {}
 SERVED = set()
 FALLBACKS = ("fallback_gate", "fallback_error", "fallback_flush")
@@ -99,8 +94,6 @@ def replay(mode):
                 call["method"],
             )
             cenv.cr.rollback()
-            # Timing a fast failure as a successful read reports a fictitious
-            # speedup. Every timed call already succeeded in Python preflight.
             raise
         elapsed = time.perf_counter() - started
         if mode == "on":
@@ -193,8 +186,6 @@ if DUMP:
 ratios = [pair["on"][0] / pair["off"][0] for pair in pairs]
 median_ratio = statistics.median(ratios)
 print("TRAFFIC %d pairs: median paired on/off ratio %.2fx" % (ROUNDS, median_ratio))
-# Keep every breakdown from one actual pair. With an even number of rounds,
-# the median ratio may lie between pairs; label the nearest pair explicitly.
 representative = min(range(ROUNDS), key=lambda n: abs(ratios[n] - median_ratio))
 off, on = pairs[representative]["off"], pairs[representative]["on"]
 print(

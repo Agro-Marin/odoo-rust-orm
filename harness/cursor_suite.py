@@ -42,8 +42,6 @@ from odoo import tools
 
 tools.config["db_name"] = os.environ.get("RUSTORM_DB", "rustorm_probe")
 
-# Odoo's normal test lifecycle provides a read-only pool and an HTTP server.
-# The shell entry point provides neither, so establish them explicitly here.
 import odoo.http
 from odoo.service._process_state import get_server, set_server
 from odoo.service.server import ThreadedServer

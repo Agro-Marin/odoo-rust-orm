@@ -75,9 +75,6 @@ where
         let meta = event.metadata();
         let level = py_level(meta.level());
         let name = logger_name(meta.target());
-        // Consult Python before formatting Debug fields or walking span data.
-        // Return the owned logger so rendering stays outside this GIL scope.
-        // Do not cache enabled levels: operators change loggers at runtime.
         let logger = Python::attach(|py| -> PyResult<Option<Py<PyAny>>> {
             let logger = logger_for(py, &name)?;
             if logger

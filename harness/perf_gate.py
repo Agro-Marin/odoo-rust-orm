@@ -10,7 +10,6 @@ import pathlib
 import statistics
 import sys
 
-# kwargs whose value decides the work a call does, kept literally in the shape
 LITERAL = {
     "fields",
     "groupby",
@@ -164,7 +163,6 @@ def measure(dump, calls, confidence, floors):
 
     shapes = {}
     for (key, path), indexes in groups.items():
-        # a shape whose calls took different paths is one entry per path
         split = sum((key, p) in groups for p in ("routed", "partial", "fallback")) > 1
         name = "%s@%s" % (key, path) if split else key
         result = judge(*totals(indexes), confidence, floors.get(name))
@@ -224,8 +222,6 @@ def main() -> int:
         floors = json.loads(pathlib.Path(args.floors).read_text(encoding="utf-8"))
     shapes, summary = measure(dump, calls, args.confidence, floors)
 
-    # A partly routed call paid for the attempt as well, so it is gated with
-    # the routed ones; a control run routes nothing, so every shape stands in.
     routed = {
         k: s
         for k, s in shapes.items()
@@ -240,9 +236,6 @@ def main() -> int:
                 for i in routed[key]["indexes"]
             )
     if args.confirm:
-        # Hundreds of shapes at 99% each leave a few false failures per run on
-        # a shared machine; an independent re-timing of only the suspects
-        # leaves a real one standing and lets a fluke go.
         again = json.loads(pathlib.Path(args.confirm).read_text(encoding="utf-8"))
         second, _ = measure(again, read_calls(again["replay"]), args.confidence, floors)
         for key in first_pass:
@@ -358,7 +351,6 @@ def main() -> int:
         print("PERF wrote %d floors to %s" % (len(recorded), args.write_floors))
 
     if dump["control"]:
-        # every failure in a control run is a false one: the instrument's rate
         print(
             "PERF CONTROL %d of %d shapes read as slower (%d before confirmation); "
             "that is the false-fail rate" % (len(failing), len(routed), len(first_pass))

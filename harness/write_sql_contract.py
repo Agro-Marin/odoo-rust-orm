@@ -56,8 +56,6 @@ class _Field:
             if translate == "whole"
             else (str.strip if translate == "term" else False)
         )
-        # the fork's string fields (BaseString: varchar, and translated jsonb)
-        # convert once at create and take that form as their cache value
         self.column_value_is_cache = cast.upper() == "VARCHAR" or bool(self.translate)
 
     def __repr__(self):

@@ -186,8 +186,6 @@ PYMOD="$OUT/pymod"
 if [ -f "$ROOT/target/release/libengine_py.so" ]; then
   mkdir -p "$PYMOD"
   cp "$ROOT/target/release/libengine_py.so" "$PYMOD/engine_py.so"
-  # Every subprocess, including fixture generation and nested Odoo shells,
-  # must use the same freshly built extension as the explicit probe stages.
   export PYTHONPATH="$PYMOD${PYTHONPATH:+:$PYTHONPATH}"
   out=$(PYTHONPATH="$PYMOD" "${T[@]}" "$PY" "$ROOT/harness/test_shims.py" 2>&1); rc=$?
   if [ "$rc" = 0 ]; then

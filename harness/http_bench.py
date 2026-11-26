@@ -152,9 +152,6 @@ HEAVY_CALLS = [
 ]
 
 
-# the web client's own read shapes, so that a change to the web_search_read /
-# web_read route shows in the throughput instead of being diluted by the
-# search_read and search_count calls of the default mix
 WEB_CALLS = [
     (
         "res.partner",
@@ -351,10 +348,6 @@ def worker(port, opener, latencies, errors, expected) -> None:
 def run(args, expected, seconds):
     STOP.clear()
     latencies, errors = [], []
-    # the fork refuses a sign-in while another one from the same address is in
-    # progress, so the sessions are opened one after the other before the clock
-    # starts; opened inside the threads, all but one were refused and the
-    # SystemExit ended their thread without a word
     openers = [
         create_authenticated_opener(args.port, args.db, args.login, args.password)
         for _ in range(args.threads)

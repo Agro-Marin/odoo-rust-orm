@@ -94,9 +94,6 @@ fn skip_opaque(bytes: &[u8], i: usize) -> Option<usize> {
     odoo_kernel::sqllex::opaque(bytes, i).map(|token| token.end)
 }
 
-// psycopg formats a query whenever it is handed parameters, an empty sequence
-// included: `%%` reaches the server as `%`. Handed none at all, it sends the text
-// as written. A script of several statements carries no parameter either way.
 fn simple_protocol_text(query: &str, params_absent: bool) -> std::borrow::Cow<'_, str> {
     if params_absent {
         std::borrow::Cow::Borrowed(query)
@@ -479,8 +476,6 @@ fn py_to_sql(
             return text_or(v, parse_tstz(&s));
         }
         Type::INTERVAL if v.is_instance_of::<pyo3::types::PyDelta>() => {
-            // what psycopg sends: the days apart from the time, so a day stays
-            // a calendar day in timestamptz arithmetic
             let days: i64 = v.getattr("days")?.extract()?;
             let seconds: i64 = v.getattr("seconds")?.extract()?;
             let micros: i64 = v.getattr("microseconds")?.extract()?;
@@ -1554,8 +1549,6 @@ fn declared_type(v: &Bound<'_, PyAny>) -> Type {
     if v.is_none() {
         return Type::UNKNOWN;
     }
-    // untyped, PostgreSQL infers an interval's type from the expression and
-    // reads `ts - $1` as a timestamp subtraction
     if v.is_instance_of::<PyDelta>() {
         return Type::INTERVAL;
     }
@@ -2253,15 +2246,10 @@ impl RustConn {
             if let Ok(mut slot) = self.client.write() {
                 slot.take();
             }
-            // the connection task ends once the client is gone, but only
-            // when polled: drive it to its end so the socket closes now
-            // and the backend does not outlive the cursor
             let driver = self.driver.lock().ok().and_then(|mut d| d.take());
             if let Some(driver) = driver {
                 let rt = self.rt.clone();
                 py.detach(move || {
-                    // the timeout's timer needs the runtime context, so it
-                    // is built inside block_on, not passed to it
                     let _ = rt.block_on(async {
                         tokio::time::timeout(std::time::Duration::from_secs(2), driver).await
                     });
@@ -2276,10 +2264,6 @@ impl RustConn {
         if self.closed.load(Ordering::SeqCst) {
             return true;
         }
-        // the connection task learns of a closed socket only when polled,
-        // and on this runtime nothing polls it between statements: give
-        // the scheduler two turns so a terminated backend reads as closed
-        // now, as psycopg's does, rather than at the next statement
         self.rt.block_on(async {
             tokio::task::yield_now().await;
             tokio::task::yield_now().await;
@@ -2993,16 +2977,11 @@ impl RustDb {
             pid = std::process::id(),
             "opening a rust-backed connection for a Python cursor"
         );
-        // a host name is resolved on the runtime's blocking pool, whose
-        // thread would otherwise idle for ten seconds and make a fork in
-        // that window multi-threaded
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .thread_keep_alive(std::time::Duration::ZERO)
             .build()
             .map_err(|e| rerr(format!("cannot build the connection's runtime: {e}")))?;
-        // connect inside the runtime: the connection task it spawns lands
-        // on it, and every later block_on drives that task
         let (client, fault, driver) = py
             .detach(|| rt.block_on(odoo_kernel::connect::connect_with_fault(&dsn)))
             .map_err(|e| rerr(format!("{e:#}")))?;

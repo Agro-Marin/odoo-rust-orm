@@ -73,7 +73,6 @@ SWM=$(sed -n 's/^server_wide_modules[[:space:]]*=[[:space:]]*//p' "$OUT/base.con
 SWM="${SWM:-base,web}"
 case ",$SWM," in *,rust_engine,*) ;; *) SWM="$SWM,rust_engine" ;; esac
 
-# Refuse an occupied endpoint; cleanup must never kill an unrelated listener.
 "$PY" - "$PORT" <<'PYEOF' || exit 2
 import socket, sys
 with socket.socket() as sock:

@@ -8,8 +8,6 @@ pub const MAX_PREPARED: usize = 256;
 #[derive(Default)]
 pub struct StmtCache {
     inner: std::sync::Mutex<RecencyMap<tokio_postgres::Statement>>,
-    // what the kernel sent on this connection, beside the caller's cursor,
-    // which counts none of it: the caller reads it around each call
     executed: std::sync::atomic::AtomicU64,
 }
 
@@ -18,8 +16,6 @@ struct CacheEntry<T> {
     used: u64,
 }
 
-// Hits are the hot path: one lookup and an age update, with no allocation or
-// queue scan. Bounded O(capacity) work happens only when an insert evicts.
 struct RecencyMap<T> {
     map: HashMap<String, CacheEntry<T>>,
     clock: u64,
@@ -147,7 +143,6 @@ mod cache_tests {
         let mut cache = RecencyMap::default();
         let mut queue = std::collections::VecDeque::new();
         let mut values = std::collections::HashMap::new();
-        // Deterministic mixed accesses; forced wrap exercises age rebasing.
         for step in 0..2000 {
             if step == 1000 {
                 cache.clock = u64::MAX;

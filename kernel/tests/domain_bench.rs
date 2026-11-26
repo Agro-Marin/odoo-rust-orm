@@ -11,8 +11,6 @@ fn flat_domain_scaling() {
         .with_test_writer()
         .try_init();
     for terms in [2_000, 4_000, 8_000, 16_000] {
-        // a OR (b OR (...)): flattening must not copy the growing suffix
-        // into a fresh vector for every binary operator.
         let mut tokens = Vec::new();
         for i in 0..terms {
             if i + 1 < terms {

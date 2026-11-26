@@ -129,7 +129,6 @@ def test_shell_launcher_exposes_shared_probe(tmp_path):
         check=True,
     )
     code = ast.parse(process.stdout)
-    # Execute the real import bootstrap while stopping before the database script.
     namespace = {}
     exec(  # noqa: S102  execute the launcher bootstrap captured from verify.sh
         compile(ast.Module(body=code.body[:-1], type_ignores=[]), "launcher", "exec"),

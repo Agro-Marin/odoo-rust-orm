@@ -35,14 +35,8 @@ def _passes_through(member, owner, name):
     origin = getattr(member, DOOR_ORIGIN, None)
     if origin is None:
         return False
-    # an operation door over no method of its own class calls the next class's,
-    # which this walk judges where it is defined
     if origin is getattr(super(owner, owner), name, None):
         return True
-    # the door keeps the method it found when the registry was set up: once the shim
-    # patches BaseModel after that (a registry loaded before install(), as the registry
-    # sweep does) the identity no longer holds, while a door that wraps nothing of its
-    # own class (no inner) still calls the next class's at call time
     code = getattr(member, "__code__", None)
     if code is None or "inner" not in code.co_freevars:
         return False

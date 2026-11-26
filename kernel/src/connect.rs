@@ -238,7 +238,6 @@ pub async fn connect_with_fault(dsn: &str) -> Result<(Client, FaultSlot, Driver)
     let t0 = std::time::Instant::now();
     let parsed = Dsn::parse(dsn)?;
     let tls = parsed.tls()?;
-    // A connector permits TLS; Prefer and Unix sockets may still use plaintext.
     let tls_configured = tls.is_some();
     let opened = |t0: std::time::Instant| {
         tracing::debug!(

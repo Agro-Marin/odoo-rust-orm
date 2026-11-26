@@ -527,8 +527,6 @@ fn coerce_numeric(v: &Json, integer: bool) -> Result<Option<Json>> {
     let Json::String(s) = v else {
         return Ok(Some(v.clone()));
     };
-    // Python accepts digit separators and Unicode decimal digits that Rust's
-    // number parsers do not. Refuse rather than classifying them as nonnumbers.
     if !s.is_ascii() || s.contains('_') {
         refuse!("numeric string {s:?} requires Python's numeric parser");
     }
@@ -808,8 +806,6 @@ impl<'a> Compiler<'a> {
                 _ => return None,
             })
         };
-        // what Python's `DomainCondition._negate` cannot rewrite it keeps as
-        // `NOT (...) IS NOT TRUE`: the complement of the rows the leaf selects
         let complement = || Ok(Node::Not(Box::new(Node::Leaf(leaf.clone()))));
         let own = self.model.fields.get(&leaf.field);
         if let Some(op) = flipped(&leaf.op) {
@@ -902,8 +898,6 @@ impl<'a> Compiler<'a> {
             };
             Ok(Json::String(utc.format("%Y-%m-%d %H:%M:%S").to_string()))
         };
-        // Python's datetime ends at year 9999: the day after 9999-12-31 is its
-        // OverflowError, answered below as fields/temporal.py answers it
         let next = |d: NaiveDate| d.succ_opt().filter(|n| n.year() <= 9999);
         if matches!(op, ">" | "<" | ">=" | "<=") {
             let Some(day) = bare_date(v) else {
@@ -966,8 +960,6 @@ impl<'a> Compiler<'a> {
         let head = l.field.split('.').next().unwrap_or(&l.field);
         let dotted = head != l.field;
         let field = self.model.fields.get(head);
-        // Odoo resolves the field before applying even constant-producing
-        // optimizations. display_name has a dedicated synthetic compiler path.
         if field.is_none() && l.field != "display_name" {
             refuse!("unknown field {}.{head}", self.model.name);
         }
@@ -1090,8 +1082,6 @@ impl<'a> Compiler<'a> {
             )
             && matches!(op, "in" | "not in" | ">" | "<" | ">=" | "<=")
         {
-            // Odoo's BaseString normalizes values before predicates and their
-            // company-default guards inspect them, not only when SQL is bound.
             let convert = |v: &Json| -> Result<Json> {
                 Ok(match v {
                     Json::Number(n) => Json::String(number_as_python_text(n)?),
@@ -1364,8 +1354,6 @@ impl<'a> Compiler<'a> {
         let can_be_null = !field.not_null;
 
         if field.ttype == FieldType::Boolean && matches!(op, "in" | "not in") {
-            // Python's literal IS TRUE: a parameter would hide it from partial
-            // indexes `WHERE active IS TRUE`, which `active = $1` never implies
             let listed = |b: bool| values.iter().any(|v| !is_py_falsy(v) == b);
             let selects = |b: bool| listed(b) == (op == "in");
             let cond = match (selects(true), selects(false)) {
@@ -1667,9 +1655,6 @@ impl<'a> Compiler<'a> {
                 .first()
                 .and_then(|v| json_cmp_op(&fallback, v, op))
                 .unwrap_or(true),
-            // Pattern matching depends on PostgreSQL escapes, collation and
-            // possibly unaccent. An in-process guess must not exclude rows
-            // that obtain their value from the company default.
             _ => true,
         };
         tracing::trace!(
@@ -2020,10 +2005,6 @@ impl<'a> Compiler<'a> {
             (_, true) => Node::And(terms),
             (_, false) => Node::Or(terms),
         };
-        // a relational name field under a negative operator is the negation of its positive
-        // match, as _search_display_name_match writes it (~Domain(f.display_name, positive,
-        // value)): a record whose relation is unset has no name to match and is kept, where
-        // the negative operator on the dotted path asks for a related record and drops it
         let positive = match op {
             "!=" => Some("="),
             "not in" => Some("in"),
@@ -2315,9 +2296,6 @@ impl<'a> Compiler<'a> {
             FieldType::One2many => {
                 let inverse = field.o2m_inverse_column(&self.model.name, co)?;
                 self.ctx.touch(&co.name, inverse);
-                // odoo 2f3e5a84dc0: an x2many condition lists its own field in to_flush, so
-                // a pending recompute of a stored computed one2many runs before the EXISTS
-                // reads the comodel (many2many already lists it below)
                 self.ctx.touch(&self.model.name, &field.name);
                 select
                     .expr(col(&sub_alias, inverse))
@@ -2722,8 +2700,6 @@ pub fn granularity_expr(
             [inner],
         ));
     }
-    // odoo aeb8c17159e: a timezone carries the calendar's first and last hours
-    // before year 1 or past 9999, where Python has no datetime for the group key
     let inner = match (is_date, tz) {
         (false, Some(_)) => Expr::cust_with_exprs(
             "CASE WHEN $1 < TIMESTAMP '0001-01-01' THEN TIMESTAMP '0001-01-01' \
@@ -2747,8 +2723,6 @@ pub fn granularity_expr(
             let first = ws - 1;
             let days = if first == 0 { 0 } else { 7 - first };
             Expr::cust_with_exprs(
-                // the fork's form: the week holding 0001-01-01 starts before the
-                // calendar, and is held at its first day with a NULL kept NULL
                 format!(
                     "NULLIF(GREATEST(COALESCE(\
                      date_trunc('week', $1::timestamp - INTERVAL '-{days} DAY') + \

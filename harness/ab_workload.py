@@ -39,8 +39,6 @@ def workload_partners(su, made):
 
 
 def workload_products(su):
-    # no replenishment route: a demo product on an MTO route confirms into
-    # "No rule has been found to replenish" and aborts the whole leg
     products = su["product.product"].search(
         [
             ("sale_ok", "=", True),
@@ -51,8 +49,6 @@ def workload_products(su):
         order="id",
         limit=6,
     )
-    # invoiced on order: no demo product is, and delivery-invoiced lines
-    # have nothing to invoice until a picking is done
     products.product_tmpl_id.write({"invoice_policy": "ordered"})
     return products
 
@@ -145,8 +141,6 @@ def workload_sales(env, su, made, products, internal):
         return
     orders = create_sale_orders(env, su, products, customers)
     made["sale_orders"] = len(orders)
-    # the deliveries of the confirmed orders: stock moves, quants and
-    # the valuation entries the port writes, half of them validated
     made["deliveries"] = validate_pickings(env, su, orders[:6], 3)
     invoices = invoice_sale_orders(env, su, orders)
     made["invoices"] = len(invoices)
@@ -278,8 +272,6 @@ def main(env):
     made = {}
     partners = workload_partners(su, made)
     products = workload_products(su)
-    # not the companies' own partners nor a warehouse's: a delivery to one of
-    # those goes to inter-warehouse transit and needs a rule the demo lacks
     internal = (
         env.companies.partner_id.ids + su["stock.warehouse"].search([]).partner_id.ids
     )

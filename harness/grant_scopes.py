@@ -12,11 +12,6 @@ from rust_engine_errors import KernelRefused
 from odoo import Command
 from odoo.exceptions import AccessError
 
-# the principals whose groups the memberships misstate: a grant limited to
-# some companies, a dated grant, a privilege. Each is routed and compared
-# with Python in every company context it can be in; the kernel either
-# answers what Python answers or refuses, and each must be answered at least
-# once, or the stage proves nothing
 MIN_ROUTED = 5
 ROWS = 80
 TAG = "rustorm_grant"
@@ -117,8 +112,6 @@ def seed(env):
         (guard_scoped, guard, {"company_ids": [Command.set(company_a.ids)]}),
         (dated, guard, {"date_to": now + dt.timedelta(days=30)}),
         (dated, reader, {"date_from": now + dt.timedelta(days=30)}),
-        # still active in the table once its end has passed: the boundary
-        # cron settles it, and no cron runs here
         (window_closed, reader, {"date_to": now + dt.timedelta(seconds=2)}),
     ]:
         if not Grant.search_count(
@@ -168,7 +161,6 @@ def shapes(model):
 
 
 def refused_without_python_state(uid):
-    # the kernel alone reads the memberships, which misstate this principal
     request = json.dumps(
         {"model": "res.partner", "method": "search_count", "uid": uid, "domain": []}
     )
@@ -191,12 +183,8 @@ mismatched = collections.Counter()
 example = {}
 failures = []
 try:
-    # seeded on a cursor of its own: one that wrote a security model is never
-    # routed, and the comparisons must be
     with env.registry.cursor() as seed_cr:  # noqa: F821
         (company_a, company_b), users, window_opened = seed(env(cr=seed_cr))  # noqa: F821
-    # what a request's transaction does once it commits: without it no other
-    # cursor, the kernel's included, learns that the security tables moved
     env.registry.signal_changes()  # noqa: F821
     if window_opened:
         time.sleep(3)

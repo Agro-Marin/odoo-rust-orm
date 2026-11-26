@@ -596,8 +596,6 @@ def traffic_probe(tmp_path, monkeypatch, caplog):
 
 
 def test_traffic_benchmark_reports_a_paired_median(traffic_probe, monkeypatch, capsys):
-    # Warmups, then off/on, on/off, off/on. Independent minima would report 2x,
-    # whereas the actual paired ratios are 8x, 0.2x and 3x (median 3x).
     ticks = iter(
         value for duration in [1, 1, 1, 8, 2, 10, 3, 9] for value in [0, duration]
     )

@@ -246,8 +246,6 @@ user = Users.search(
     order="id",
     limit=1,
 )
-# A compiled Query stays lazy: a reference inserted after compilation must
-# be visible when it executes. Created ids do not justify a constant FALSE.
 if "mail.followers" in env.registry:  # noqa: F821
 
     class _Undo(Exception):
