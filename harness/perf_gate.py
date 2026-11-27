@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""Judge a traffic_bench timing dump: is every routed read shape at least as fast as Python?"""
-
 import argparse
 import collections
 import hashlib
@@ -9,6 +7,8 @@ import math
 import pathlib
 import statistics
 import sys
+
+CLI_DESCRIPTION = "Judge a traffic_bench timing dump: is every routed read shape at least as fast as Python?"
 
 LITERAL = {
     "fields",
@@ -197,7 +197,7 @@ FAILING = ("slower", "regressed")
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description=CLI_DESCRIPTION)
     ap.add_argument("timings", help="RUSTORM_TRAFFIC_JSON written by traffic_bench")
     ap.add_argument("--workload", help="the replayed JSONL (default: the dump's)")
     ap.add_argument("--json", help="write the verdicts here")

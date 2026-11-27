@@ -1,11 +1,3 @@
-"""A prefork master forks with rust_engine armed: what the fork carries.
-
-Set RUSTORM_TEST_DSN to a disposable Odoo database and RUSTORM_ODOO_CONF to a
-conf that can serve it. Each case runs in a fresh interpreter, because a
-process's thread count is the property under test and pytest's own process
-is not ours to count.
-"""
-
 import json
 import os
 import pathlib

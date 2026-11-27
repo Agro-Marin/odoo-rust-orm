@@ -1,5 +1,3 @@
-"""Live Odoo parity for boundary values, including actual native fallback."""
-
 import collections
 import logging
 

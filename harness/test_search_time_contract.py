@@ -1,10 +1,3 @@
-"""Database contracts for port routing, with only WHERE compilation substituted.
-
-Set RUSTORM_TEST_DSN to a disposable database. PostgreSQL, RustConn, the port,
-Domain, dependency flushing and lazy Query construction are real. The tiny
-model facade has no pending computed fields; this is not full addon parity.
-"""
-
 import contextlib
 import logging
 import os

@@ -1,5 +1,3 @@
-"""Run in odoo-bin shell: verify live, old and malformed field-policy exports."""
-
 import copy
 import json
 import logging

@@ -1,13 +1,3 @@
-"""A deterministic business workload, committed: one leg of the A/B database
-differential. Run under `odoo-bin shell` on a clone of the demo snapshot,
-once with the engine on and once without; `ab_compare.py` then diffs the
-two databases table by table.
-
-Everything it creates derives from a fixed seed and the demo records in id
-order, so two runs from the same snapshot make the same rows in the same
-order -- ids and sequence numbers included.
-"""
-
 SEED = 20260919
 
 

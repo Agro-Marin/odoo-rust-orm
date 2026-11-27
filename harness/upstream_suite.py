@@ -1,5 +1,3 @@
-"""Run Odoo cases with its lifecycle, returning machine-readable outcomes."""
-
 import unittest
 
 

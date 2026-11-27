@@ -1,16 +1,3 @@
-"""Compare two databases table by table after the same committed workload.
-
-    ab_compare.py DB_A DB_B [--ignore-tables t1,t2] [--json OUT]
-
-Every base table in `public` of A is read in both, ordered by `id` (or by
-every column when there is none), with the volatile columns left out:
-`create_date`, `write_date`, every timestamp column (a workload's clock is
-not the same on two runs), and the tables that record a process rather than
-a business fact. The random secrets a table draws per row (`VOLATILE_COLUMNS`)
-are compared only on whether they are set. Exit 0 when every remaining cell
-agrees.
-"""
-
 import argparse
 import json
 import pathlib

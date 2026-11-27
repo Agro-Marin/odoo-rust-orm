@@ -1,8 +1,3 @@
-"""What the rust cursor refuses to send, refused as psycopg refuses it.
-
-Set RUSTORM_TEST_DSN to a disposable database.
-"""
-
 import os
 
 import pytest
